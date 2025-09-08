@@ -7,13 +7,7 @@ from agents.strategy_agent import StrategyAgent
 
 # 필요 라이브러리 로드
 import os
-import time
-import json
-import requests
-import yfinance as yf
-from datetime import datetime
 from dotenv import load_dotenv
-from datetime import datetime, timezone
 
 
 # .env 파일 로드 (환경변수 로드)
@@ -23,6 +17,8 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("CAPSTONE_OPENAI_API")
 OPENAI_URL = "https://api.openai.com/v1/responses"
 UA = "Mozilla/5.0"  # User-Agent 헤더
+
+FMP_API_KEY = os.getenv("FMP_API_KEY")
 
 
 if __name__ == "__main__":
