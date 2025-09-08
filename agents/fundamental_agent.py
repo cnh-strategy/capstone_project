@@ -1,7 +1,9 @@
 import requests
 import yfinance as yf
+import json
+from .base_agent import BaseAgent   # BaseAgent 상속 (LLM 호출 포함)
 
-class FundamentalAgent:
+class FundamentalAgent(BaseAgent):
     """
     FMP(Financial Modeling Prep)와 Yahoo Finance 데이터를 각각 활용하여
     매수/매도 가격과 최종 투자의견(Buy/Hold/Sell)을 산출하는 에이전트.
@@ -14,25 +16,17 @@ class FundamentalAgent:
     ** raw: FMP 또는 Yahoo에서 직접 받아온 최근 3년치 재무 데이터 요약본
     """
 
-    def __init__(self, ticker: str, fmp_api_key: str, check_years: int = 3):
-        """
-        :param ticker: 종목 티커 (예: 'AAPL', '005930.KQ')
-        :param fmp_api_key: FMP API Key
-        :param check_fmp_data: FMP에서 가져올 연간 데이터 개수 (기본값=3년)
-        """
+    def __init__(self, ticker: str, fmp_api_key: str, check_years: int = 3, use_llm: bool = False, **kwargs):
+        super().__init__(**kwargs)  # BaseAgent 초기화 (LLM 사용 가능)
         self.ticker = ticker
         self.fmp_api_key = fmp_api_key
         self.check_years = check_years
+        self.use_llm = use_llm      #llm 사용 혹은 미사용 결정 가능
 
     # -----------------------------
     # 데이터 수집
     # -----------------------------
     def get_fmp_ratios(self, years):
-        """
-        FMP API에서 최근 n년 연간 재무 비율 데이터 가져오기
-        - PER, PBR, ROE, EPS 포함
-        - raw 데이터 그대로 보관 → 결과에 포함
-        """
         try:
             fmp_url = (
                 f"https://financialmodelingprep.com/api/v3/ratios/"
@@ -53,22 +47,12 @@ class FundamentalAgent:
             print(f"[get_fmp_ratios]Error: {e}")
 
     def get_yahoo_ratios(self, years: int):
-        """
-        Yahoo Finance(yfinance)에서 최근 n년 데이터 가져오기
-        - earnings: 매출, 순이익 (최근 4년치)
-        - EPS: net_income ÷ sharesOutstanding 으로 직접 계산
-        - ROE, PER, PBR: info 속성에서 가져오기
-        """
         try:
             stock = yf.Ticker(self.ticker)
             earnings = stock.earnings
-
-            # earnings 데이터 없을 경우 대비
             if earnings is None or earnings.empty:
-                print(f"[get_yagoo_ratios]Error: no earnings data")
                 return []
 
-            # info는 네트워크 요청이므로 한 번만 가져오기
             info = stock.info
             shares = info.get("sharesOutstanding")
             roe = info.get("returnOnEquity")
@@ -80,7 +64,6 @@ class FundamentalAgent:
                 net_income = earnings.loc[year, "Earnings"]
                 revenue = earnings.loc[year, "Revenue"]
                 eps = net_income / shares if shares else None
-
                 yahoo_result.append({
                     "year": str(year),
                     "revenue": revenue,
@@ -90,23 +73,14 @@ class FundamentalAgent:
                     "pe": pe,
                     "pbr": pbr
                 })
-
             return yahoo_result
-
         except Exception as e:
             print(f"[get_yahoo_ratios]Error: {e}")
 
-
     # -----------------------------
-    # 보조 계산
+    # 보조 계산 (룰 기반)
     # -----------------------------
     def calculate_growth(self, eps_values: list) -> float:
-        """
-        EPS 성장률(CAGR) 계산
-        - None 값 제거
-        - 값이 2개 이상일 때만 CAGR 계산
-        - 과거 → 최신 순서 가정
-        """
         eps_values = [v for v in eps_values if v is not None]
         if len(eps_values) >= 2 and eps_values[0] > 0 and eps_values[-1] > 0:
             years = len(eps_values) - 1
@@ -114,97 +88,113 @@ class FundamentalAgent:
         return 0
 
     def calculate_roe_avg(self, roe_values: list) -> float:
-        """
-        ROE 평균 계산
-        - None 값 제외
-        - 값이 없으면 0 반환
-        """
         roe_values = [v for v in roe_values if v is not None]
         return sum(roe_values) / len(roe_values) if roe_values else 0
 
     def judge(self, eps_values, roe_values, pe_latest, pbr_latest, open_price, close_price):
-        """
-        모든 지표(EPS 성장률, ROE, PER, PBR)를 반영하여
-        매수/매도 가격 및 최종 투자의견(Buy/Hold/Sell) 판단
-        """
         try:
             growth = self.calculate_growth(eps_values)
             roe_avg = self.calculate_roe_avg(roe_values)
 
-            # 강력 매수 조건: 성장성 + 수익성 + 저평가
             if growth > 0.05 and roe_avg > 0.1 and pe_latest and pe_latest < 15 and pbr_latest and pbr_latest < 2:
                 opinion = "Buy"
                 buy_price = open_price
-                sell_price = close_price * 1.05  # 목표가: 종가 대비 +5%
-                reason = (
-                    f"EPS 성장률 {growth:.1%}, ROE 평균 {roe_avg:.1%}, "
-                    f"PER {pe_latest:.1f}, PBR {pbr_latest:.1f} → 저평가 + 성장성 우수."
-                )
-
-            # 매도 조건: 성장성 부재 또는 고평가
+                sell_price = close_price * 1.05
+                reason = f"EPS 성장률 {growth:.1%}, ROE 평균 {roe_avg:.1%}, PER {pe_latest:.1f}, PBR {pbr_latest:.1f} → 저평가 + 성장성 우수."
             elif (growth <= 0 or roe_avg <= 0.05 or (pe_latest and pe_latest >= 30) or (pbr_latest and pbr_latest >= 4)):
                 opinion = "Sell"
                 buy_price = open_price
-                sell_price = close_price * 0.95  # 손절: 종가 대비 -5%
-                reason = (
-                    f"EPS 성장률 {growth:.1%}, ROE 평균 {roe_avg:.1%}, "
-                    f"PER {pe_latest}, PBR {pbr_latest} → 성장/수익성 부족, 고평가 위험."
-                )
-
-            # 중립 조건: 일부 긍정적이지만 불확실
+                sell_price = close_price * 0.95
+                reason = f"EPS 성장률 {growth:.1%}, ROE 평균 {roe_avg:.1%}, PER {pe_latest}, PBR {pbr_latest} → 성장/수익성 부족, 고평가 위험."
             else:
                 opinion = "Hold"
                 buy_price = open_price
-                sell_price = close_price  # 보수적 청산
-                reason = (
-                    f"EPS 성장률 {growth:.1%}, ROE 평균 {roe_avg:.1%}, "
-                    f"PER {pe_latest}, PBR {pbr_latest} → 일부 긍정적이나 확신 부족."
-                )
+                sell_price = close_price
+                reason = f"EPS 성장률 {growth:.1%}, ROE 평균 {roe_avg:.1%}, PER {pe_latest}, PBR {pbr_latest} → 일부 긍정적이나 확신 부족."
 
             return {"buy_price": buy_price, "sell_price": sell_price, "opinion": opinion, "reason": reason}
-
         except Exception as e:
             print(f"[judge]Error: {e}")
+            return {"buy_price": None, "sell_price": None, "opinion": "Error", "reason": str(e)}
 
 
     # -----------------------------
     # 메인 실행
     # -----------------------------
     def fundamental_main_analyze(self, open_price: float, close_price: float) -> dict:
-        """
-        FMP와 Yahoo 데이터를 각각 분석하여 결과 이중 출력
-        - 각 결과에는 raw 데이터도 함께 포함
-        """
         try:
-            # FMP 결과
             fmp_data = self.get_fmp_ratios(self.check_years)
-            fmp_data_sorted = sorted(fmp_data, key=lambda x: x["year"])  # 과거→최신 정렬
-            eps_fmp = [d["eps"] for d in fmp_data_sorted]
-            roe_fmp = [d["roe"] for d in fmp_data_sorted]
-            pe_fmp = next((d["pe"] for d in fmp_data_sorted if d["pe"] is not None), None)
-            pbr_fmp = next((d["pbr"] for d in fmp_data_sorted if d["pbr"] is not None), None)
-            fmp_result = self.judge(eps_fmp, roe_fmp, pe_fmp, pbr_fmp, open_price, close_price)
-            fmp_result["raw"] = fmp_data_sorted
-
-            # Yahoo 결과
             yahoo_data = self.get_yahoo_ratios(self.check_years)
-            eps_yahoo = [d["eps"] for d in yahoo_data]
-            roe_yahoo = [d["roe"] for d in yahoo_data if d["roe"] is not None]
-            pe_yahoo = yahoo_data[-1].get("pe")
-            pbr_yahoo = yahoo_data[-1].get("pbr")
-            yahoo_result = self.judge(eps_yahoo, roe_yahoo, pe_yahoo, pbr_yahoo, open_price, close_price)
-            yahoo_result["raw"] = yahoo_data
 
-            # 최종 이중 출력
-            return {"fmp": fmp_result, "yahoo": yahoo_result}
+            if not fmp_data or not yahoo_data:
+                return {"fmp": {}, "yahoo": {}}
 
+            if self.use_llm:
+                # ★ 통화/자리수 자동 탐지 (BaseAgent 메서드 활용)
+                currency, decimals = self._detect_currency_and_decimals(self.ticker)
+
+                context = {
+                    "fmp": fmp_data,
+                    "yahoo": yahoo_data,
+                    "open_price": open_price,
+                    "close_price": close_price
+                }
+
+                msg_sys = {
+                    "role": "system",
+                    "content": (
+                        "너는 전문 주식 애널리스트다. "
+                        "주어진 재무 데이터(FMP, Yahoo)와 현재 주가(open/close)를 기반으로 "
+                        "금일 기준 목표 매수/매도가를 산출한다. "
+                        "모든 출력은 JSON 형식으로만 반환해야 한다."
+                    )
+                }
+
+                msg_user = {
+                    "role": "user",
+                    "content": (
+                        f"입력 데이터:\n{json.dumps(context, ensure_ascii=False)}\n\n"
+                        "요구사항:\n"
+                        "1) buy_price(number): 오늘 기준 추천 매수가. open_price와 close_price를 고려해 제시.\n"
+                        "2) sell_price(number): 오늘 기준 목표 매도가. 반드시 sell_price ≥ buy_price.\n"
+                        "3) reason(string): 4~5문장 한국어 설명. EPS 성장률, ROE, PER, PBR 및 데이터 출처(FMP/Yahoo)를 반영해라.\n"
+                        "4) JSON 객체만 반환. 여분의 텍스트, 설명, 마크다운 불가.\n"
+                        f"5) 통화 단위는 {currency}, 숫자는 소수점 {decimals}자리까지 반올림."
+                    )
+                }
+
+                result = self._ask_with_fallback(msg_sys, msg_user, self.schema_obj)
+                buy, sell, reason = self._parse_result(result, decimals)
+                return {"llm": {"buy_price": buy, "sell_price": sell, "reason": reason, "raw": context}}
+
+            else:
+                fmp_sorted = sorted(fmp_data, key=lambda x: x["year"])
+                eps_fmp = [d["eps"] for d in fmp_sorted]
+                roe_fmp = [d["roe"] for d in fmp_sorted]
+                pe_fmp = fmp_sorted[-1].get("pe")
+                pbr_fmp = fmp_sorted[-1].get("pbr")
+                fmp_result = self.judge(eps_fmp, roe_fmp, pe_fmp, pbr_fmp, open_price, close_price)
+                fmp_result["raw"] = fmp_sorted
+
+                eps_yahoo = [d["eps"] for d in yahoo_data]
+                roe_yahoo = [d["roe"] for d in yahoo_data if d["roe"] is not None]
+                pe_yahoo = yahoo_data[-1].get("pe")
+                pbr_yahoo = yahoo_data[-1].get("pbr")
+                yahoo_result = self.judge(eps_yahoo, roe_yahoo, pe_yahoo, pbr_yahoo, open_price, close_price)
+                yahoo_result["raw"] = yahoo_data
+
+                return {"fmp": fmp_result, "yahoo": yahoo_result}
         except Exception as e:
             print(f"[fundamental_main_analyze]Error: {e}")
+            return {"fmp": {}, "yahoo": {}, "error": str(e)}
 
 
-# -------------------------
+
 # 사용 예시
-# -------------------------
-# agent = FundamentalAgent("AAPL", "YOUR_FMP_API_KEY", check_fmp_data=3)
-# result = agent.fundamental_main_analyze(open_price=150, close_price=155)
-# print(result)
+# # 룰 기반 사용
+# agent1 = FundamentalAgent("AAPL", "YOUR_FMP_API_KEY", check_years=3, use_llm=False)
+# print(agent1.fundamental_main_analyze(open_price=150, close_price=155))
+#
+# # LLM 사용
+# agent2 = FundamentalAgent("AAPL", "YOUR_FMP_API_KEY", check_years=3, use_llm=True)
+# print(agent2.fundamental_main_analyze(open_price=150, close_price=155))
