@@ -18,7 +18,7 @@ OPENAI_API_KEY = os.getenv("CAPSTONE_OPENAI_API")
 OPENAI_URL = "https://api.openai.com/v1/responses"
 UA = "Mozilla/5.0"  # User-Agent 헤더
 
-FMP_API_KEY = os.getenv("FMP_API_KEY")
+ALPHA_API_KEY = os.getenv("ALPHA_API_KEY")
 
 
 if __name__ == "__main__":
