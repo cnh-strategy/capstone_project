@@ -15,6 +15,8 @@ OPENAI_API_KEY = os.getenv("CAPSTONE_OPENAI_API")
 OPENAI_URL = "https://api.openai.com/v1/responses"
 UA = "Mozilla/5.0"  # User-Agent 헤더
 
+FMP_API_KEY = os.getenv("FMP_API_KEY")
+
 # 베이스 에이전트 클래스 정의
 class BaseAgent:
     def __init__(

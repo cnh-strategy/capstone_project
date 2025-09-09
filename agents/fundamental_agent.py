@@ -1,7 +1,13 @@
+import os
+from dotenv import load_dotenv
+
 import requests
 import yfinance as yf
 import json
-from .base_agent import BaseAgent   # BaseAgent 상속 (LLM 호출 포함)
+from base_agent import BaseAgent  # BaseAgent 상속 (LLM 호출 포함)
+
+# .env 파일 로드 (환경변수 로드)
+load_dotenv()
 
 class FundamentalAgent(BaseAgent):
     """
@@ -29,28 +35,35 @@ class FundamentalAgent(BaseAgent):
     def get_fmp_ratios(self, years):
         try:
             fmp_url = (
-                f"https://financialmodelingprep.com/api/v3/ratios/"
+                f"https://financialmodelingprep.com/api/v3/key-metrics/"
                 f"{self.ticker}?period=annual&limit={years}&apikey={self.fmp_api_key}"
             )
             fmp_datas = requests.get(fmp_url).json()
+            # 예외 처리: 응답이 dict 에러 메시지거나 str일 경우
+            if not isinstance(fmp_datas, list):
+                print(f"[get_fmp_ratios]Invalid response: {fmp_datas}")
+                return []
+
             return [
                 {
                     "year": fmp_data.get("date"),
-                    "pe": fmp_data.get("peRatio"),
-                    "pbr": fmp_data.get("priceToBookRatio"),
-                    "roe": fmp_data.get("returnOnEquity"),
-                    "eps": fmp_data.get("eps"),
+                    "pe": fmp_data.get("peRatio"),        # 동일
+                    "pbr": fmp_data.get("pbRatio"),       # key-metrics는 pbRatio
+                    "roe": fmp_data.get("roe"),           # key-metrics는 roe
+                    "eps": fmp_data.get("eps"),           # 그대로 eps
                 }
                 for fmp_data in fmp_datas
             ]
+
         except Exception as e:
             print(f"[get_fmp_ratios]Error: {e}")
 
     def get_yahoo_ratios(self, years: int):
         try:
             stock = yf.Ticker(self.ticker)
-            earnings = stock.earnings
-            if earnings is None or earnings.empty:
+            income_stmt = stock.income_stmt
+
+            if income_stmt is None or income_stmt.empty:
                 return []
 
             info = stock.info
@@ -60,13 +73,11 @@ class FundamentalAgent(BaseAgent):
             pbr = info.get("priceToBook")
 
             yahoo_result = []
-            for year in earnings.index[-years:]:
-                net_income = earnings.loc[year, "Earnings"]
-                revenue = earnings.loc[year, "Revenue"]
+            for year in income_stmt.columns[-years:]:
+                net_income = income_stmt.loc["Net Income", year]
                 eps = net_income / shares if shares else None
                 yahoo_result.append({
                     "year": str(year),
-                    "revenue": revenue,
                     "net_income": net_income,
                     "eps": eps,
                     "roe": roe,
@@ -76,6 +87,8 @@ class FundamentalAgent(BaseAgent):
             return yahoo_result
         except Exception as e:
             print(f"[get_yahoo_ratios]Error: {e}")
+            return []
+
 
     # -----------------------------
     # 보조 계산 (룰 기반)
@@ -191,10 +204,11 @@ class FundamentalAgent(BaseAgent):
 
 
 # 사용 예시
-# # 룰 기반 사용
-# agent1 = FundamentalAgent("AAPL", "YOUR_FMP_API_KEY", check_years=3, use_llm=False)
-# print(agent1.fundamental_main_analyze(open_price=150, close_price=155))
-#
-# # LLM 사용
-# agent2 = FundamentalAgent("AAPL", "YOUR_FMP_API_KEY", check_years=3, use_llm=True)
-# print(agent2.fundamental_main_analyze(open_price=150, close_price=155))
+# 룰 기반 사용
+FMP_API_KEY = os.getenv("FMP_API_KEY")
+agent1 = FundamentalAgent("AAPL", FMP_API_KEY, check_years=3, use_llm=False)
+print(agent1.fundamental_main_analyze(open_price=150, close_price=155))
+
+# LLM 사용
+agent2 = FundamentalAgent("AAPL", FMP_API_KEY, check_years=3, use_llm=True)
+print(agent2.fundamental_main_analyze(open_price=150, close_price=155))
