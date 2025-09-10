@@ -2,7 +2,7 @@ import requests
 import xml.etree.ElementTree as ET
 import yfinance as yf
 from datetime import datetime, timezone, timedelta
-from .base_agent import BaseAgent   # BaseAgent 상속
+from agents.base_agent import BaseAgent   # BaseAgent 상속
 
 class EventAgent(BaseAgent):
     """

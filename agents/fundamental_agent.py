@@ -3,7 +3,7 @@ import os
 import requests
 import yfinance as yf
 import json
-from base_agent import BaseAgent  # BaseAgent 상속 (LLM 호출 포함)
+from agents.base_agent import BaseAgent  # BaseAgent 상속 (LLM 호출 포함)
 
 
 class FundamentalAgent(BaseAgent):
@@ -19,12 +19,12 @@ class FundamentalAgent(BaseAgent):
     ** raw: Alpha Vantage 또는 Yahoo에서 직접 받아온 최근 3년치 재무 데이터 요약본
     """
 
-    def __init__(self, ticker: str, alpha_api_key: str, check_years: int = 3, use_llm: bool = False, **kwargs):
+    def __init__(self, alpha_api_key: str, check_years: int = 3, use_llm: bool = False, **kwargs):
         super().__init__(**kwargs)
-        self.ticker = ticker
         self.alpha_api_key = alpha_api_key
         self.check_years = check_years
         self.use_llm = use_llm
+        self.ticker = None
 
     # -----------------------------
     # Alpha Vantage (EPS 데이터)
@@ -135,7 +135,14 @@ class FundamentalAgent(BaseAgent):
     # -----------------------------
     # 메인 실행
     # -----------------------------
-    def fundamental_main_analyze(self, open_price: float, close_price: float) -> dict:
+    def run(self, ticker, open_price: float, close_price: float) :
+        """
+        :param ticker:
+        :param open_price: 장 시작 가격
+        :param close_price: 현재 시점 가격/전날 종가/당일 종가 등 상황별 입력
+        :return:
+        """
+        self.ticker = ticker
         try:
             alpha_data = self.get_alpha_ratios(self.check_years)
             yahoo_data = self.get_yahoo_ratios(self.check_years)
@@ -178,7 +185,8 @@ class FundamentalAgent(BaseAgent):
 
                 result = self._ask_with_fallback(msg_sys, msg_user, self.schema_obj)
                 buy, sell, reason = self._parse_result(result, decimals)
-                return {"llm": {"buy_price": buy, "sell_price": sell, "reason": reason, "raw": context}}
+                # return {"llm": {"buy_price": buy, "sell_price": sell, "reason": reason, "raw": context}}
+                return [buy, sell, reason]
 
             else:
                 alpha_sorted = sorted(alpha_data, key=lambda x: x["year"])
@@ -204,8 +212,8 @@ class FundamentalAgent(BaseAgent):
 
 # 사용 예시
 # ALPHA_API_KEY = os.getenv("ALPHA_API_KEY")
-# agent1 = FundamentalAgent("AAPL", ALPHA_API_KEY, check_years=3, use_llm=False)
-# print("LLM 미사용>> ", agent1.fundamental_main_analyze(open_price=150, close_price=155))
+# agent1 = FundamentalAgent(ALPHA_API_KEY, check_years=3, use_llm=False)
+# print("LLM 미사용>> ", agent1.run("AAPL", open_price=150, close_price=155))
 #
-# agent2 = FundamentalAgent("AAPL", ALPHA_API_KEY, check_years=3, use_llm=True)
-# print("LLM 사용>> ", agent2.fundamental_main_analyze(open_price=150, close_price=155))
+# agent2 = FundamentalAgent(ALPHA_API_KEY, check_years=3, use_llm=True)
+# print("LLM 사용>> ", agent2.run("AAPL",open_price=150, close_price=155))

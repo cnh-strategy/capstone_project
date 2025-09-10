@@ -1,5 +1,5 @@
 # BaseAgent 임포트
-from .base_agent import BaseAgent
+from agents.base_agent import BaseAgent
 
 # 필요라이브러리 임포트
 import os

@@ -1,11 +1,8 @@
 import os
-import time
 import json
 import requests
 import yfinance as yf
-from datetime import datetime
 from dotenv import load_dotenv
-from datetime import datetime, timezone
 
 # .env 파일 로드 (환경변수 로드)
 load_dotenv()
@@ -14,8 +11,6 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("CAPSTONE_OPENAI_API")
 OPENAI_URL = "https://api.openai.com/v1/responses"
 UA = "Mozilla/5.0"  # User-Agent 헤더
-
-ALPHA_API_KEY = os.getenv("ALPHA_API_KEY")
 
 # 베이스 에이전트 클래스 정의
 class BaseAgent:
