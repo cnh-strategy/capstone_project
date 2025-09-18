@@ -8,6 +8,9 @@ import pandas as pd
 import numpy as np
 from base_agent import BaseAgent  # BaseAgent 상속 (LLM 호출 포함)
 
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+
 # .env 파일 로드 (환경변수 로드)
 load_dotenv()
 
@@ -18,8 +21,8 @@ class FundamentalAgent(BaseAgent):
 
     - Input : ticker (예: 'AAPL', '005930.KQ')
     - Output: {
-        "fmp": { buy_price, sell_price, opinion, reason, raw },
-        "yahoo": { buy_price, sell_price, opinion, reason, raw }
+        "fmp": { buy_price, sell_price, opinion, reason, confidence, raw },
+        "yahoo": { buy_price, sell_price, opinion, reason, confidence, raw }
       }
     ** raw: FMP 또는 Yahoo에서 직접 받아온 최근 3년치 재무 데이터 요약본
     """
@@ -29,7 +32,7 @@ class FundamentalAgent(BaseAgent):
         self.ticker = ticker
         self.fmp_api_key = fmp_api_key
         self.check_years = check_years
-        self.use_llm = use_llm      # llm 사용 여부 결정
+        self.use_llm = use_llm
 
     # -----------------------------
     # 데이터 수집
@@ -94,16 +97,14 @@ class FundamentalAgent(BaseAgent):
             return []
 
     # -----------------------------
-    # 데이터 정제 및 검증
+    # 데이터 정제 및 교차 검증
     # -----------------------------
     def _clean_data(self, data_list: list[dict], key_fields: list[str]) -> list[dict]:
         """결측치 보완 (forward/backward fill), reliability 태깅"""
         df = pd.DataFrame(data_list)
-
-        # 결측치 보완
         df = df.fillna(method="ffill").fillna(method="bfill")
 
-        # reliability 태깅: 여전히 결측치가 있으면 low
+        # reliability 태깅
         df["reliability"] = df["reliability"].fillna("high")
         for col in key_fields:
             if col in df.columns:
@@ -127,7 +128,7 @@ class FundamentalAgent(BaseAgent):
         return fmp_df.to_dict(orient="records"), yahoo_df.to_dict(orient="records")
 
     # -----------------------------
-    # 보조 계산 (룰 기반)
+    # 보조 계산 (룰 + ML 기반)
     # -----------------------------
     def calculate_growth(self, eps_values: list) -> float:
         eps_values = [v for v in eps_values if v is not None]
@@ -140,8 +141,43 @@ class FundamentalAgent(BaseAgent):
         roe_values = [v for v in roe_values if v is not None]
         return sum(roe_values) / len(roe_values) if roe_values else 0
 
+    def _prepare_features(self, eps_values, roe_values, pe_latest, pbr_latest):
+        growth = self.calculate_growth(eps_values)
+        roe_avg = self.calculate_roe_avg(roe_values)
+        pe = pe_latest if pe_latest else 0
+        pbr = pbr_latest if pbr_latest else 0
+        return np.array([[growth, roe_avg, pe, pbr]])
+
+    def ml_predict(self, eps_values, roe_values, pe_latest, pbr_latest):
+        """RandomForest + XGBoost 앙상블 예측"""
+        X = self._prepare_features(eps_values, roe_values, pe_latest, pbr_latest)
+
+        # 예시용 더미 학습 (실제는 외부 학습 필요)
+        dummy_X = np.array([
+            [0.10, 0.15, 12, 1.5],  # Buy
+            [-0.02, 0.01, 35, 5],   # Sell
+            [0.03, 0.08, 20, 3],    # Hold
+        ])
+        dummy_y = np.array([2, 0, 1])  # 0=Sell,1=Hold,2=Buy
+
+        rf = RandomForestClassifier(n_estimators=10, random_state=42)
+        rf.fit(dummy_X, dummy_y)
+        xgb = XGBClassifier(n_estimators=10, max_depth=3, random_state=42, use_label_encoder=False, eval_metric="mlogloss")
+        xgb.fit(dummy_X, dummy_y)
+
+        proba_rf = rf.predict_proba(X)
+        proba_xgb = xgb.predict_proba(X)
+        proba_avg = (proba_rf + proba_xgb) / 2
+
+        pred_class = int(np.argmax(proba_avg))
+        confidence = float(np.max(proba_avg))
+
+        label_map = {0: "Sell", 1: "Hold", 2: "Buy"}
+        return label_map[pred_class], confidence
+
     def judge(self, eps_values, roe_values, pe_latest, pbr_latest, open_price, close_price):
         try:
+            # Rule 기반
             growth = self.calculate_growth(eps_values)
             roe_avg = self.calculate_roe_avg(roe_values)
 
@@ -149,22 +185,39 @@ class FundamentalAgent(BaseAgent):
                 opinion = "Buy"
                 buy_price = open_price
                 sell_price = close_price * 1.05
-                reason = f"EPS 성장률 {growth:.1%}, ROE 평균 {roe_avg:.1%}, PER {pe_latest:.1f}, PBR {pbr_latest:.1f} → 저평가 + 성장성 우수."
+                reason = f"[Rule] EPS {growth:.1%}, ROE {roe_avg:.1%}, PER {pe_latest:.1f}, PBR {pbr_latest:.1f} → 저평가 + 성장성 우수."
             elif (growth <= 0 or roe_avg <= 0.05 or (pe_latest and pe_latest >= 30) or (pbr_latest and pbr_latest >= 4)):
                 opinion = "Sell"
                 buy_price = open_price
                 sell_price = close_price * 0.95
-                reason = f"EPS 성장률 {growth:.1%}, ROE 평균 {roe_avg:.1%}, PER {pe_latest}, PBR {pbr_latest} → 성장/수익성 부족, 고평가 위험."
+                reason = f"[Rule] EPS {growth:.1%}, ROE {roe_avg:.1%}, PER {pe_latest}, PBR {pbr_latest} → 성장/수익성 부족, 고평가 위험."
             else:
                 opinion = "Hold"
                 buy_price = open_price
                 sell_price = close_price
-                reason = f"EPS 성장률 {growth:.1%}, ROE 평균 {roe_avg:.1%}, PER {pe_latest}, PBR {pbr_latest} → 일부 긍정적이나 확신 부족."
+                reason = f"[Rule] EPS {growth:.1%}, ROE {roe_avg:.1%}, PER {pe_latest}, PBR {pbr_latest} → 일부 긍정적이나 확신 부족."
 
-            return {"buy_price": buy_price, "sell_price": sell_price, "opinion": opinion, "reason": reason}
+            # ML 기반
+            ml_opinion, confidence = self.ml_predict(eps_values, roe_values, pe_latest, pbr_latest)
+            reason += f" [ML] 분류 결과={ml_opinion}, 신뢰도={confidence:.2f}"
+
+            # 최종 의견 조율
+            if opinion == ml_opinion:
+                final_opinion = opinion
+            else:
+                final_opinion = "Hold"
+                reason += " (Rule-ML 불일치 → Hold로 조정)"
+
+            return {
+                "buy_price": buy_price,
+                "sell_price": sell_price,
+                "opinion": final_opinion,
+                "reason": reason,
+                "confidence": confidence
+            }
         except Exception as e:
             print(f"[judge]Error: {e}")
-            return {"buy_price": None, "sell_price": None, "opinion": "Error", "reason": str(e)}
+            return {"buy_price": None, "sell_price": None, "opinion": "Error", "reason": str(e), "confidence": 0.0}
 
     # -----------------------------
     # 메인 실행
@@ -177,44 +230,31 @@ class FundamentalAgent(BaseAgent):
             if not fmp_data or not yahoo_data:
                 return {"fmp": {}, "yahoo": {}}
 
-            # 1. 데이터 정제
             fmp_data = self._clean_data(fmp_data, ["eps", "roe", "pe", "pbr"])
             yahoo_data = self._clean_data(yahoo_data, ["eps", "roe", "pe", "pbr"])
-
-            # 2. Cross-check
             fmp_data, yahoo_data = self._cross_check(fmp_data, yahoo_data, ["eps", "roe", "pe", "pbr"])
 
             if self.use_llm:
-                # 통화/자리수 자동 탐지
                 currency, decimals = self._detect_currency_and_decimals(self.ticker)
-
-                context = {
-                    "fmp": fmp_data,
-                    "yahoo": yahoo_data,
-                    "open_price": open_price,
-                    "close_price": close_price
-                }
+                context = {"fmp": fmp_data, "yahoo": yahoo_data, "open_price": open_price, "close_price": close_price}
 
                 msg_sys = {
                     "role": "system",
                     "content": (
                         "너는 전문 주식 애널리스트다. "
-                        "주어진 재무 데이터(FMP, Yahoo)와 현재 주가(open/close)를 기반으로 "
-                        "금일 기준 목표 매수/매도가를 산출한다. "
-                        "모든 출력은 JSON 형식으로만 반환해야 한다."
+                        "주어진 데이터(FMP, Yahoo)와 현재 주가(open/close)를 기반으로 "
+                        "목표 매수가/매도가를 산출한다. JSON만 반환."
                     )
                 }
-
                 msg_user = {
                     "role": "user",
                     "content": (
                         f"입력 데이터:\n{json.dumps(context, ensure_ascii=False)}\n\n"
                         "요구사항:\n"
-                        "1) buy_price(number): 오늘 기준 추천 매수가.\n"
-                        "2) sell_price(number): 오늘 기준 목표 매도가. 반드시 sell_price ≥ buy_price.\n"
-                        "3) reason(string): 4~5문장 한국어 설명. EPS 성장률, ROE, PER, PBR 및 데이터 출처(FMP/Yahoo)를 반영해라.\n"
-                        "4) JSON 객체만 반환. 여분의 텍스트 불가.\n"
-                        f"5) 통화 단위는 {currency}, 숫자는 소수점 {decimals}자리까지 반올림."
+                        "1) buy_price(number)\n"
+                        "2) sell_price(number, sell>=buy)\n"
+                        "3) reason(string, 한국어 4~5문장)\n"
+                        f"4) 통화 단위 {currency}, 소수점 {decimals}자리 반올림"
                     )
                 }
 
@@ -223,7 +263,6 @@ class FundamentalAgent(BaseAgent):
                 return {"llm": {"buy_price": buy, "sell_price": sell, "reason": reason, "raw": context}}
 
             else:
-                # 룰 기반 계산
                 fmp_sorted = sorted(fmp_data, key=lambda x: x["year"])
                 eps_fmp = [d["eps"] for d in fmp_sorted]
                 roe_fmp = [d["roe"] for d in fmp_sorted]
