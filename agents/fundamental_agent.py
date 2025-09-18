@@ -1,66 +1,63 @@
 import os
+from dotenv import load_dotenv
 
 import requests
 import yfinance as yf
 import json
-from agents.base_agent import BaseAgent  # BaseAgent 상속 (LLM 호출 포함)
+from base_agent import BaseAgent  # BaseAgent 상속 (LLM 호출 포함)
 
+# .env 파일 로드 (환경변수 로드)
+load_dotenv()
 
 class FundamentalAgent(BaseAgent):
     """
-    Alpha Vantage와 Yahoo Finance 데이터를 각각 활용하여
+    FMP(Financial Modeling Prep)와 Yahoo Finance 데이터를 각각 활용하여
     매수/매도 가격과 최종 투자의견(Buy/Hold/Sell)을 산출하는 에이전트.
 
     - Input : ticker (예: 'AAPL', '005930.KQ')
     - Output: {
-        "alpha": { buy_price, sell_price, opinion, reason, raw },
+        "fmp": { buy_price, sell_price, opinion, reason, raw },
         "yahoo": { buy_price, sell_price, opinion, reason, raw }
       }
-    ** raw: Alpha Vantage 또는 Yahoo에서 직접 받아온 최근 3년치 재무 데이터 요약본
+    ** raw: FMP 또는 Yahoo에서 직접 받아온 최근 3년치 재무 데이터 요약본
     """
 
-    def __init__(self, alpha_api_key: str, check_years: int = 3, use_llm: bool = False, **kwargs):
-        super().__init__(**kwargs)
-        self.alpha_api_key = alpha_api_key
+    def __init__(self, ticker: str, fmp_api_key: str, check_years: int = 3, use_llm: bool = False, **kwargs):
+        super().__init__(**kwargs)  # BaseAgent 초기화 (LLM 사용 가능)
+        self.ticker = ticker
+        self.fmp_api_key = fmp_api_key
         self.check_years = check_years
-        self.use_llm = use_llm
-        self.ticker = None
+        self.use_llm = use_llm      #llm 사용 혹은 미사용 결정 가능
 
     # -----------------------------
-    # Alpha Vantage (EPS 데이터)
+    # 데이터 수집
     # -----------------------------
-    def get_alpha_ratios(self, years):
+    def get_fmp_ratios(self, years):
         try:
-            url = (
-                f"https://www.alphavantage.co/query"
-                f"?function=EARNINGS&symbol={self.ticker}&apikey={self.alpha_api_key}"
+            fmp_url = (
+                f"https://financialmodelingprep.com/api/v3/key-metrics/"
+                f"{self.ticker}?period=annual&limit={years}&apikey={self.fmp_api_key}"
             )
-            data = requests.get(url).json()
-
-            if "annualEarnings" not in data:
-                print(f"[get_alpha_ratios]Invalid response: {data}")
+            fmp_datas = requests.get(fmp_url).json()
+            # 예외 처리: 응답이 dict 에러 메시지거나 str일 경우
+            if not isinstance(fmp_datas, list):
+                print(f"[get_fmp_ratios]Invalid response: {fmp_datas}")
                 return []
 
-            earnings = data["annualEarnings"][:years]
-            results = []
-            for item in earnings:
-                year = item.get("fiscalDateEnding", "")[:4]
-                eps = float(item.get("reportedEPS")) if item.get("reportedEPS") not in [None, "None"] else None
-                results.append({
-                    "year": year,
-                    "eps": eps,
-                    "pe": None,   # EPS만 제공 → PER/PBR/ROE는 Yahoo에서 보완
-                    "pbr": None,
-                    "roe": None,
-                })
-            return results
-        except Exception as e:
-            print(f"[get_alpha_ratios]Error: {e}")
-            return []
+            return [
+                {
+                    "year": fmp_data.get("date"),
+                    "pe": fmp_data.get("peRatio"),        # 동일
+                    "pbr": fmp_data.get("pbRatio"),       # key-metrics는 pbRatio
+                    "roe": fmp_data.get("roe"),           # key-metrics는 roe
+                    "eps": fmp_data.get("eps"),           # 그대로 eps
+                }
+                for fmp_data in fmp_datas
+            ]
 
-    # -----------------------------
-    # Yahoo Finance
-    # -----------------------------
+        except Exception as e:
+            print(f"[get_fmp_ratios]Error: {e}")
+
     def get_yahoo_ratios(self, years: int):
         try:
             stock = yf.Ticker(self.ticker)
@@ -91,6 +88,7 @@ class FundamentalAgent(BaseAgent):
         except Exception as e:
             print(f"[get_yahoo_ratios]Error: {e}")
             return []
+
 
     # -----------------------------
     # 보조 계산 (룰 기반)
@@ -132,29 +130,24 @@ class FundamentalAgent(BaseAgent):
             print(f"[judge]Error: {e}")
             return {"buy_price": None, "sell_price": None, "opinion": "Error", "reason": str(e)}
 
+
     # -----------------------------
     # 메인 실행
     # -----------------------------
-    def run(self, ticker, open_price: float, close_price: float) :
-        """
-        :param ticker:
-        :param open_price: 장 시작 가격
-        :param close_price: 현재 시점 가격/전날 종가/당일 종가 등 상황별 입력
-        :return:
-        """
-        self.ticker = ticker
+    def fundamental_main_analyze(self, open_price: float, close_price: float) -> dict:
         try:
-            alpha_data = self.get_alpha_ratios(self.check_years)
+            fmp_data = self.get_fmp_ratios(self.check_years)
             yahoo_data = self.get_yahoo_ratios(self.check_years)
 
-            if not alpha_data or not yahoo_data:
-                return {"alpha": {}, "yahoo": {}}
+            if not fmp_data or not yahoo_data:
+                return {"fmp": {}, "yahoo": {}}
 
             if self.use_llm:
+                # ★ 통화/자리수 자동 탐지 (BaseAgent 메서드 활용)
                 currency, decimals = self._detect_currency_and_decimals(self.ticker)
 
                 context = {
-                    "alpha": alpha_data,
+                    "fmp": fmp_data,
                     "yahoo": yahoo_data,
                     "open_price": open_price,
                     "close_price": close_price
@@ -164,7 +157,7 @@ class FundamentalAgent(BaseAgent):
                     "role": "system",
                     "content": (
                         "너는 전문 주식 애널리스트다. "
-                        "주어진 재무 데이터(Alpha Vantage, Yahoo)와 현재 주가(open/close)를 기반으로 "
+                        "주어진 재무 데이터(FMP, Yahoo)와 현재 주가(open/close)를 기반으로 "
                         "금일 기준 목표 매수/매도가를 산출한다. "
                         "모든 출력은 JSON 형식으로만 반환해야 한다."
                     )
@@ -177,7 +170,7 @@ class FundamentalAgent(BaseAgent):
                         "요구사항:\n"
                         "1) buy_price(number): 오늘 기준 추천 매수가. open_price와 close_price를 고려해 제시.\n"
                         "2) sell_price(number): 오늘 기준 목표 매도가. 반드시 sell_price ≥ buy_price.\n"
-                        "3) reason(string): 4~5문장 한국어 설명. EPS 성장률, ROE, PER, PBR 및 데이터 출처(Alpha/Yahoo)를 반영해라.\n"
+                        "3) reason(string): 4~5문장 한국어 설명. EPS 성장률, ROE, PER, PBR 및 데이터 출처(FMP/Yahoo)를 반영해라.\n"
                         "4) JSON 객체만 반환. 여분의 텍스트, 설명, 마크다운 불가.\n"
                         f"5) 통화 단위는 {currency}, 숫자는 소수점 {decimals}자리까지 반올림."
                     )
@@ -185,17 +178,16 @@ class FundamentalAgent(BaseAgent):
 
                 result = self._ask_with_fallback(msg_sys, msg_user, self.schema_obj)
                 buy, sell, reason = self._parse_result(result, decimals)
-                # return {"llm": {"buy_price": buy, "sell_price": sell, "reason": reason, "raw": context}}
-                return [buy, sell, reason]
+                return {"llm": {"buy_price": buy, "sell_price": sell, "reason": reason, "raw": context}}
 
             else:
-                alpha_sorted = sorted(alpha_data, key=lambda x: x["year"])
-                eps_alpha = [d["eps"] for d in alpha_sorted]
-                roe_alpha = [d["roe"] for d in alpha_sorted if d["roe"] is not None]
-                pe_alpha = alpha_sorted[-1].get("pe")
-                pbr_alpha = alpha_sorted[-1].get("pbr")
-                alpha_result = self.judge(eps_alpha, roe_alpha, pe_alpha, pbr_alpha, open_price, close_price)
-                alpha_result["raw"] = alpha_sorted
+                fmp_sorted = sorted(fmp_data, key=lambda x: x["year"])
+                eps_fmp = [d["eps"] for d in fmp_sorted]
+                roe_fmp = [d["roe"] for d in fmp_sorted]
+                pe_fmp = fmp_sorted[-1].get("pe")
+                pbr_fmp = fmp_sorted[-1].get("pbr")
+                fmp_result = self.judge(eps_fmp, roe_fmp, pe_fmp, pbr_fmp, open_price, close_price)
+                fmp_result["raw"] = fmp_sorted
 
                 eps_yahoo = [d["eps"] for d in yahoo_data]
                 roe_yahoo = [d["roe"] for d in yahoo_data if d["roe"] is not None]
@@ -204,16 +196,19 @@ class FundamentalAgent(BaseAgent):
                 yahoo_result = self.judge(eps_yahoo, roe_yahoo, pe_yahoo, pbr_yahoo, open_price, close_price)
                 yahoo_result["raw"] = yahoo_data
 
-                return {"alpha": alpha_result, "yahoo": yahoo_result}
+                return {"fmp": fmp_result, "yahoo": yahoo_result}
         except Exception as e:
             print(f"[fundamental_main_analyze]Error: {e}")
-            return {"alpha": {}, "yahoo": {}, "error": str(e)}
+            return {"fmp": {}, "yahoo": {}, "error": str(e)}
+
 
 
 # 사용 예시
-# ALPHA_API_KEY = os.getenv("ALPHA_API_KEY")
-# agent1 = FundamentalAgent(ALPHA_API_KEY, check_years=3, use_llm=False)
-# print("LLM 미사용>> ", agent1.run("AAPL", open_price=150, close_price=155))
-#
-# agent2 = FundamentalAgent(ALPHA_API_KEY, check_years=3, use_llm=True)
-# print("LLM 사용>> ", agent2.run("AAPL",open_price=150, close_price=155))
+# 룰 기반 사용
+FMP_API_KEY = os.getenv("FMP_API_KEY")
+agent1 = FundamentalAgent("AAPL", FMP_API_KEY, check_years=3, use_llm=False)
+print(agent1.fundamental_main_analyze(open_price=150, close_price=155))
+
+# LLM 사용
+agent2 = FundamentalAgent("AAPL", FMP_API_KEY, check_years=3, use_llm=True)
+print(agent2.fundamental_main_analyze(open_price=150, close_price=155))
