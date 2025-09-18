@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 import requests
 import yfinance as yf
 import json
+import pandas as pd
+import numpy as np
 from base_agent import BaseAgent  # BaseAgent 상속 (LLM 호출 포함)
 
 # .env 파일 로드 (환경변수 로드)
@@ -27,7 +29,7 @@ class FundamentalAgent(BaseAgent):
         self.ticker = ticker
         self.fmp_api_key = fmp_api_key
         self.check_years = check_years
-        self.use_llm = use_llm      #llm 사용 혹은 미사용 결정 가능
+        self.use_llm = use_llm      # llm 사용 여부 결정
 
     # -----------------------------
     # 데이터 수집
@@ -39,7 +41,6 @@ class FundamentalAgent(BaseAgent):
                 f"{self.ticker}?period=annual&limit={years}&apikey={self.fmp_api_key}"
             )
             fmp_datas = requests.get(fmp_url).json()
-            # 예외 처리: 응답이 dict 에러 메시지거나 str일 경우
             if not isinstance(fmp_datas, list):
                 print(f"[get_fmp_ratios]Invalid response: {fmp_datas}")
                 return []
@@ -47,16 +48,18 @@ class FundamentalAgent(BaseAgent):
             return [
                 {
                     "year": fmp_data.get("date"),
-                    "pe": fmp_data.get("peRatio"),        # 동일
-                    "pbr": fmp_data.get("pbRatio"),       # key-metrics는 pbRatio
-                    "roe": fmp_data.get("roe"),           # key-metrics는 roe
-                    "eps": fmp_data.get("eps"),           # 그대로 eps
+                    "pe": fmp_data.get("peRatio"),
+                    "pbr": fmp_data.get("pbRatio"),
+                    "roe": fmp_data.get("roe"),
+                    "eps": fmp_data.get("eps"),
+                    "reliability": "high"
                 }
                 for fmp_data in fmp_datas
             ]
 
         except Exception as e:
             print(f"[get_fmp_ratios]Error: {e}")
+            return []
 
     def get_yahoo_ratios(self, years: int):
         try:
@@ -82,13 +85,46 @@ class FundamentalAgent(BaseAgent):
                     "eps": eps,
                     "roe": roe,
                     "pe": pe,
-                    "pbr": pbr
+                    "pbr": pbr,
+                    "reliability": "high"
                 })
             return yahoo_result
         except Exception as e:
             print(f"[get_yahoo_ratios]Error: {e}")
             return []
 
+    # -----------------------------
+    # 데이터 정제 및 검증
+    # -----------------------------
+    def _clean_data(self, data_list: list[dict], key_fields: list[str]) -> list[dict]:
+        """결측치 보완 (forward/backward fill), reliability 태깅"""
+        df = pd.DataFrame(data_list)
+
+        # 결측치 보완
+        df = df.fillna(method="ffill").fillna(method="bfill")
+
+        # reliability 태깅: 여전히 결측치가 있으면 low
+        df["reliability"] = df["reliability"].fillna("high")
+        for col in key_fields:
+            if col in df.columns:
+                df.loc[df[col].isna(), "reliability"] = "low"
+
+        return df.to_dict(orient="records")
+
+    def _cross_check(self, fmp_data: list[dict], yahoo_data: list[dict], keys: list[str]) -> tuple[list[dict], list[dict]]:
+        """Yahoo와 FMP 지표 교차 검증, ±5% 이상 차이 나는 값은 제외 및 신뢰도 낮음 태깅"""
+        fmp_df, yahoo_df = pd.DataFrame(fmp_data), pd.DataFrame(yahoo_data)
+
+        for key in keys:
+            if key in fmp_df.columns and key in yahoo_df.columns:
+                diff = abs(fmp_df[key] - yahoo_df[key]) / (fmp_df[key].abs() + 1e-6)
+                mask = diff > 0.05
+                fmp_df.loc[mask, key] = np.nan
+                yahoo_df.loc[mask, key] = np.nan
+                fmp_df.loc[mask, "reliability"] = "low"
+                yahoo_df.loc[mask, "reliability"] = "low"
+
+        return fmp_df.to_dict(orient="records"), yahoo_df.to_dict(orient="records")
 
     # -----------------------------
     # 보조 계산 (룰 기반)
@@ -130,7 +166,6 @@ class FundamentalAgent(BaseAgent):
             print(f"[judge]Error: {e}")
             return {"buy_price": None, "sell_price": None, "opinion": "Error", "reason": str(e)}
 
-
     # -----------------------------
     # 메인 실행
     # -----------------------------
@@ -142,8 +177,15 @@ class FundamentalAgent(BaseAgent):
             if not fmp_data or not yahoo_data:
                 return {"fmp": {}, "yahoo": {}}
 
+            # 1. 데이터 정제
+            fmp_data = self._clean_data(fmp_data, ["eps", "roe", "pe", "pbr"])
+            yahoo_data = self._clean_data(yahoo_data, ["eps", "roe", "pe", "pbr"])
+
+            # 2. Cross-check
+            fmp_data, yahoo_data = self._cross_check(fmp_data, yahoo_data, ["eps", "roe", "pe", "pbr"])
+
             if self.use_llm:
-                # ★ 통화/자리수 자동 탐지 (BaseAgent 메서드 활용)
+                # 통화/자리수 자동 탐지
                 currency, decimals = self._detect_currency_and_decimals(self.ticker)
 
                 context = {
@@ -168,10 +210,10 @@ class FundamentalAgent(BaseAgent):
                     "content": (
                         f"입력 데이터:\n{json.dumps(context, ensure_ascii=False)}\n\n"
                         "요구사항:\n"
-                        "1) buy_price(number): 오늘 기준 추천 매수가. open_price와 close_price를 고려해 제시.\n"
+                        "1) buy_price(number): 오늘 기준 추천 매수가.\n"
                         "2) sell_price(number): 오늘 기준 목표 매도가. 반드시 sell_price ≥ buy_price.\n"
                         "3) reason(string): 4~5문장 한국어 설명. EPS 성장률, ROE, PER, PBR 및 데이터 출처(FMP/Yahoo)를 반영해라.\n"
-                        "4) JSON 객체만 반환. 여분의 텍스트, 설명, 마크다운 불가.\n"
+                        "4) JSON 객체만 반환. 여분의 텍스트 불가.\n"
                         f"5) 통화 단위는 {currency}, 숫자는 소수점 {decimals}자리까지 반올림."
                     )
                 }
@@ -181,6 +223,7 @@ class FundamentalAgent(BaseAgent):
                 return {"llm": {"buy_price": buy, "sell_price": sell, "reason": reason, "raw": context}}
 
             else:
+                # 룰 기반 계산
                 fmp_sorted = sorted(fmp_data, key=lambda x: x["year"])
                 eps_fmp = [d["eps"] for d in fmp_sorted]
                 roe_fmp = [d["roe"] for d in fmp_sorted]
@@ -202,13 +245,10 @@ class FundamentalAgent(BaseAgent):
             return {"fmp": {}, "yahoo": {}, "error": str(e)}
 
 
-
 # 사용 예시
-# 룰 기반 사용
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 agent1 = FundamentalAgent("AAPL", FMP_API_KEY, check_years=3, use_llm=False)
 print(agent1.fundamental_main_analyze(open_price=150, close_price=155))
 
-# LLM 사용
 agent2 = FundamentalAgent("AAPL", FMP_API_KEY, check_years=3, use_llm=True)
 print(agent2.fundamental_main_analyze(open_price=150, close_price=155))
