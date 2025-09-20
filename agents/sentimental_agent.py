@@ -1,199 +1,246 @@
-import requests
+import datetime
 import time
+import requests
+import pandas as pd
 import yfinance as yf
-from datetime import datetime, timezone
+import warnings
+import glob
+import re
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, accuracy_score, f1_score, precision_score, recall_score
+from transformers import pipeline
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+import os
+from dotenv import load_dotenv
 
-from agents.base_agent import BaseAgent  # BaseAgent 상속
+warnings.filterwarnings('ignore')
+load_dotenv()  # 현재 디렉토리의 .env 파일을 읽어 환경변수를 로드
 
-class SentimentalAgent(BaseAgent):
-    """
-    SentimentalAgent는 인터넷 커뮤니티(HackerNews/Reddit) 여론 + 가격 데이터를 기반으로
-    단기 매수/매도가를 예측하는 분석 에이전트
-    """
 
-    def __init__(self, hours: int = 24, max_posts: int = 100, **kwargs):
-        """
-        생성자
-        - hours: 몇 시간 내 게시글만 검색할지
-        - max_posts: 최대 가져올 게시글 개수
-        - kwargs: BaseAgent 공통 인자들
-        """
-        super().__init__(**kwargs)  # BaseAgent 초기화
-        self.hours = hours
-        self.max_posts = max_posts
+import nltk
+nltk.download('punkt')
 
-    # ---------- Public ----------
-    def run(self, ticker: str) -> list:
-        """
-        메인 실행 함수
-        1) 커뮤니티 글 수집
-        2) 최근 가격 스냅샷
-        3) context + 메시지 생성
-        4) GPT 요청 및 응답 파싱
-        5) 정합성 검사 및 보정
-        """
-        tkr = self._normalize_ticker(ticker)
+nltk.download
+nltk.download
 
-        # 1. 커뮤니티 글 수집
-        query = self._build_query(tkr)
-        posts = self._gather_posts(query)
+api_key = os.getenv('FINN_API_KEY')  # FINN_API_KEY 환경변수 가져오기
 
-        # 2. 최근 가격 스냅샷
-        price = self._get_price_snapshot(tkr)
 
-        # 3. context/message 생성
-        currency, decimals = self._detect_currency_and_decimals(tkr)
-        context = self._build_context(tkr, posts, price)
-        msg_sys, msg_user = self._build_messages(context, currency, decimals)
+nasdaq100_eng = {
+    "NVIDIA": "NVDA", "Microsoft": "MSFT", "Apple": "AAPL", "Alphabet Class C": "GOOG",
+    "Alphabet Class A": "GOOGL", "Amazon.com": "AMZN", "Meta Platforms": "META",
+    "Broadcom": "AVGO", "Tesla": "TSLA", "Netflix": "NFLX", "Costco Wholesale": "COST",
+    "Palantir Technologies Class A": "PLTR", "ASML Holding ADR": "ASML",
+    "T-Mobile US": "TMUS", "Cisco Systems": "CSCO", "Advanced Micro Devices": "AMD",
+    "AstraZeneca ADR": "AZN", "Linde": "LIN", "PepsiCo": "PEP", "AppLovin Class A": "APP",
+    "Intuit": "INTU", "Shopify": "SHOP", "Booking Holdings": "BKNG",
+    "Pinduoduo ADR": "PDD", "Qualcomm": "QCOM", "Texas Instruments": "TXN",
+    "Intuitive Surgical": "ISRG", "Micron Technology": "MU", "Amgen": "AMGN",
+    "Adobe": "ADBE", "Arm Holdings ADR": "ARM", "Gilead Sciences": "GILD",
+    "Honeywell International": "HON", "Lam Research": "LRCX", "Palo Alto Networks": "PANW",
+    "Applied Materials": "AMAT", "Comcast": "CMCSA", "Analog Devices": "ADI",
+    "KLA": "KLAC", "Automatic Data Processing": "ADP", "MercadoLibre": "MELI",
+    "Intel": "INTC", "Synopsys": "SNPS", "DoorDash": "DASH",
+    "CrowdStrike Holdings": "CRWD", "Vertex Pharmaceuticals": "VRTX",
+    "Cadence Design Systems": "CDNS", "Starbucks": "SBUX",
+    "Constellation Energy": "CEG", "MicroStrategy": "MSTR",
+    "O'Reilly Automotive": "ORLY", "Cintas": "CTAS", "Mondelez International": "MDLZ",
+    "Thomson Reuters": "TRI", "Airbnb": "ABNB", "Marriott International": "MAR",
+    "Autodesk": "ADSK", "PayPal Holdings": "PYPL", "Monster Beverage": "MNST",
+    "Workday": "WDAY", "Fortinet": "FTNT", "CSX": "CSX",
+    "Regeneron Pharmaceuticals": "REGN", "American Electric Power": "AEP",
+    "Marvell Technology": "MRVL", "Axon Enterprise": "AXON",
+    "NXP Semiconductors": "NXPI", "Roper Technologies": "ROP", "Fastenal": "FAST",
+    "IDEXX Laboratories": "IDXX", "PACCAR": "PCAR", "Datadog": "DDOG",
+    "Ross Stores": "ROST", "Paychex": "PAYX", "Atlassian": "TEAM", "Copart": "CPRT",
+    "Take-Two Interactive": "TTWO", "Baker Hughes": "BKR", "Zscaler": "ZS",
+    "Exelon": "EXC", "Xcel Energy": "XEL",
+    "Coca-Cola Europacific Partners": "CCEP", "Electronic Arts": "EA",
+    "Diamondback Energy": "FANG", "Verisk Analytics": "VRSK",
+    "Keurig Dr Pepper": "KDP", "CoStar Group": "CSGP", "Charter Communications": "CHTR",
+    "GE HealthCare Technologies": "GEHC", "Microchip Technology": "MCHP",
+    "Cognizant Technology Solutions": "CTSH", "Kraft Heinz": "KHC",
+    "Old Dominion Freight Line": "ODFL", "Dexcom": "DXCM",
+    "Warner Bros. Discovery": "WBD", "Trade Desk": "TTD", "CDW": "CDW",
+    "Biogen": "BIIB", "ON Semiconductor": "ON", "Lululemon Athletica": "LULU",
+    "GlobalFoundries": "GFS"
+}
 
-        # 4. GPT 호출 → 응답 파싱
-        result = self._ask_with_fallback(msg_sys, msg_user, self.schema_obj)
-        buy, sell, reason = self._parse_result(result, decimals)
+# --- 1. 뉴스 데이터 수집 ---
+today = datetime.date.today()
+one_year_ago = today - datetime.timedelta(days=365)
+today_str = today.strftime("%Y-%m-%d")
+one_year_ago_str = one_year_ago.strftime("%Y-%m-%d")
 
-        # 5. 정합성 검사 및 보정
-        if not self._sanity_check(buy, sell, price):
-            if self.reask_on_inconsistent:
-                msg_user2 = self._add_constraints(msg_user, price, decimals)
-                result = self._ask_with_fallback(msg_sys, msg_user2, self.schema_obj)
-                buy, sell, reason = self._parse_result(result, decimals)
-                if not self._sanity_check(buy, sell, price):
-                    buy, sell = self._clip_to_bounds(buy, sell, price, decimals)
-            else:
-                buy, sell = self._clip_to_bounds(buy, sell, price, decimals)
+all_news_data = []
+nasdaq_100_tickers = list(nasdaq100_eng.values())
 
-        return [buy, sell, reason]
+for ticker in nasdaq_100_tickers:
+    print(f"{ticker} 기업 뉴스 데이터 수집 중...")
+    url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from={one_year_ago_str}&to={today_str}&token={api_key}"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        news_data = response.json()
+        if news_data:
+            for news in news_data:
+                news['symbol'] = ticker
+            all_news_data.extend(news_data)
+        else:
+            print(f"  -> {ticker} 기업의 뉴스가 없습니다.")
+    except requests.exceptions.RequestException as e:
+        print(f"  -> HTTP 오류가 발생했습니다: {e}")
+        continue
+    time.sleep(0.5)
 
-    # ---------- Data Helpers ----------
-    def _build_query(self, ticker: str) -> str:
-        """
-        ticker에서 기업명 추출하여 검색 쿼리 생성
-        예: "AAPL" → "Apple OR AAPL"
-        """
-        try:
-            info = yf.Ticker(ticker).info
-            name = (info.get("shortName") or info.get("longName") or "").strip()
-        except Exception:
-            name = ""
-        if name and name.lower() != ticker.lower():
-            return f"{name} OR {ticker}"
-        return ticker
+news_df = pd.DataFrame(all_news_data)
+if not news_df.empty:
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_file_name = f"finnhub_nasdaq100_news_{timestamp}.csv"
+    news_df.to_csv(csv_file_name, index=False, encoding='utf-8-sig')
+    print(f"\n뉴스 데이터 수집 완료! 총 {len(news_df)}건을 {csv_file_name}에 저장했습니다.")
+else:
+    print("\n뉴스 데이터 수집 실패: 데이터가 없습니다.")
 
-    def _since_ts(self) -> int:
-        """
-        몇 시간 전 timestamp를 반환
-        HackerNews/Reddit 검색 시 사용
-        """
-        return int(time.time() - self.hours * 3600)
+# --- 2. 주가 데이터 수집 ---
+all_stock_data = []
+for ticker in nasdaq_100_tickers:
+    print(f"{ticker} 주가 데이터 수집 중...")
+    data = yf.download(ticker, start=one_year_ago, end=today, auto_adjust=True, progress=False)
+    if data.empty:
+        print(f"  -> 경고: {ticker}에 대한 데이터가 없습니다.")
+        continue
+    data = data.reset_index()
+    data['symbol'] = ticker
+    data = data.rename(columns={
+        'Date': 'date', 'Open': 'open', 'High': 'high',
+        'Low': 'low', 'Close': 'close', 'Volume': 'volume'
+    })
+    data['date'] = pd.to_datetime(data['date']).dt.date
+    data = data[['symbol', 'date', 'open', 'high', 'low', 'close', 'volume']]
+    all_stock_data.append(data)
 
-    def _fetch_hn(self, query: str) -> list:
-        """
-        HackerNews에서 최근 글 검색
-        """
-        url = "https://hn.algolia.com/api/v1/search"
-        params = {
-            "query": query,
-            "tags": "story",
-            "numericFilters": f"created_at_i>{self._since_ts()}",
-            "hitsPerPage": self.max_posts
-        }
-        r = requests.get(url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
-        r.raise_for_status()
-        items = []
-        for h in r.json().get("hits", []):
-            items.append({
-                "source": "HackerNews",
-                "title": h.get("title") or "",
-                "text": (h.get("title") or "") + " " + (h.get("story_text") or ""),
-                "url": h.get("url") or f"https://news.ycombinator.com/item?id={h.get('objectID')}",
-                "score": h.get("points") or 0,
-                "created_at": h.get("created_at") or ""
-            })
-        return items
+if all_stock_data:
+    stock_df = pd.concat(all_stock_data, ignore_index=True)
+    stock_df.to_csv("nasdaq100_stock_data.csv", index=False, encoding='utf-8-sig')
+    print(f"\n주가 데이터 수집 완료! 총 {len(stock_df)}건을 nasdaq100_stock_data.csv에 저장했습니다.")
+else:
+    print("\n주가 데이터 수집 실패: 데이터가 없습니다.")
 
-    def _fetch_reddit(self, query: str) -> list:
-        """
-        Reddit에서 최근 글 검색
-        """
-        url = "https://www.reddit.com/search.json"
-        params = {"q": query, "t": "day", "limit": str(self.max_posts), "sort": "new"}
-        try:
-            r = requests.get(url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
-            if not r.ok:
-                return []
-            data = r.json()
-        except Exception:
-            return []
-        items = []
-        for c in data.get("data", {}).get("children", []):
-            d = c.get("data", {})
-            items.append({
-                "source": "Reddit",
-                "title": d.get("title") or "",
-                "text": (d.get("selftext") or "")[:1000],
-                "url": "https://www.reddit.com" + (d.get("permalink") or ""),
-                "score": d.get("score") or 0,
-                "created_at": datetime.fromtimestamp(d.get("created_utc", 0)).isoformat()
-            })
-        return items
+# --- 3. 데이터 전처리 및 모델 학습 (당일+전일 뉴스 병합) ---
+try:
+    news_file_path = glob.glob('finnhub_nasdaq100_news_*.csv')[-1]
+    news_df = pd.read_csv(news_file_path)
+    stock_df = pd.read_csv('nasdaq100_stock_data.csv')
+    print("\n--- 데이터 로드 완료 ---")
+    print("뉴스 데이터:", news_df.shape)
+    print("주가 데이터:", stock_df.shape)
+except IndexError:
+    print("\n오류: 데이터 파일이 존재하지 않습니다. 먼저 데이터 수집 코드를 실행해주세요.")
+    exit()
 
-    def _gather_posts(self, query: str) -> list:
-        """
-        HackerNews + Reddit 글 수집 후 통합
-        - 점수/최신순 정렬
-        - 중복 제거
-        """
-        posts = []
-        try: posts += self._fetch_hn(query)
-        except Exception: pass
-        try: posts += self._fetch_reddit(query)
-        except Exception: pass
+# 뉴스 데이터 전처리
+news_df['date'] = pd.to_datetime(news_df['datetime'], unit='s').dt.date
+news_df['headline_summary'] = news_df['headline'].fillna('') + ' ' + news_df['summary'].fillna('')
 
-        # 점수/최신 우선 정렬
-        posts = sorted(posts, key=lambda x: (x["score"], x["created_at"]), reverse=True)
+positive_words = ['growth', 'strong', 'increase', 'profit', 'gain', 'rise', 'up', 'boost', 'expand', 'win', 'success']
+negative_words = ['decline', 'loss', 'down', 'fail', 'drop', 'cut', 'reduce', 'miss', 'slump', 'crisis']
 
-        # 중복 제거
-        seen, uniq = set(), []
-        for p in posts:
-            key = p["url"] or p["title"]
-            if key in seen: continue
-            seen.add(key); uniq.append(p)
-            if len(uniq) >= self.max_posts:
-                break
-        return uniq
+def get_keyword_sentiment(text):
+    text = re.sub(r'[^a-zA-Z\s]', '', text.lower())
+    words = word_tokenize(text)
+    filtered_words = [word for word in words if word not in stopwords.words('english')]
+    pos_score = sum(1 for word in filtered_words if word in positive_words)
+    neg_score = sum(1 for word in filtered_words if word in negative_words)
+    return pos_score - neg_score
 
-    # ---------- Context / Prompt ----------
-    def _build_context(self, ticker: str, posts: list, price: dict) -> str:
-        """
-        수집한 커뮤니티 글 + 가격 스냅샷을 context 문자열로 합치기
-        """
-        lines = [f"[TICKER] {ticker}", f"[PRICE_SNAPSHOT] {price}"]
-        for p in posts:
-            line = f"- ({p['source']}) {p['title']} :: {p['text']} (url: {p['url']})"
-            lines.append(line)
-            if sum(len(x) for x in lines) > 7000:  # 최대 길이 제한
-                break
-        return "\n".join(lines)
+print("LLM 기반 감성 분석기 로딩 중...")
+try:
+    sentiment_analyzer = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english", framework="pt")
+    def get_llm_sentiment(text):
+        result = sentiment_analyzer(text[:512])
+        if result[0]['label'] == 'POSITIVE':
+            return result[0]['score']
+        else:
+            return -result[0]['score']
+except Exception as e:
+    print(f"LLM 모델 로딩 또는 실행 오류: {e}. LLM 기반 감성 분석을 건너뜁니다.")
+    def get_llm_sentiment(text):
+        return 0
 
-    def _build_messages(self, context: str, currency: str, decimals: int) -> tuple[dict, dict]:
-        """
-        GPT에 보낼 system/user 메시지 구성
-        """
-        sys = (
-            "너는 인터넷 커뮤니티 여론과 최근 가격 데이터를 바탕으로 "
-            "다음 거래일의 목표 매수/매도가를 제시하는 애널리스트다. "
-            "매수 목표액 도달시 구매, 매도 목표액 도달시 판매, 매도 목표액 미도달시 종가에 전부 판매한다"
-            "수익을 극대화 할 수 있도록 매수/매도가를 제시해라"
-            f"통화는 {currency}, 숫자는 소수 {decimals}자리로 제시한다. "
-            "근거 수치와 예측 수치가 논리적으로 일치해야 한다. "
-            "결과는 JSON 객체로만 반환한다."
-        )
-        user = (
-            "입력값: 커뮤니티 글 요약 + 최근 3개월 가격 스냅샷\n"
-            "요구사항:\n"
-            "1) buy_price(number), sell_price(number) 예측 (금일 목표)\n"
-            "2) reason(string) 4~5문장 (출처 요지 포함)\n"
-            "3) JSON 객체만 반환\n"
-            "4) 한국말 설명\n\n"
-            f"{context}"
-        )
-        return {"role": "system", "content": sys}, {"role": "user", "content": user}
+news_df['keyword_sentiment'] = news_df['headline_summary'].apply(get_keyword_sentiment)
+news_df['llm_sentiment'] = news_df['headline_summary'].apply(get_llm_sentiment)
+
+# 날짜 포맷 정리
+news_df['date'] = pd.to_datetime(news_df['date'])
+stock_df['date'] = pd.to_datetime(stock_df['date'])
+
+# 종가/타겟 생성
+stock_df['close'] = pd.to_numeric(stock_df['close'], errors='coerce')
+stock_df.dropna(subset=['close'], inplace=True)
+stock_df.sort_values(by=['symbol', 'date'], inplace=True)
+stock_df['target'] = (stock_df.groupby('symbol')['close'].shift(-1) > stock_df['close']).astype(int)
+stock_df.dropna(subset=['target'], inplace=True)
+
+stock_min = stock_df[['symbol', 'date', 'close', 'target']]
+
+# --- 당일+전일 뉴스 감성 feature 집계 ---
+# 전일 뉴스 데이터 복사 (date +1)
+prev_news_df = news_df.copy()
+prev_news_df['date'] = prev_news_df['date'] + pd.Timedelta(days=1)
+
+news_all = pd.concat([news_df, prev_news_df], axis=0)
+news_all = news_all.groupby(['symbol', 'date']).agg({
+    'headline_summary': ' '.join,
+    'keyword_sentiment': 'sum',
+    'llm_sentiment': 'sum'
+}).reset_index()
+
+# 병합: 각 거래일에 대해 당일+전일 뉴스 감성 feature 적용
+merged_df = pd.merge(
+    stock_min, news_all,
+    how='left',
+    left_on=['symbol', 'date'],
+    right_on=['symbol', 'date']
+)
+
+# 결측치 처리(뉴스 없는 거래일에는 0)
+for col in ['keyword_sentiment', 'llm_sentiment']:
+    merged_df[col] = merged_df[col].fillna(0)
+
+print(f"\n병합 완료: {merged_df.shape}")
+print(merged_df[['symbol', 'date', 'headline_summary', 'keyword_sentiment', 'llm_sentiment', 'close', 'target']].head())
+
+# 머신러닝 분류 모델 학습 및 평가 예시
+features = ['keyword_sentiment', 'llm_sentiment']
+X = merged_df[features]
+y = merged_df['target']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2, random_state=42)
+model = RandomForestClassifier(n_estimators=100, random_state=42)
+model.fit(X_train, y_train)
+
+y_pred = model.predict(X_test)
+print("분류 정확도:", accuracy_score(y_test, y_pred))
+print("분류 보고서:")
+print(classification_report(y_test, y_pred))
+
+# 정확도
+accuracy = accuracy_score(y_test, y_pred)
+# 정밀도 (positive 클래스에 대해)
+precision = precision_score(y_test, y_pred)
+# 재현율 (positive 클래스에 대해)
+recall = recall_score(y_test, y_pred)
+# F1 스코어 (precision과 recall의 조화평균)
+f1 = f1_score(y_test, y_pred)
+
+print(f"분류 정확도: {accuracy:.4f}")
+print(f"정밀도(Precision): {precision:.4f}")
+print(f"재현율(Recall): {recall:.4f}")
+print(f"F1 스코어: {f1:.4f}")
+
+print("\n분류 보고서2:")
+print(classification_report(y_test, y_pred))
