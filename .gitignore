@@ -22,3 +22,4 @@ __pycache__/
 # 시스템 파일
 .DS_Store
 Thumbs.db
+/test_for_capstone/
