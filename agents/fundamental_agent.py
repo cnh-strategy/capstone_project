@@ -1,6 +1,7 @@
 import os
 from datetime import date
 
+import numpy as np
 import requests
 import yfinance as yf
 import pandas as pd
@@ -43,12 +44,12 @@ class FundamentalAgent(BaseAgent):
         self.one_year_ago = today - relativedelta(years=1)
         self.one_year_ago_str = self.one_year_ago.strftime("%Y-%m-%d")
 
+        self.variance_history = []  # 최근 분산값들을 기록
+
     # =========================================================
     # (A) LightGBM 기반 예측에 필요한 데이터 수집
     # =========================================================
     def get_market_data(self, ref_date: str):
-
-
         tickers = {
             "NASDAQ": "^IXIC",
             "S&P500": "^GSPC",
@@ -204,10 +205,41 @@ class FundamentalAgent(BaseAgent):
         technicals = self.get_technicals(self.ticker, ref_date)   #테크니컬 데이터.. 이평선 등
         fundamentals = self.get_latest_fundamentals()   #재무제표 데이터
 
-        # 모델 사용을 위해 피쳐 생성
+        # 피쳐 생성
         feature_vector = self._prepare_features(fundamentals, market, technicals, self.ticker)
+
+        # LightGBM 예측 (각 트리별 출력 얻기)
+        # 메인 예측값
         pred_price = float(self.lgbm_booster.predict(feature_vector)[0])
-        return pred_price
+
+        # (2) 트리별 예측값 추출
+        tree_preds = self.lgbm_booster.predict(
+            feature_vector,
+            pred_leaf=False,
+            pred_contrib=False,
+            raw_score=False,
+            num_iteration=-1
+        )
+        var = np.var(tree_preds)
+
+        # (3) 분산 기록 (히스토리 관리)
+        self.variance_history.append(var)
+        if len(self.variance_history) > 100:  # 최근 100개만 유지
+            self.variance_history.pop(0)
+
+        # (4) min-max scaling
+        min_var = min(self.variance_history)
+        max_var = max(self.variance_history)
+        if max_var == min_var:  # 안정성 처리
+            confidence = 0.5
+        else:
+            confidence = 1 - (var - min_var) / (max_var - min_var)
+            confidence = float(np.clip(confidence, 0, 1))
+
+        return {
+                "pred_price": pred_price,
+                "confidence": confidence
+                }
 
 
 if __name__ == "__main__":
