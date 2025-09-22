@@ -1,11 +1,8 @@
 import os
-import time
 import json
 import requests
 import yfinance as yf
-from datetime import datetime
 from dotenv import load_dotenv
-from datetime import datetime, timezone
 
 # .env 파일 로드 (환경변수 로드)
 load_dotenv()

@@ -3,7 +3,7 @@ import json
 import requests
 import statistics
 from typing import List, Tuple, Union, Optional
-from .base_agent import BaseAgent   # BaseAgent 상속
+from agents.base_agent import BaseAgent   # BaseAgent 상속
 
 class StrategyAgent(BaseAgent):
     """
