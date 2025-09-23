@@ -1,199 +1,222 @@
-import requests
-import time
+import json
+import numpy as np
+import pandas as pd
 import yfinance as yf
-from datetime import datetime, timezone
-
-from agents.base_agent import BaseAgent  # BaseAgent 상속
-
+from agents.base_agent import BaseAgent, Target, Opinion, Rebuttal, RoundLog, StockData
+from typing import Dict, List, Optional, Literal, Tuple
 class SentimentalAgent(BaseAgent):
-    """
-    SentimentalAgent는 인터넷 커뮤니티(HackerNews/Reddit) 여론 + 가격 데이터를 기반으로
-    단기 매수/매도가를 예측하는 분석 에이전트
-    """
+    # ------------------------------------------------------------------
+    # 1) 데이터 수집: 티커 기준 시세를 내려받아 기술적 신호를 계산
+    #    - 반환 포맷은 프로젝트 공용 StockData(dataclass) 사용
+    # ------------------------------------------------------------------
+    def searcher(self, ticker: str) -> StockData:
+        t = self._normalize_ticker(ticker)
+        self._p(f"[searcher] {t}")
 
-    def __init__(self, hours: int = 24, max_posts: int = 100, **kwargs):
-        """
-        생성자
-        - hours: 몇 시간 내 게시글만 검색할지
-        - max_posts: 최대 가져올 게시글 개수
-        - kwargs: BaseAgent 공통 인자들
-        """
-        super().__init__(**kwargs)  # BaseAgent 초기화
-        self.hours = hours
-        self.max_posts = max_posts
+        # 최근 3개월, 1일봉 다운로드 (배당/액면 등 auto_adjust=False 원시가 유지)
+        df = yf.download(t, period="3mo", interval="1d", progress=False, auto_adjust=False)
+        if df is None or df.empty:
+            raise RuntimeError(f"가격 데이터를 불러오지 못했습니다: {t}")
+        df = df.dropna().copy()
 
-    # ---------- Public ----------
-    def run(self, ticker: str) -> list:
-        """
-        메인 실행 함수
-        1) 커뮤니티 글 수집
-        2) 최근 가격 스냅샷
-        3) context + 메시지 생성
-        4) GPT 요청 및 응답 파싱
-        5) 정합성 검사 및 보정
-        """
-        tkr = self._normalize_ticker(ticker)
+        # --- 기본 신호들 계산 ---
+        # 모멘텀: 5/20일 수익률
+        df["mom_5"]  = df["Close"] / df["Close"].shift(5)  - 1
+        df["mom_20"] = df["Close"] / df["Close"].shift(20) - 1
+        # RSI(14)
+        df["rsi_14"] = self._rsi(df["Close"], 14)
+        # 거래량 정규화(20일 평균 대비 배수, 이상값 클리핑)
+        df["vol_norm20"] = (df["Volume"] / df["Volume"].rolling(20).mean()).clip(0, 5)
+        df = df.dropna()
 
-        # 1. 커뮤니티 글 수집
-        query = self._build_query(tkr)
-        posts = self._gather_posts(query)
+        # FutureWarning 방지: iloc[-1] → .item()으로 스칼라화
+        last_close = float(df["Close"].iloc[-1].item())
+        ccy, _ = self._detect_currency_and_decimals(t)
 
-        # 2. 최근 가격 스냅샷
-        price = self._get_price_snapshot(tkr)
+        # 마지막 컨텍스트(디버깅/프롬프트용)
+        self._last_df = df
+        self._last_ticker = t
 
-        # 3. context/message 생성
-        currency, decimals = self._detect_currency_and_decimals(tkr)
-        context = self._build_context(tkr, posts, price)
-        msg_sys, msg_user = self._build_messages(context, currency, decimals)
+        # StockData(공용 포맷)로 반환
+        return StockData(
+            sentimental={},  # TODO: 감성 점수 주입 예정
+            fundamental={},  # TODO: 재무 요약 주입 예정
+            technical={
+                "mom_5":      float(df["mom_5"].iloc[-1]),
+                "mom_20":     float(df["mom_20"].iloc[-1]),
+                "rsi_14":     float(df["rsi_14"].iloc[-1]),
+                "vol_norm20": float(df["vol_norm20"].iloc[-1]),
+            },
+            last_price=last_close,
+            currency=ccy
+        )
 
-        # 4. GPT 호출 → 응답 파싱
-        result = self._ask_with_fallback(msg_sys, msg_user, self.schema_obj)
-        buy, sell, reason = self._parse_result(result, decimals)
+    # ------------------------------------------------------------------
+    # 2) 1차 예측: 간단한 규칙으로 next_close 산출(Target)
+    #    - 모멘텀, RSI를 조합해 기대수익률을 계산 후 클리핑
+    # ------------------------------------------------------------------
+    def predicter(self, stock_data: StockData) -> Target:
+        sig  = stock_data.technical
+        last = float(stock_data.last_price or 0.0)
 
-        # 5. 정합성 검사 및 보정
-        if not self._sanity_check(buy, sell, price):
-            if self.reask_on_inconsistent:
-                msg_user2 = self._add_constraints(msg_user, price, decimals)
-                result = self._ask_with_fallback(msg_sys, msg_user2, self.schema_obj)
-                buy, sell, reason = self._parse_result(result, decimals)
-                if not self._sanity_check(buy, sell, price):
-                    buy, sell = self._clip_to_bounds(buy, sell, price, decimals)
-            else:
-                buy, sell = self._clip_to_bounds(buy, sell, price, decimals)
+        momentum = 0.6 * sig.get("mom_5", 0.0) + 0.4 * sig.get("mom_20", 0.0)
+        rsi      = float(sig.get("rsi_14", 50.0))
+        rsi_adj  = 0.5 if rsi > 70 else (1.5 if rsi < 30 else 1.0)  # 과매수/과매도 가중
 
-        return [buy, sell, reason]
+        k = 0.5  # 민감도
+        expected_return = float(np.clip(k * momentum * rsi_adj, -0.05, 0.05))  # ±5% 제한
+        decimals = 0 if (stock_data.currency or "KRW").upper() in ("KRW", "JPY") else 2
+        next_close = round(last * (1 + expected_return), decimals)
 
-    # ---------- Data Helpers ----------
-    def _build_query(self, ticker: str) -> str:
-        """
-        ticker에서 기업명 추출하여 검색 쿼리 생성
-        예: "AAPL" → "Apple OR AAPL"
-        """
-        try:
-            info = yf.Ticker(ticker).info
-            name = (info.get("shortName") or info.get("longName") or "").strip()
-        except Exception:
-            name = ""
-        if name and name.lower() != ticker.lower():
-            return f"{name} OR {ticker}"
-        return ticker
+        self._p(f"[predicter] last={last:.4f}, mom={momentum:.4f}, rsi={rsi:.1f} → next={next_close}")
+        return Target(next_close=next_close)
 
-    def _since_ts(self) -> int:
-        """
-        몇 시간 전 timestamp를 반환
-        HackerNews/Reddit 검색 시 사용
-        """
-        return int(time.time() - self.hours * 3600)
+    # ------------------------------------------------------------------
+    # 3) LLM 메시지 빌드(Opinion): 다음날 종가와 근거를 JSON으로 요구
+    #    - 시스템: 역할/출력형식 고정
+    #    - 사용자: 컨텍스트(JSON 직렬화 가능 타입만)
+    # ------------------------------------------------------------------
+    def _build_messages_opinion(self, stock_data: StockData, target: Target) -> tuple[str, str]:
+        t = getattr(self, "_last_ticker", "UNKNOWN")
+        ccy = (stock_data.currency or "KRW").upper()
+        decimals = 0 if ccy in ("KRW", "JPY") else 2
 
-    def _fetch_hn(self, query: str) -> list:
-        """
-        HackerNews에서 최근 글 검색
-        """
-        url = "https://hn.algolia.com/api/v1/search"
-        params = {
-            "query": query,
-            "tags": "story",
-            "numericFilters": f"created_at_i>{self._since_ts()}",
-            "hitsPerPage": self.max_posts
+        system_text = (
+            "너는 주식 애널리스트다. 입력된 신호(모멘텀/RSI/거래량)와 최근 종가를 바탕으로 "
+            "다음 거래일 종가(next_close)에 대한 근거(reason)를 한국어 4~5문장으로 작성한다. "
+            "반환은 JSON(next_close:number, reason:string)만 허용한다."
+        )
+        # ⚠️ JSON 직렬화 가능한 원시 타입만 사용
+        ctx = {
+            "ticker": t,
+            "currency": ccy,
+            "last_close": float(stock_data.last_price or 0.0),
+            "signals": {k: float(v) for k, v in (stock_data.technical or {}).items()},
+            "our_prediction": float(target.next_close),
+            "format_rule": f"숫자는 소수 {decimals}자리, 통화 {ccy}"
         }
-        r = requests.get(url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
-        r.raise_for_status()
-        items = []
-        for h in r.json().get("hits", []):
-            items.append({
-                "source": "HackerNews",
-                "title": h.get("title") or "",
-                "text": (h.get("title") or "") + " " + (h.get("story_text") or ""),
-                "url": h.get("url") or f"https://news.ycombinator.com/item?id={h.get('objectID')}",
-                "score": h.get("points") or 0,
-                "created_at": h.get("created_at") or ""
-            })
-        return items
+        user_text = "아래 컨텍스트를 참고하여 next_close와 reason을 JSON으로만 반환해라.\n" + json.dumps(ctx, ensure_ascii=False)
+        return system_text, user_text
 
-    def _fetch_reddit(self, query: str) -> list:
-        """
-        Reddit에서 최근 글 검색
-        """
-        url = "https://www.reddit.com/search.json"
-        params = {"q": query, "t": "day", "limit": str(self.max_posts), "sort": "new"}
-        try:
-            r = requests.get(url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
-            if not r.ok:
-                return []
-            data = r.json()
-        except Exception:
-            return []
-        items = []
-        for c in data.get("data", {}).get("children", []):
-            d = c.get("data", {})
-            items.append({
-                "source": "Reddit",
-                "title": d.get("title") or "",
-                "text": (d.get("selftext") or "")[:1000],
-                "url": "https://www.reddit.com" + (d.get("permalink") or ""),
-                "score": d.get("score") or 0,
-                "created_at": datetime.fromtimestamp(d.get("created_utc", 0)).isoformat()
-            })
-        return items
+    # ------------------------------------------------------------------
+    # 4) LLM 메시지 빌드(Rebuttal): 내/상대 의견 비교 → REBUT/SUPPORT + message
+    #    - 시스템: 출력키는 'stance'와 'message' (스키마와 일치)
+    #    - 사용자: 숫자는 float로, 텍스트는 문자열로 제한
+    # ------------------------------------------------------------------
+    def _build_messages_rebuttal(self,
+                                 my_opinion: Opinion,
+                                 target_agent: str,
+                                 target_opinion: Opinion,
+                                 stock_data: StockData) -> tuple[str, str]:
 
-    def _gather_posts(self, query: str) -> list:
-        """
-        HackerNews + Reddit 글 수집 후 통합
-        - 점수/최신순 정렬
-        - 중복 제거
-        """
-        posts = []
-        try: posts += self._fetch_hn(query)
-        except Exception: pass
-        try: posts += self._fetch_reddit(query)
-        except Exception: pass
+        t = getattr(self, "_last_ticker", "UNKNOWN")
+        ccy = (stock_data.currency or "KRW").upper()
+        decimals = 0 if ccy in ("KRW", "JPY") else 2
 
-        # 점수/최신 우선 정렬
-        posts = sorted(posts, key=lambda x: (x["score"], x["created_at"]), reverse=True)
-
-        # 중복 제거
-        seen, uniq = set(), []
-        for p in posts:
-            key = p["url"] or p["title"]
-            if key in seen: continue
-            seen.add(key); uniq.append(p)
-            if len(uniq) >= self.max_posts:
-                break
-        return uniq
-
-    # ---------- Context / Prompt ----------
-    def _build_context(self, ticker: str, posts: list, price: dict) -> str:
-        """
-        수집한 커뮤니티 글 + 가격 스냅샷을 context 문자열로 합치기
-        """
-        lines = [f"[TICKER] {ticker}", f"[PRICE_SNAPSHOT] {price}"]
-        for p in posts:
-            line = f"- ({p['source']}) {p['title']} :: {p['text']} (url: {p['url']})"
-            lines.append(line)
-            if sum(len(x) for x in lines) > 7000:  # 최대 길이 제한
-                break
-        return "\n".join(lines)
-
-    def _build_messages(self, context: str, currency: str, decimals: int) -> tuple[dict, dict]:
-        """
-        GPT에 보낼 system/user 메시지 구성
-        """
-        sys = (
-            "너는 인터넷 커뮤니티 여론과 최근 가격 데이터를 바탕으로 "
-            "다음 거래일의 목표 매수/매도가를 제시하는 애널리스트다. "
-            "매수 목표액 도달시 구매, 매도 목표액 도달시 판매, 매도 목표액 미도달시 종가에 전부 판매한다"
-            "수익을 극대화 할 수 있도록 매수/매도가를 제시해라"
-            f"통화는 {currency}, 숫자는 소수 {decimals}자리로 제시한다. "
-            "근거 수치와 예측 수치가 논리적으로 일치해야 한다. "
-            "결과는 JSON 객체로만 반환한다."
+        system_text = (
+            "당신은 '감성분석 투자 전문가'다. 두 의견의 논리와 감성 가정(이벤트 해석, 투자자 정서 추정)이 "
+            f"내 의견(next_close, reason)과 {target_agent}의 의견(next_close, reason)을 비교 평가하고 "
+            "'REBUT'(반박) 또는 'SUPPORT'(지지) 중 하나를 결정하라. "
+            "판단 근거는 한국어 4~5문장으로 작성한다. "
+            "반환은 JSON({'stance':'REBUT|SUPPORT','message':string})만 허용한다."
         )
-        user = (
-            "입력값: 커뮤니티 글 요약 + 최근 3개월 가격 스냅샷\n"
-            "요구사항:\n"
-            "1) buy_price(number), sell_price(number) 예측 (금일 목표)\n"
-            "2) reason(string) 4~5문장 (출처 요지 포함)\n"
-            "3) JSON 객체만 반환\n"
-            "4) 한국말 설명\n\n"
-            f"{context}"
+
+        # 안전한 직렬화를 위해 원시 타입으로 변환
+        me_next  = float(my_opinion.target.next_close)
+        oth_next = float(target_opinion.target.next_close)
+
+        ctx = {
+            "ticker": t,
+            "me": {
+                "agent_id": self.agent_id,
+                "next_close": round(me_next, decimals),
+                "reason": str(my_opinion.reason)[:2000],
+            },
+            "other": {
+                "agent_id": target_agent,
+                "next_close": round(oth_next, decimals),
+                "reason": str(target_opinion.reason)[:2000],
+            },
+            # 스냅샷(선택): LLM 힌트용 컨텍스트
+            "snapshot": {
+                "last_price": float(stock_data.last_price or 0.0),
+                "currency": ccy,
+                "signals": {
+                    "technical":   {k: float(v) for k, v in (stock_data.technical   or {}).items()},
+                    "sentimental": (stock_data.sentimental or {}),
+                    "fundamental": (stock_data.fundamental or {}),
+                },
+            },
+        }
+        user_text = "다음 컨텍스트를 평가하여 JSON 객체만 반환하세요:\n" + json.dumps(ctx, ensure_ascii=False)
+        return system_text, user_text
+    
+    
+    def _build_messages_revision(self,
+                             my_lastest: Opinion,
+                             others_latest: Dict[str, Opinion],
+                             received_rebuttals: List[Rebuttal],
+                             stock_data: StockData) -> tuple[str, str]:
+        """LLM에게 최종 next_close/이유 수정을 맡기기 위한 system/user 메시지"""
+        ccy = (stock_data.currency or "KRW").upper()
+        decimals = 0 if ccy in ("KRW", "JPY") else 2
+
+        # 입력을 모두 원시 타입으로 직렬화
+        me = {
+            "agent_id": my_lastest.agent_id,
+            "next_close": float(my_lastest.target.next_close),
+            "reason": str(my_lastest.reason)[:2000],
+        }
+        peers = []
+        for aid, op in (others_latest or {}).items():
+            peers.append({
+                "agent_id": str(aid),
+                "next_close": float(op.target.next_close),
+                "reason": str(op.reason)[:2000],
+            })
+        feedback = [{
+            "from": r.from_agent_id,
+            "to":   r.to_agent_id,
+            "stance": r.stance,
+            "message": str(r.message)[:500],
+        } for r in (received_rebuttals or [])]
+
+        system_text = (
+            "너는 주식 애널리스트다. 아래 컨텍스트(내 의견, 동료 의견, 받은 반박/지지, 신호 스냅샷)를 종합해 "
+            "내 다음 거래일 종가 예측(next_close)과 근거(reason)를 **업데이트**한다. "
+            "규칙:\n"
+            f"- 숫자는 소수 {decimals}자리로 반올림.\n"
+            "- 동료 의견을 맹목 추종하지 말 것. SUPPORT/REBUT 비중과 기술 신호를 함께 고려.\n"
+            "- 과도한 변경은 금지(기존 대비 ±7% 이내 권장). 필요 시 근거를 분명히 작성.\n"
+            "반환은 JSON만 허용한다: {\"next_close\": number, \"reason\": string}"
         )
-        return {"role": "system", "content": sys}, {"role": "user", "content": user}
+
+        ctx = {
+            "me": me,
+            "peers": peers,
+            "feedback": feedback,
+            "snapshot": {
+                "last_price": float(stock_data.last_price or 0.0),
+                "currency": ccy,
+                "signals": {
+                    "technical":   {k: float(v) for k, v in (stock_data.technical   or {}).items()},
+                    "sentimental": (stock_data.sentimental or {}),
+                    "fundamental": (stock_data.fundamental or {}),
+                },
+            },
+        }
+        user_text = "아래 컨텍스트를 반영하여 수정된 next_close와 reason을 JSON으로만 반환하라:\n" + json.dumps(ctx, ensure_ascii=False)
+        return system_text, user_text
+    
+    # ------------------------------------------------------------------
+    # RSI 계산: 단순 이동평균 버전(EMA 아님)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
+        delta = close.diff()
+        up = delta.clip(lower=0)
+        down = -delta.clip(upper=0)
+        avg_gain = up.rolling(period).mean()
+        avg_loss = down.rolling(period).mean()
+        rs = avg_gain / (avg_loss.replace(0, np.nan))
+        return 100 - (100 / (1 + rs))
