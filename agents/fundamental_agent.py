@@ -29,7 +29,7 @@ class FundamentalAgent(BaseAgent):
         self.use_llm = use_llm
 
         # LightGBM 모델 로드
-        self.lgbm_model = joblib.load("lgbm_close_predictor.pkl")
+        self.lgbm_model = joblib.load("lgbm_no_tech_predictor.pkl")
         if isinstance(self.lgbm_model, lgb.LGBMRegressor):
             self.lgbm_booster = self.lgbm_model.booster_
         else:
@@ -158,12 +158,14 @@ class FundamentalAgent(BaseAgent):
         feature_dict = {
             "Symbol": symbol,
             "Close": technicals["Close"],
-            "ret_1": technicals["ret_1"],
-            "ma_5": technicals["ma_5"],
-            "ma_20": technicals["ma_20"],
-            "ma_60": technicals["ma_60"],
-            "vol_20": technicals["vol_20"],
-            "mom_20": technicals["mom_20"],
+
+            # technical 지표
+            # "ret_1": technicals["ret_1"],
+            # "ma_5": technicals["ma_5"],
+            # "ma_20": technicals["ma_20"],
+            # "ma_60": technicals["ma_60"],
+            # "vol_20": technicals["vol_20"],
+            # "mom_20": technicals["mom_20"],
 
             "NASDAQ": market.get("NASDAQ", 0),
             "S&P500": market.get("S&P500", 0),
