@@ -1,82 +1,306 @@
+# ======================= Debate Framework =======================
+# ===============================================================
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Literal, Tuple
+
+# -----------------------------
+# 공통 데이터 포맷
+# -----------------------------
+@dataclass
+class Target:
+    """예측 목표값 묶음 (필요 시 필드 확장)
+    - next_close: 다음 거래일 종가 예측치
+    """
+    next_close : float
+
+@dataclass
+class Opinion:
+    """에이전트의 의견(초안/수정본 공통 포맷)
+    - agent_id: 의견을 낸 에이전트 식별자
+    - target  : 예측 타깃(예: next_close)
+    - reason  : 근거 텍스트(LLM/룰 기반)
+    """
+    agent_id: str
+    target: Target
+    reason: str  # TODO: LLM/룰 기반 사유 텍스트 생성
+
+@dataclass
+class Rebuttal:
+    """에이전트 간 반박/지지 메시지
+    - from_agent_id: 보낸 쪽
+    - to_agent_id  : 받는 쪽
+    - stance       : REBUT(반박) | SUPPORT(지지)
+    - message      : 근거 텍스트(간결 요약)
+    """
+    from_agent_id: str
+    to_agent_id: str
+    stance: Literal["REBUT", "SUPPORT"]
+    message: str  # TODO: LLM/룰 기반 한 줄 근거 생성
+
+@dataclass
+class RoundLog:
+    """라운드별 기록 스냅샷(옵셔널로 사용)
+    - round_no : 라운드 번호
+    - opinions : 라운드 내 각 에이전트 최종 Opinion
+    - rebuttals: 라운드 내 교환된 반박/지지
+    - summary  : {"agent_id": Target(...)} 형태의 집계 요약
+    """
+    round_no: int
+    opinions: List[Opinion]
+    rebuttals: List[Rebuttal]
+    summary: Dict[str, Target]
+
+@dataclass
+class StockData:
+    """에이전트 입력 원천 데이터(필요 시 자유 확장)
+    - sentimental: 심리/커뮤니티/뉴스 스냅샷
+    - fundamental: 재무/밸류에이션 요약
+    - technical  : 가격/지표 스냅샷
+    - last_price : 최신 종가
+    - currency   : 통화코드
+    """
+    sentimental: Dict
+    fundamental: Dict
+    technical: Dict
+    last_price: Optional[float] = None
+    currency: Optional[str] = None
+
+
+# -----------------------------
+# BaseAgent (인터페이스/공통 기능)
+# -----------------------------
 import os
+import time
 import json
 import requests
 import yfinance as yf
+from datetime import datetime
 from dotenv import load_dotenv
+from datetime import datetime, timezone
+from collections import defaultdict
 
-# .env 파일 로드 (환경변수 로드)
+# .env 로드 (환경변수 세팅)
 load_dotenv()
 
-# 환경 변수에서 API Key 및 기타 기본 설정 불러오기
-OPENAI_API_KEY = os.getenv("CAPSTONE_OPENAI_API")
+# OpenAI Responses API 엔드포인트/UA
 OPENAI_URL = "https://api.openai.com/v1/responses"
-UA = "Mozilla/5.0"  # User-Agent 헤더
+UA = "Mozilla/5.0"
 
-# 베이스 에이전트 클래스 정의
 class BaseAgent:
-    def __init__(
-        self,
-        model: str | None = None,                     # 강제 사용할 모델 지정 (기본 없음)
-        preferred_models: list[str] | None = None,    # 후보 모델 리스트
-        temperature: float = 0.2,                     # 생성 temperature 설정
-        bounds_tolerance: float = 0.15,               # 가격 허용 오차 비율 (±15%)
-        reask_on_inconsistent: bool = True,           # 예측값이 비정상일 경우 재질문 여부
-        price_period: str = "3mo",                    # 가격 통계 추출 범위
-        use_price_snapshot: bool = True               # yfinance로 price_period 기간 가격 스탭샷(최고가, 최저가) 가져 
-    ):
-        # API 키 로드 및 유효성 검사
-        OPENAI_API_KEY = os.getenv("CAPSTONE_OPENAI_API")
-        if not OPENAI_API_KEY:
-            raise RuntimeError("환경변수 OPENAI_API_KEY가 필요합니다.")
-
-        # API 요청 헤더 세팅
-        self.headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json"
-        }
-
-        # 주요 하이퍼파라미터 저장
+    def __init__(self, 
+                 agent_id: str, 
+                 model: str | None = None,           # 단일 고정 모델(선택)
+                 preferred_models: list[str] | None = None,  # 폴백 순서
+                 temperature: float = 0.2,
+                 verbose: bool = False):
+        # --- 런타임 설정 ---
+        self.agent_id = agent_id
         self.temperature = temperature
-        self.bounds_tolerance = bounds_tolerance
-        self.reask_on_inconsistent = reask_on_inconsistent
-        self.price_period = price_period
-        self.use_price_snapshot = use_price_snapshot 
+        self.model = model
+        self.verbose = verbose
 
-        # 사용할 모델 순위 설정
+        # --- 상태 보관 ---
+        self.stockdata = None                                  # 최신 stockdata
+        self.opinions: list = []                               # Opinion 히스토리
+        self.rebuttals: dict[int, List[Rebuttal]] = defaultdict(list) # {round: [Rebuttal, ...]}
+
+
+        # --- 모델 우선순위 ---
         self.preferred_models = preferred_models or ["gpt-5-mini", "gpt-4.1-mini"]
         if model:
+            # 요청 모델을 최우선으로, 중복 제거
             self.preferred_models = [model] + [m for m in self.preferred_models if m != model]
 
-        # 출력값 스키마 정의 (모든 Agent가 공유 가능)
-        self.schema_obj = {
-            # 최상위 응답은 객체(JSON 오브젝트)여야 함
-            "type": "object",
-            
-            # 객체 어떤 속성들이 존재할 수 있는지를 정의
-            "properties": {
-                "buy_price":  {"type": "number", "description": "오늘 기준 목표 매수가"},
-                "sell_price": {"type": "number", "description": "오늘 기준 목표 매도가"},
-                "reason":     {"type": "string", "description": "근거 요약 (한국어 4~5문장)"}
-            },
-            # 객체는 아래 속성을 반드시 포함할 것
-            "required": ["buy_price", "sell_price", "reason"],  
-            
-            # 그외 속성은 포함하지 않음
-            "additionalProperties": False
+        # --- API 키 로드/검증 ---
+        OPENAI_API_KEY = os.getenv('CAPSTONE_OPENAI_API')
+        if not OPENAI_API_KEY:
+            raise RuntimeError("환경변수 CAPSTONE_OPENAI_API 필요")
+
+        # --- 공통 헤더 ---
+        self.headers = {
+            "Authorization" : f"Bearer {OPENAI_API_KEY}",
+            "Content-Type" : "application/json",
         }
 
-    # ticker 정규화 코드
+        # --- JSON 스키마: Opinion(next_close, reason) ---
+        self.schema_obj_opinion = {
+            "type": "object",
+            "properties": {
+                "next_close": {"type": "number", "description": "예상되는 다음 거래일 종가"},
+                "reason":     {"type": "string",  "description": "근거 요약 (한국어 4~5문장)"},
+            },
+            "required": ["next_close", "reason"],
+            "additionalProperties": False,
+        }
+
+        # --- JSON 스키마: Rebuttal(stance, message) ---
+        self.schema_obj_rebuttal = {
+            "type": "object",
+            "properties": {
+                "stance": {
+                    "type": "string",
+                    "enum": ["REBUT", "SUPPORT"],
+                    "description": "다른 에이전트 의견에 대한 본인 입장",
+                },
+                "message": {"type": "string", "description": "근거 요약 (한국어 4~5문장)"},
+            },
+            "required": ["stance", "message"],
+            "additionalProperties": False,
+        }
+
+    # --- 로깅 헬퍼 ---
+    def _p(self, msg: str):
+        if self.verbose:
+            print(f"[{self.agent_id}] {msg}")
+
+    # 1) 데이터 수집: API/크롤러 등으로 예측 입력 수집
+    def searcher(self, ticker: str) -> StockData:
+        """티커 기반 원천 데이터 수집 → StockData 반환(구현 필요)"""
+        self._p(f"searcher(ticker={ticker})")
+        raise NotImplementedError
+
+    # 2) 타깃 산출: 수집 데이터를 바탕으로 1차 예측치 생성
+    def predicter(self, stock_data: StockData) -> Target:
+        """입력 데이터를 바탕으로 Target(next_close) 생성(구현 필요)"""
+        self._p("predicter(stock_data)")
+        raise NotImplementedError
+
+    # 3) Opinion 메시지 빌드 (LLM 호출용)
+    def _build_messages_opinion(self, stock_data: StockData, target: Target) -> Tuple[str, str]:
+        """LLM(system/user) 메시지 생성(구현 필요)"""
+        raise NotImplementedError
+
+    # 4) Rebuttal 메시지 빌드 (LLM 호출용)
+    def _build_messages_rebuttal(self, *args, **kwargs) -> Tuple[str, str]:
+        """LLM(system/user) 메시지 생성(구현 필요)"""
+        raise NotImplementedError
+
+    # ---------- 공용 파이프라인 ----------
+    def reviewer_draft(self, ticker: str) -> Opinion:
+        """(1) searcher → (2) predicter → (3) LLM(JSON Schema)로 reason 생성 → Opinion 반환"""
+        # 1) 데이터 수집
+        self.stockdata = self.searcher(ticker)
+
+        # 2) 예측값 생성
+        target = self.predicter(self.stockdata)
+
+        # 3) LLM 호출(reason 생성)
+        sys_text, user_text = self._build_messages_opinion(self.stockdata, target)
+        msg_sys = self._msg("system", sys_text)
+        msg_user = self._msg("user",   user_text)
+
+        parsed = self._ask_with_fallback(msg_sys, msg_user, self.schema_obj_opinion)
+        reason = parsed.get("reason") or "(사유 생성 실패: 미입력)"
+
+        # 4) Opinion 기록/반환 (항상 최신 값 append)
+        opinion = Opinion(agent_id=self.agent_id, target=target, reason=reason)
+        self.opinions.append(opinion) # 최신 오피니언 기록용
+        return opinion
+
+    def reviewer_rebut(self,
+                       round_num: int,
+                       my_lastest: Opinion,
+                       others_latest: Dict[str, Opinion],
+                       stock_data: StockData) -> Dict[str, Rebuttal]:
+        """라운드별·상대별 Rebuttal 생성 후 저장하여 반환
+        - 입력:
+            round_num     : 라운드 번호
+            my_lastest    : 나의 최신 Opinion
+            others_latest : {상대 에이전트ID: 상대 Opinion}
+            stock_data    : 공용 컨텍스트(스냅샷)
+        - 출력:
+            {상대 에이전트ID: Rebuttal} (해당 라운드 버킷)
+        """
+        self._p(f"reviewer_rebut(round={round_num})")
+
+        for other_id, other_op in others_latest.items():
+            # 1) LLM 메시지 구성
+            sys_text, user_text = self._build_messages_rebuttal(my_lastest, other_id, other_op, stock_data)
+            msg_sys  = self._msg("system", sys_text)
+            msg_user = self._msg("user",   user_text)
+
+            # 2) LLM 호출 → JSON 파싱
+            parsed  = self._ask_with_fallback(msg_sys, msg_user, self.schema_obj_rebuttal)
+            stance  = parsed.get("stance")  or "(사유 생성 실패: 미입력)"
+            message = parsed.get("message") or "(사유 생성 실패: 미입력)"
+
+            # 3) Rebuttal 생성/저장(라운드 리스트에 누적)
+            rebuttal = Rebuttal(from_agent_id=self.agent_id,
+                                to_agent_id=other_id,
+                                stance=stance,
+                                message=message)
+            self.rebuttals[round_num].append(rebuttal)
+
+        # 해당 라운드의 Rebuttal 리스트 반환
+        return self.rebuttals[round_num]
+
+    def reviewer_revise(self,
+                        my_lastest: Opinion,
+                        others_latest: Dict[str, Opinion],
+                        received_rebuttals: List[Rebuttal],
+                        stock_data: StockData) -> Opinion:
+        """반박/지지 결과를 반영해 Opinion 조정 (LLM 기반)"""
+        self._p("reviewer_revise(LLM)")
+
+        # 1) 메시지 빌드
+        sys_text = (
+            "너는 여러 에이전트의 의견과 반박/지지 결과를 종합하여 "
+            "내 기존 Opinion(next_close, reason)을 필요 시 조정하는 애널리스트다. "
+            "반환은 JSON(next_close:number, reason:string)만 허용한다."
+        )
+        ctx = {
+            "my_last": {
+                "next_close": float(my_lastest.target.next_close),
+                "reason": my_lastest.reason,
+            },
+            "others": {
+                oid: {"next_close": float(op.target.next_close), "reason": op.reason}
+                for oid, op in others_latest.items()
+            },
+            "received_rebuttals": [
+                {
+                    "from": r.from_agent_id,
+                    "stance": r.stance,
+                    "message": r.message
+                }
+                for r in received_rebuttals
+            ],
+            "snapshot": {
+                "last_price": float(stock_data.last_price or 0.0),
+                "currency": stock_data.currency,
+            },
+        }
+        user_text = "아래 컨텍스트를 참고하여 JSON만 반환하라:\n" + json.dumps(ctx, ensure_ascii=False)
+
+        msg_sys  = self._msg("system", sys_text)
+        msg_user = self._msg("user", user_text)
+
+        # 2) LLM 호출 → opinion 스키마 그대로 사용
+        parsed = self._ask_with_fallback(msg_sys, msg_user, self.schema_obj_opinion)
+
+        new_next   = parsed.get("next_close", my_lastest.target.next_close)
+        new_reason = parsed.get("reason", my_lastest.reason)
+
+        # 3) Opinion 업데이트 & 기록
+        revised = Opinion(agent_id=self.agent_id,
+                        target=Target(new_next),
+                        reason=new_reason)
+        self.opinions.append(revised)
+
+        # 항상 최신 Opinion 반환
+        return self.opinions[-1]
+
+    # ---------- 도우미 ----------
     def _normalize_ticker(self, ticker: str) -> str:
-        # ticker 양옆 공백제거, 대문자로 변경
+        """티커 문자열 정규화(KRX 숫자 6자리면 .KS 부착 등)"""
         t = ticker.strip().upper()
-        
-        # 한국 6자리면 기본 KOSPI
         if t.isdigit() and len(t) == 6:
-            return t + ".KS"  
+            return t + ".KS"
         return t
 
-    # 통화 단위와 소수점 자리 결정
     def _detect_currency_and_decimals(self, ticker: str) -> tuple[str, int]:
+        """티커로 통화코드/소수자리 추론(KRW/JPY=0, 그 외=2)"""
         try:
             info = yf.Ticker(ticker).info
             ccy = (info.get("currency") or "KRW").upper()
@@ -85,98 +309,62 @@ class BaseAgent:
         decimals = 0 if ccy in ("KRW", "JPY") else 2
         return ccy, decimals
 
-    # OpenAI API 호출 with fallback (모델 우선순위 순회)
+    @staticmethod
+    def _msg(role: str, text: str) -> dict:
+        """OpenAI Responses API용 메시지 포맷 변환"""
+        return {"role": role, "content": [{"type": "input_text", "text": text}]}
+
     def _ask_with_fallback(self, msg_sys: dict, msg_user: dict, schema_obj: dict) -> dict:
+        """Responses API 호출(여러 모델 폴백) → JSON Schema 준수 응답 파싱
+        - msg_sys/msg_user: self._msg(...)로 생성된 메시지
+        - schema_obj      : json_schema(Strict) 형식
+        - 반환            : dict(LLM가 준 JSON)
+        """
         body_base = {
             "input": [msg_sys, msg_user],
             "text": {
                 "format": {
                     "type": "json_schema",
-                    "name": "ValuationTargets",
+                    "name": "Opinion",   # 호출 시 전달된 schema_obj에 맞춰 구조만 검증
                     "strict": True,
-                    "schema": self.schema_obj
+                    "schema": schema_obj,
                 }
             },
-            "temperature": self.temperature
+            "temperature": self.temperature,
         }
-
         last_err = None
         for m in self.preferred_models:
             body = dict(body_base, model=m)
             r = requests.post(OPENAI_URL, json=body, headers=self.headers, timeout=120)
             if r.ok:
-                return r.json()
+                data = r.json()
+                # 1) output_text 우선 사용
+                if isinstance(data.get("output_text"), str) and data["output_text"].strip():
+                    try:
+                        return json.loads(data["output_text"])
+                    except Exception:
+                        return {"reason": data["output_text"]}  # JSON 실패 시 원문 텍스트 보존
+                # 2) output 배열에서 텍스트 모으기
+                out = data.get("output")
+                if isinstance(out, list) and out:
+                    texts = []
+                    for blk in out:
+                        for c in blk.get("content", []):
+                            if "text" in c:
+                                texts.append(c["text"])
+                    joined = "\n".join(t for t in texts if t)
+                    if joined.strip():
+                        try:
+                            return json.loads(joined)
+                        except Exception:
+                            return {"reason": joined}
+                # 비정상 응답
+                return {}
+            # 400/404는 다음 모델로 폴백
             if r.status_code in (400, 404):
                 last_err = (r.status_code, r.text)
                 continue
+            # 기타 에러는 즉시 예외
             r.raise_for_status()
         raise RuntimeError(f"모든 모델 실패. 마지막 오류: {last_err}")
 
-    # API 응답에서 가격/근거 추출 및 형식 변환
-    def _parse_result(self, resp_json: dict, decimals: int) -> tuple[float, float, str]:
-        txt = resp_json.get("output_text")
-        if not txt:
-            txt = resp_json["output"][0]["content"][0]["text"]
-        obj = json.loads(txt)
-        buy = round(float(obj["buy_price"]), decimals)
-        sell = round(float(obj["sell_price"]), decimals)
-        reason = obj["reason"]
-        return buy, sell, reason
-
-    # 예측값 정합성 검사 (범위와 순서 확인)
-    def _sanity_check(self, buy: float, sell: float, price_stats: dict) -> bool:
-        if not price_stats:
-            return True
-        last = price_stats["close_last"]
-        lo, hi = price_stats["close_min_3mo"], price_stats["close_max_3mo"]
-        tol = self.bounds_tolerance
-        span_ok = (lo*(1-tol) <= buy <= hi*(1+tol)) and (lo*(1-tol) <= sell <= hi*(1+tol))
-        order_ok = sell >= buy
-        # 추가로, 극단적으로 현재가와 동떨어지면 경고
-        # (옵션) abs(buy-last)/last <= 50% 등도 넣을 수 있음
-        return span_ok and order_ok
-
-    # 예측값을 허용 범위 내로 보정 (클리핑)
-    def _clip_to_bounds(self, buy: float, sell: float, price_stats: dict, decimals: int) -> tuple[float, float]:
-        lo, hi = price_stats["close_min_3mo"], price_stats["close_max_3mo"]
-        tol = self.bounds_tolerance
-        lo_b = lo * (1 - tol)
-        hi_b = hi * (1 + tol)
-        buy2 = min(max(buy, lo_b), hi_b)         # buy를 lo_b ~ hi_b 범위로 클리핑
-        sell2 = min(max(sell, buy2), hi_b)       # sell은 buy 이상 hi_b 이하
-        return round(buy2, decimals), round(sell2, decimals)
-
-    # 특정 티커의 과거 3개월 가격 데이터 통계 반환
-    def _get_price_snapshot(self, ticker: str) -> dict:
-        st = yf.Ticker(ticker)
-        hist = st.history(period=self.price_period)
-        if hist.empty:
-            raise ValueError(f"{ticker}에 대한 가격 기록이 없습니다.")
-        return {
-            "close_last": float(hist["Close"].iloc[-1]),
-            "close_mean_3mo": float(hist["Close"].mean()),
-            "close_min_3mo": float(hist["Close"].min()),
-            "close_max_3mo": float(hist["Close"].max()),
-            "vol_mean_3mo": float(hist["Volume"].mean()),
-        }
-        
-    def _add_constraints(self, user_message: dict, price_stats: dict | None, decimals: int) -> dict:
-        """
-        LLM이 비합리적인 값을 내놨을 때 재질문 메시지에 제약을 추가하는 메서드.
-        - price_stats가 있으면: buy/sell 모두 허용 범위 내 + sell ≥ buy
-        - price_stats가 없으면: sell ≥ buy만
-        """
-        if not price_stats:
-            extra = "\n\n추가 제약: sell_price ≥ buy_price 조건을 반드시 지켜라."
-            return {"role": "user", "content": user_message["content"] + extra}
-
-        lo, hi = price_stats["close_min_3mo"], price_stats["close_max_3mo"]
-        tol = self.bounds_tolerance
-        lo_ok = round(lo * (1 - tol), decimals)
-        hi_ok = round(hi * (1 + tol), decimals)
-
-        extra = (
-            f"\n\n추가 제약: buy_price와 sell_price 모두 {lo_ok}~{hi_ok} 범위 내에서 제시하고, "
-            "sell_price ≥ buy_price 조건을 반드시 지켜라."
-        )
-        return {"role": "user", "content": user_message["content"] + extra}
