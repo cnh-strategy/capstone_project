@@ -193,12 +193,55 @@ def fetch_next_trading_close_after(basis_date_inclusive: str, ticker: str) -> Tu
     actual_close = float(df["Close"].iloc[0])
     return actual_dt, actual_close
 
-def build_features(df: pd.DataFrame, mkt: Optional[pd.DataFrame]=None) -> pd.DataFrame:
+# =========================
+# EPS/실적발표 데이터
+# =========================
+def _normalize_eps_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df = df.copy()
+    df.index = pd.to_datetime(df.index)
+
+    # 칼럼 탐색을 robust 하게 처리
+    cols_map = {c.lower().replace(" ", "").replace("%", "").replace("(", "").replace(")", ""): c for c in df.columns}
+    est_col = cols_map.get("epsestimate") or cols_map.get("estimate") or cols_map.get("eps_estimate")
+    act_col = cols_map.get("reportedeps") or cols_map.get("actual") or cols_map.get("reportedeps")
+    sur_col = cols_map.get("surprise") or cols_map.get("surprisepct") or cols_map.get("surprisepercent") or cols_map.get("surprise%") or cols_map.get("surprise(%)")
+
+    out = pd.DataFrame(index=df.index)
+    if est_col in df.columns:
+        out["eps_est"] = pd.to_numeric(df[est_col], errors="coerce")
+    if act_col in df.columns:
+        out["eps_actual"] = pd.to_numeric(df[act_col], errors="coerce")
+    if sur_col in df.columns:
+        s = df[sur_col].astype(str).str.replace("%", "", regex=False)
+        out["eps_surprise"] = pd.to_numeric(s, errors="coerce")
+    return out
+
+def fetch_eps_events(ticker: str, start_date: str, end_inclusive: str) -> pd.DataFrame:
+    try:
+        df = yf.Ticker(ticker).earnings_dates
+    except Exception:
+        return pd.DataFrame()
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df = _normalize_eps_columns(df)
+    if df.empty:
+        return df
+    df.index = pd.to_datetime(df.index).tz_localize(None)
+    mask = (df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_inclusive))
+    return df.loc[mask].sort_index()
+
+def build_features(df: pd.DataFrame, mkt: Optional[pd.DataFrame]=None, eps_df: Optional[pd.DataFrame]=None) -> pd.DataFrame:
     o,h,l,c,v = df["Open"],df["High"],df["Low"],df["Close"],df["Volume"]
     out = pd.DataFrame(index=df.index)
+
+    # 날짜 파생
     out["dayofweek"] = df.index.dayofweek
     out["month"] = df.index.month
     out["weekofyear"] = df.index.isocalendar().week.astype(float)
+
+    # 가격/기술적
     out["ret_1d"]  = c.pct_change(1)
     out["rsi_14"]  = rsi(c,14)
     out["ma_5"]    = c.rolling(5).mean()
@@ -211,6 +254,8 @@ def build_features(df: pd.DataFrame, mkt: Optional[pd.DataFrame]=None) -> pd.Dat
     out["atr_14"]  = atr(h,l,c,14)
     out["hl_range"]= (h-l) / c.replace(0,np.nan)
     out["obv"]     = obv(c,v)
+
+    # 시장/거시
     if isinstance(mkt, pd.DataFrame):
         need = [
             "SPY_ret_1d", "QQQ_ret_1d", "SPY_rv_20", "QQQ_rv_20",
@@ -226,6 +271,24 @@ def build_features(df: pd.DataFrame, mkt: Optional[pd.DataFrame]=None) -> pd.Dat
             valid_cols = cov[cov >= 0.3].index.tolist()
             if valid_cols:
                 out[valid_cols] = m_aligned[valid_cols]
+
+    # EPS + 실적발표 플래그
+    if eps_df is not None and not eps_df.empty:
+        eps_df = eps_df.sort_index()
+        # 발표일 플래그 (당일만 1)
+        flag = pd.Series(0, index=out.index, dtype=np.int8)
+        event_idx = out.index.intersection(eps_df.index)
+        flag.loc[event_idx] = 1
+        out["is_earnings_day"] = flag
+
+        # EPS 값은 forward-fill
+        eps_aligned = eps_df.reindex(out.index)
+        eps_aligned = eps_aligned.ffill()
+        for col in ["eps_est", "eps_actual", "eps_surprise"]:
+            if col in eps_aligned.columns:
+                out[col] = eps_aligned[col]
+
+    # 마무리
     out = out.apply(pd.to_numeric, errors="coerce").replace([np.inf,-np.inf], np.nan)
     na_ratio = out.isna().mean()
     drop_cols = na_ratio[na_ratio > 0.98].index.tolist()
@@ -245,7 +308,8 @@ def build_frames_for_tickers(tickers: List[str], start_date: str, end_inclusive:
     for t in tqdm(tickers, desc="Build frames", unit="ticker"):
         try:
             raw = fetch_ohlcv_fixed_window(t, start_date, end_inclusive)
-            feat = build_features(raw, mkt=mkt)
+            eps = fetch_eps_events(t, start_date, end_inclusive)
+            feat = build_features(raw, mkt=mkt, eps_df=eps)
             y = make_target_logret_next(raw["Close"], 1)
             frame = pd.concat([feat, y.rename("y"), raw["Close"].rename("C")], axis=1)
             frame = frame.replace([np.inf,-np.inf], np.nan).ffill().dropna()
@@ -322,19 +386,20 @@ def metrics_return_rmse_from_logret(y_log_true, y_log_pred):
     out = {"RMSE_return": rmse(r_pred, r_true)}
     return out, r_true, r_pred
 
+def direction_accuracy(y_true_returns: np.ndarray, y_pred_returns: np.ndarray) -> float:
+    return float(np.mean(np.sign(y_true_returns) == np.sign(y_pred_returns)))
+
 # ---------- 워크포워드: 보조 ----------
 def _derive_walkforward_years(trainval_frames: Dict[str, pd.DataFrame], max_folds:int=3) -> List[int]:
-    # trainval 구간 전체에서 존재하는 연도 집합
     years = set()
     for t, df in trainval_frames.items():
         ys = pd.DatetimeIndex(df.index).year
         if len(ys)>0:
             years.update(ys.tolist())
     years = sorted(list(years))
-    # 첫 해는 최소 학습 기간으로 남겨두고, 뒤쪽에서 최대 max_folds개를 검증 연도로 사용
     if len(years) <= 2:
-        return years[-1:]  # 데이터가 적으면 1개라도
-    cand = years[1:]      # 첫 해 제외
+        return years[-1:]
+    cand = years[1:]
     return cand[-max_folds:]
 
 def _slice_by_dates(df: pd.DataFrame, start: Optional[pd.Timestamp], end: Optional[pd.Timestamp]) -> pd.DataFrame:
@@ -347,19 +412,17 @@ def _slice_by_dates(df: pd.DataFrame, start: Optional[pd.Timestamp], end: Option
 # ---------- 메인 튜닝/학습 ----------
 def tune_and_train_global(
     frames: Dict[str, pd.DataFrame],
-    val_ratio: float = 0.2,         # (단일 split 백업용, 실제 튜닝엔 미사용)
+    val_ratio: float = 0.2,
     test_ratio: float = 0.2,
     n_trials: int = 30,
-    wf_max_folds: int = 3           # 워크포워드 폴드 수(최대 연도 수)
+    wf_max_folds: int = 3
 ):
     tickers = sorted(frames.keys())
     id_map = {t:i for i,t in enumerate(tickers)}
-    # 우선 test 홀드아웃 분리
     split = {t: split_train_val_test_by_time(frames[t], test_ratio=test_ratio) for t in tickers}
     trainval_frames = {t: split[t][0] for t in tickers}
     test_frames     = {t: split[t][1] for t in tickers}
 
-    # 워크포워드 검증 연도들(예: 2022, 2023, 2024)
     wf_years = _derive_walkforward_years(trainval_frames, max_folds=wf_max_folds)
 
     def build_global_seqs_from_tv_with_valyear(lookback: int, val_year: int):
@@ -380,7 +443,6 @@ def tune_and_train_global(
         cat = lambda lst: np.concatenate(lst, axis=0) if lst else np.empty((0,))
         return cat(XtrL), cat(ytrL), cat(CtrL), cat(IDtrL), cat(XvaL), cat(yvaL), cat(CvaL), cat(IDvaL)
 
-    # ---- Optuna: 다중 워크포워드 폴드 평균 RMSE를 최소화
     def objective(trial):
         tf.keras.backend.clear_session()
         lookback = trial.suggest_int("lookback", 40, 60, step=10)
@@ -395,7 +457,6 @@ def tune_and_train_global(
         for vy in wf_years:
             Xtr,ytr,Ctr,IDtr, Xva,yva,Cva,IDva = build_global_seqs_from_tv_with_valyear(lookback, vy)
             if Xtr.size==0 or Xva.size==0:
-                # 이 폴드는 스킵 (데이터 부족). 전체 폴드가 모두 비면 큰 페널티.
                 continue
 
             scaler, Xtr_s, Xva_s, _ = fit_transform_3d(Xtr, Xva, Xva)
@@ -406,7 +467,6 @@ def tune_and_train_global(
             model = build_lstm(Xtr_s.shape[1:], u1,u2,dr,lr)
             es  = EarlyStopping(monitor="val_loss", patience=8, restore_best_weights=True, verbose=0)
             tcb = TqdmProgressBar(epochs, description=f"Trial {trial.number+1} (val={vy})")
-            # 폴드 내부 체크포인트는 덮어쓰기(무거움 방지)
             model.fit(Xtr_s, ytr, validation_data=(Xva_s, yva),
                       epochs=epochs, batch_size=batch, shuffle=False,
                       callbacks=[es, tcb], verbose=0)
@@ -416,7 +476,7 @@ def tune_and_train_global(
             fold_metrics.append(met["RMSE_return"])
 
         if not fold_metrics:
-            return 1e9  # 전 폴드가 비면 큰 페널티
+            return 1e9
         return float(np.mean(fold_metrics))
 
     os.makedirs("model_artifacts", exist_ok=True)
@@ -425,15 +485,12 @@ def tune_and_train_global(
     best = study.best_params
     print("Best params:", best)
 
-    # 튜닝 결과 저장
     with open("model_artifacts/best_params.json", "w") as f:
         json.dump(best, f, indent=2)
 
-    # ---- 최종 학습 (Train+Val 전체를 사용하되, 내부 val_split로 monitor=val_loss)
     lookback = best["lookback"]; u1=best["units1"]; u2=best["units2"]
     dr=best["dropout"]; lr=best["lr"]; batch=best["batch_size"]; epochs=best["epochs"]
 
-    # 전체 trainval에서 시퀀스 생성
     def build_global_seqs_from_tv_all(lookback:int):
         Xs, ys, Cs, IDs = [], [], [], []
         for t in tickers:
@@ -455,13 +512,11 @@ def tune_and_train_global(
     cat = lambda lst: np.concatenate(lst, axis=0) if lst else np.empty((0,))
     Xte, yte, Cte, IDte = cat(XteL), cat(yteL), cat(CteL), cat(IDteL)
 
-    # 스케일링: trainval 기준
     scaler, Xtv_s, _, Xte_s = fit_transform_3d(Xtv, Xtv, Xte)
     K = len(id_map)
     Xtv_s = attach_onehot(Xtv_s, IDtv, K)
     Xte_s = attach_onehot(Xte_s, IDte, K)
 
-    # 최종 모델 학습 (내부 시계열 val_split)
     model = build_lstm(Xtv_s.shape[1:], u1, u2, dr, lr)
     es_final  = EarlyStopping(monitor="val_loss", patience=8, restore_best_weights=True, verbose=0)
     tcb_final = TqdmProgressBar(epochs, description="Final training")
@@ -477,18 +532,20 @@ def tune_and_train_global(
         verbose=0
     )
 
-    # Test 성능: 상승하락률 RMSE + 종가 MAPE
+    # Test 성능: 상승하락률 RMSE + 종가 MAPE + 방향정확도
     y_pred_te = model.predict(Xte_s, verbose=0).ravel()
     test_met, r_true, r_pred = metrics_return_rmse_from_logret(yte, y_pred_te)
 
-    # 다음 거래일 실제/예측 종가 복원(C_t는 '기준일 종가')
     actual_next_close_te = Cte * np.exp(yte)
     pred_next_close_te   = Cte * np.exp(y_pred_te)
     mape_close = float(np.mean(np.abs((pred_next_close_te - actual_next_close_te) / np.clip(actual_next_close_te, 1e-8, None))) * 100.0)
 
+    dir_acc = direction_accuracy(r_true, r_pred) * 100.0
+
     test_report_fmt = {
         "상승하락률 RMSE": round(test_met["RMSE_return"], 8),
-        "MAPE(다음거래일 종가, %)": round(mape_close, 4)
+        "MAPE(다음거래일 종가, %)": round(mape_close, 4),
+        "방향 정확도(%)": round(dir_acc, 2)
     }
 
     artifact = {
@@ -511,6 +568,14 @@ def resolve_ticker(user_input: str, kor_map: Dict[str,str]) -> str:
             return v.upper()
     return user_input
 
+def _build_features_for_infer(ticker: str, start_date: str, end_inclusive: str) -> Tuple[pd.DataFrame, pd.Series]:
+    mkt = fetch_market_series_fixed_window(start_date, end_inclusive)
+    raw = fetch_ohlcv_fixed_window(ticker, start_date, end_inclusive)
+    eps = fetch_eps_events(ticker, start_date, end_inclusive)
+    feat = build_features(raw, mkt=mkt, eps_df=eps).replace([np.inf,-np.inf], np.nan).ffill()
+    close = raw["Close"]
+    return feat, close
+
 def predict_next_close(user_input: str, artifact: dict,
                        start_date: str = START_DATE,
                        end_inclusive: str = END_DATE_INCLUSIVE) -> Dict[str, float]:
@@ -518,10 +583,7 @@ def predict_next_close(user_input: str, artifact: dict,
     model, scaler, id_map, lookback = artifact["model"], artifact["scaler"], artifact["id_map"], artifact["lookback"]
     K = len(id_map)
 
-    mkt = fetch_market_series_fixed_window(start_date, end_inclusive)
-    raw = fetch_ohlcv_fixed_window(ticker, start_date, end_inclusive)
-    feat = build_features(raw, mkt=mkt).replace([np.inf,-np.inf], np.nan).ffill()
-    close = raw["Close"]
+    feat, close = _build_features_for_infer(ticker, start_date, end_inclusive)
     if len(feat) < lookback+1:
         raise ValueError(f"Not enough rows for {ticker} to build a window of {lookback}.")
     X_win = feat.iloc[-lookback:].values
@@ -540,6 +602,33 @@ def predict_next_close(user_input: str, artifact: dict,
     rhat_log = float(model.predict(X_in, verbose=0).ravel()[0])
     next_close = float(C_t * np.exp(rhat_log))
     return {"ticker": ticker, "today_close": C_t, "pred_next_close": next_close}
+
+def predict_next_n_closes_and_compare(user_input: str, artifact: dict, n: int = 3,
+                                      start_date: str = START_DATE, end_inclusive: str = END_DATE_INCLUSIVE):
+    """
+    다음 n개 거래일에 대해, 각 스텝을 '1일 전진 예측'으로 평가.
+    스텝마다 기준일을 실제 다음 거래일로 갱신하여 현실적인 평가를 수행.
+    """
+    ticker = resolve_ticker(user_input, nasdaq100_kor)
+    results = []
+    basis = end_inclusive
+    for step in range(1, n+1):
+        pred = predict_next_close(user_input, artifact, start_date, basis)
+        actual_dt, actual_close = fetch_next_trading_close_after(basis, ticker)
+        err_abs = pred["pred_next_close"] - actual_close
+        err_pct = (err_abs / actual_close) * 100.0
+        results.append({
+            "기준일": basis,
+            "예측대상일": actual_dt,
+            "ticker": ticker,
+            "기준일종가": pred["today_close"],
+            "예측종가": pred["pred_next_close"],
+            "실제종가": actual_close,
+            "오차": err_abs,
+            "오차율(%)": err_pct
+        })
+        basis = actual_dt  # 다음 스텝의 기준일을 실제 다음 거래일로 이동
+    return results
 
 # ===================================================================
 # 5) 실행: 학습, 평가, 저장 + 예측/실제 비교
@@ -578,36 +667,24 @@ if __name__ == "__main__":
             json.dump(artifact.get("best_params", {}), f, indent=2)
         print("아티팩트 저장 완료. (폴더: model_artifacts)")
 
-    # 예측 vs 실제 (휴장일 보정)
+    # 예측 vs 실제: 각 종목에 대해 다음 3거래일 연속 평가
     try:
-        basis_dt = pd.to_datetime(END_DATE_INCLUSIVE)
-        basis_str = basis_dt.strftime("%Y-%m-%d")
-
         tickers_to_test = ["엔비디아", "애플", "마이크로소프트"]
-        abs_pct_errs = []
-
-        print("\n[예측 vs 실제]")
+        print("\n[다음 3거래일 예측 vs 실제]")
         for name in tickers_to_test:
-            pred = predict_next_close(
+            rows = predict_next_n_closes_and_compare(
                 name,
                 {"model": model, **artifact},
+                n=3,
                 start_date=START_DATE,
                 end_inclusive=END_DATE_INCLUSIVE
             )
-            actual_dt, actual_close = fetch_next_trading_close_after(END_DATE_INCLUSIVE, pred["ticker"])
-            err_abs = pred["pred_next_close"] - actual_close
-            err_pct = (err_abs / actual_close) * 100.0
-            abs_pct_errs.append(abs(err_pct))
-
-            print(
-                f"기준일={basis_str}  예측대상일(다음 거래일)={actual_dt}  종목={name}({pred['ticker']})  "
-                f"기준일종가={pred['today_close']:.2f}  예측종가={pred['pred_next_close']:.2f}  "
-                f"실제종가={actual_close:.2f}  오차={err_abs:+.2f} ({err_pct:+.2f}%)"
-            )
-
-        if abs_pct_errs:
-            mape = np.mean(abs_pct_errs)
-            print(f"\n[요약] MAPE(다음 거래일 종가, %): {mape:.2f}%")
-
+            print(f"\n종목: {name} ({rows[0]['ticker']})")
+            for r in rows:
+                print(
+                    f"기준일={r['기준일']} → 예측대상일={r['예측대상일']} "
+                    f"기준일종가={r['기준일종가']:.2f} 예측={r['예측종가']:.2f} 실제={r['실제종가']:.2f} "
+                    f"오차={r['오차']:+.2f} ({r['오차율(%)']:+.2f}%)"
+                )
     except Exception as e:
-        print("\n[예측/실제 비교 실패]", e)
+        print("\n[연속 예측/실제 비교 실패]", e)
