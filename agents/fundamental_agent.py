@@ -11,9 +11,9 @@ class FundamentalAgent:
         self.ticker = ticker.upper()
 
         # 모델, 스케일러, 피처 순서 로드
-        self.model = joblib.load("models/final_lgbm.pkl")
-        self.scaler = joblib.load("models/scaler.pkl")
-        with open("models/feature_cols.json", "r") as f:
+        self.model = joblib.load("models22/final_lgbm.pkl")
+        self.scaler = joblib.load("models22/scaler.pkl")
+        with open("models22/feature_cols.json", "r") as f:
             self.feature_order = json.load(f)
 
     def _build_features(self, target_date: str):
@@ -58,6 +58,35 @@ class FundamentalAgent:
             merged[f"ma_{w}"] = merged["close"].rolling(w, min_periods=3).mean()
         merged["vol_20"] = merged["ret_1"].rolling(20, min_periods=10).std()
         merged["mom_20"] = merged["close"] / merged["ma_20"]
+
+        # === 추가: 펀더멘털 대비 시총 비율 ===
+        if "net_income" in merged.columns and "market_cap" in merged.columns:
+            merged["ni_to_mcap"] = merged["net_income"] / merged["market_cap"]
+        else:
+            merged["ni_to_mcap"] = 0.0
+
+        if "revenue" in merged.columns and "market_cap" in merged.columns:
+            merged["rev_to_mcap"] = merged["revenue"] / merged["market_cap"]
+        else:
+            merged["rev_to_mcap"] = 0.0
+
+        if "operating_cashflow" in merged.columns and "market_cap" in merged.columns:
+            merged["ocf_to_mcap"] = merged["operating_cashflow"] / merged["market_cap"]
+        else:
+            merged["ocf_to_mcap"] = 0.0
+
+        # === 추가: 시장 상대 지표 ===
+        if "NASDAQ_ret1" in merged.columns:
+            merged["excess_ret"] = merged["ret_1"] - merged["NASDAQ_ret1"]
+        else:
+            merged["excess_ret"] = 0.0
+
+        if "VIX" in merged.columns:
+            merged["rel_vol"] = merged["vol_20"] / merged["VIX"]
+        else:
+            merged["rel_vol"] = 0.0
+
+
 
         # target_date 이전 가장 가까운 거래일
         row = merged.loc[merged["Date"] <= ref_dt].tail(1).copy()
@@ -106,7 +135,7 @@ class FundamentalAgent:
 
 
 if __name__ == "__main__":
-    ticker = "AAPL"
+    ticker = "MSFT"
     target_date = "2025-01-02"
     agent = FundamentalAgent(ticker)
     out = agent.ml_predict_price(target_date)
