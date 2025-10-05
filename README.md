@@ -57,6 +57,16 @@ pip install -r requirements.txt
 ### 2. 환경 변수 설정
 ```bash
 export CAPSTONE_OPENAI_API="your_openai_api_key_here"
+
+# ML 모듈 사용시 (선택적)
+export FINNHUB_API_KEY="your_finnhub_api_key_here"
+```
+
+또는 `.env` 파일 생성:
+```bash
+# .env 파일 생성
+cp env_example.txt .env
+# .env 파일을 편집하여 API 키 설정
 ```
 
 ### 3. 실행 방법
@@ -253,9 +263,51 @@ $ python debate_agent.py
 - 이유 : 에이전트 의견을 종합한 결과(중앙값 기준)
 ```
 
+## 🤖 ML 모듈 통합 (NEW!)
+
+### ML 모듈 활성화
+Sentimental 브랜치의 searcher와 predictor를 메인 브랜치에 통합할 수 있습니다:
+
+```python
+# ML 모듈 통합 모드
+debate_system = DebateSystem(use_ml_modules=True)
+logs, final = debate_system.run_debate("AAPL", rounds=3)
+```
+
+### ML 모듈 기능
+- **실시간 뉴스 수집**: Finnhub API를 통한 최신 뉴스 데이터
+- **FINBERT 임베딩**: 금융 특화 언어 모델로 텍스트 분석
+- **MLP 예측 모델**: 훈련된 신경망으로 주가 예측
+- **하이브리드 분석**: GPT + ML 모델 결합으로 정확도 향상
+
+### 설정 방법
+1. **API 키 설정**:
+   ```bash
+   export FINNHUB_API_KEY="your_finnhub_api_key"
+   ```
+
+2. **ML 모델 파일 복사**:
+   ```bash
+   # Sentimental 브랜치에서 모델 파일 복사
+   cp feature/sentimental/mlp_stock_model.pt ./
+   ```
+
+3. **필요 패키지 설치**:
+   ```bash
+   pip install torch transformers
+   ```
+
+4. **사용 예제 실행**:
+   ```bash
+   python example_ml_integration.py
+   ```
+
 ## 🎯 향후 계획
 
 - [x] 웹 인터페이스 추가 (Streamlit 대시보드 완료)
+- [x] ML 모듈 통합 (Sentimental 브랜치 통합 완료)
+- [ ] Technical 브랜치 ML 모듈 통합
+- [ ] Fundamental 브랜치 ML 모듈 통합
 - [ ] 실시간 데이터 스트리밍
 - [ ] 백테스팅 기능
 - [ ] 포트폴리오 최적화

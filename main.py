@@ -31,7 +31,8 @@ class AgentConfig:
 class DebateSystem:
     """토론 시스템 메인 클래스"""
     
-    def __init__(self):
+    def __init__(self, use_ml_modules: bool = False):
+        self.use_ml_modules = use_ml_modules
         self.agent_configs = self._setup_agent_configs()
         self.prompt_configs = self._setup_prompt_configs()
     
@@ -164,7 +165,16 @@ class DebateSystem:
         agents = {}
         
         for agent_type, config in self.agent_configs.items():
-            agent = config.agent_class(agent_id=config.name)
+            # SentimentalAgent의 경우 ML 모듈 설정 추가
+            if agent_type == 'sentimental' and self.use_ml_modules:
+                agent = config.agent_class(
+                    agent_id=config.name,
+                    use_ml_modules=True,
+                    finnhub_api_key=os.getenv('FINNHUB_API_KEY'),
+                    model_path="mlp_stock_model.pt"
+                )
+            else:
+                agent = config.agent_class(agent_id=config.name)
             
             # 프롬프트 설정 적용
             if hasattr(agent, '_update_prompts'):

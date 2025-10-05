@@ -2,10 +2,32 @@ import json
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import os
 from agents.base_agent import BaseAgent, Target, Opinion, Rebuttal, RoundLog, StockData
 from typing import Dict, List, Optional, Literal, Tuple
 from prompts import SEARCHER_PROMPTS, PREDICTER_PROMPTS, OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
+from agents.sentimental_modules import SentimentalModuleManager
 class SentimentalAgent(BaseAgent):
+    def __init__(self, 
+                 agent_id: str = "SentimentalAgent",
+                 use_ml_modules: bool = False,
+                 finnhub_api_key: Optional[str] = None,
+                 model_path: Optional[str] = None,
+                 **kwargs):
+        super().__init__(agent_id=agent_id, **kwargs)
+        
+        # ML 모듈 설정
+        self.use_ml_modules = use_ml_modules
+        if self.use_ml_modules:
+            self.ml_manager = SentimentalModuleManager(
+                use_ml_searcher=True,
+                use_ml_predictor=True,
+                finnhub_api_key=finnhub_api_key or os.getenv('FINNHUB_API_KEY'),
+                model_path=model_path or "mlp_stock_model.pt"
+            )
+        else:
+            self.ml_manager = None
+    
     # ------------------------------------------------------------------
     # 1) 데이터 수집
     # ------------------------------------------------------------------
@@ -16,32 +38,79 @@ class SentimentalAgent(BaseAgent):
         info = yf.Ticker(ticker).info
         currency = (info.get("currency") or "USD").upper()
 
-        # 스키마 정의
-        schema_sent = {
-            "type": "object",
-            "properties": {
-                "sentiment": {"type": "string"},
-                "positives": {"type": "array", "items": {"type": "string"}},
-                "negatives": {"type": "array", "items": {"type": "string"}},
-                "evidence":  {"type": "array", "items": {"type": "string"}},
-                "summary":   {"type": "string"},
-            },
-            "required": ["sentiment", "positives", "negatives", "evidence", "summary"],
-            "additionalProperties": False,
-        }
+        # ML 모듈 사용 여부에 따른 데이터 수집
+        if self.use_ml_modules and self.ml_manager:
+            # ML 모듈을 사용한 향상된 센티멘탈 데이터 수집
+            ml_sentimental_data = self.ml_manager.get_enhanced_sentimental_data(ticker, last_price)
+            
+            # 기존 GPT 기반 분석과 ML 결과를 결합
+            schema_sent = {
+                "type": "object",
+                "properties": {
+                    "sentiment": {"type": "string"},
+                    "positives": {"type": "array", "items": {"type": "string"}},
+                    "negatives": {"type": "array", "items": {"type": "string"}},
+                    "evidence":  {"type": "array", "items": {"type": "string"}},
+                    "summary":   {"type": "string"},
+                },
+                "required": ["sentiment", "positives", "negatives", "evidence", "summary"],
+                "additionalProperties": False,
+            }
 
-        sys_text = SEARCHER_PROMPTS["sentimental"]["system"]
-        user_text = SEARCHER_PROMPTS["sentimental"]["user_template"].format(
-            ticker=ticker, 
-            current_price=last_price, 
-            currency=currency
-        )
+            # ML 결과를 GPT 프롬프트에 포함
+            ml_context = f"""
+ML 모델 분석 결과:
+- 예측 종가: {ml_sentimental_data.get('ml_prediction', 'N/A')}
+- 신뢰도: {ml_sentimental_data.get('ml_confidence', 0.0):.2f}
+- 수집된 뉴스: {len(ml_sentimental_data.get('evidence', []))}개
+- ML 센티멘탈: {ml_sentimental_data.get('sentiment', 'neutral')}
+"""
 
-        parsed = self._ask_with_fallback(
-            self._msg("system", sys_text),
-            self._msg("user", user_text),
-            schema_sent
-        )
+            sys_text = SEARCHER_PROMPTS["sentimental"]["system"]
+            user_text = SEARCHER_PROMPTS["sentimental"]["user_template"].format(
+                ticker=ticker, 
+                current_price=last_price, 
+                currency=currency
+            ) + f"\n\n{ml_context}"
+
+            parsed = self._ask_with_fallback(
+                self._msg("system", sys_text),
+                self._msg("user", user_text),
+                schema_sent
+            )
+            
+            # ML 결과를 센티멘탈 데이터에 추가
+            parsed["ml_prediction"] = ml_sentimental_data.get('ml_prediction')
+            parsed["ml_confidence"] = ml_sentimental_data.get('ml_confidence')
+            parsed["ml_evidence"] = ml_sentimental_data.get('evidence', [])
+            
+        else:
+            # 기존 GPT 기반 분석만 사용
+            schema_sent = {
+                "type": "object",
+                "properties": {
+                    "sentiment": {"type": "string"},
+                    "positives": {"type": "array", "items": {"type": "string"}},
+                    "negatives": {"type": "array", "items": {"type": "string"}},
+                    "evidence":  {"type": "array", "items": {"type": "string"}},
+                    "summary":   {"type": "string"},
+                },
+                "required": ["sentiment", "positives", "negatives", "evidence", "summary"],
+                "additionalProperties": False,
+            }
+
+            sys_text = SEARCHER_PROMPTS["sentimental"]["system"]
+            user_text = SEARCHER_PROMPTS["sentimental"]["user_template"].format(
+                ticker=ticker, 
+                current_price=last_price, 
+                currency=currency
+            )
+
+            parsed = self._ask_with_fallback(
+                self._msg("system", sys_text),
+                self._msg("user", user_text),
+                schema_sent
+            )
 
         self.stockdata = StockData(
             sentimental=parsed,
@@ -68,23 +137,82 @@ class SentimentalAgent(BaseAgent):
         min_price = last_price * 0.90
         max_price = last_price * 1.10
         
-        ctx = {
-            "sentimental_summary": stock_data.sentimental,
-            "current_price": last_price,
-            "currency": currency,
-            "prediction_range": f"{min_price:.2f} - {max_price:.2f} {currency}",
-            "agent_character": "중립적인 센티멘탈 분석가로서 시장 심리와 여론에 기반한 균형 잡힌 예측을 제공합니다."
+        # ML 모듈 사용 여부에 따른 예측
+        if self.use_ml_modules and self.ml_manager and stock_data.sentimental.get('ml_prediction'):
+            # ML 예측값이 있는 경우, GPT와 ML 결과를 결합
+            ml_prediction = stock_data.sentimental.get('ml_prediction')
+            ml_confidence = stock_data.sentimental.get('ml_confidence', 0.0)
+            
+            # ML 예측값이 범위 내에 있는지 확인하고 조정
+            if ml_prediction < min_price:
+                ml_prediction = min_price
+            elif ml_prediction > max_price:
+                ml_prediction = max_price
+            
+            # ML 신뢰도에 따른 가중치 적용
+            ml_weight = min(ml_confidence * 0.5, 0.3)  # 최대 30% 가중치
+            gpt_weight = 1.0 - ml_weight
+            
+            ctx = {
+                "sentimental_summary": stock_data.sentimental,
+                "current_price": last_price,
+                "currency": currency,
+                "prediction_range": f"{min_price:.2f} - {max_price:.2f} {currency}",
+                "agent_character": "중립적인 센티멘탈 분석가로서 시장 심리와 여론에 기반한 균형 잡힌 예측을 제공합니다.",
+                "ml_prediction": ml_prediction,
+                "ml_confidence": ml_confidence,
+                "ml_weight": ml_weight,
+                "gpt_weight": gpt_weight
             }
-        sys_text = PREDICTER_PROMPTS["sentimental"]["system"]
-        user_text = PREDICTER_PROMPTS["sentimental"]["user_template"].format(
-            context=json.dumps(ctx, ensure_ascii=False)
-        )
-        parsed = self._ask_with_fallback(
-            self._msg("system", sys_text),
-            self._msg("user", user_text),
-            self.schema_obj_opinion
-        )
-        return Target(next_close=float(parsed.get("next_close", 0.0)))
+            
+            sys_text = PREDICTER_PROMPTS["sentimental"]["system"] + """
+            
+            추가로 ML 모델의 예측값과 신뢰도가 제공됩니다. 
+            ML 예측값을 참고하되, 최종 예측은 당신의 전문가적 판단을 우선시하세요.
+            """
+            
+            user_text = PREDICTER_PROMPTS["sentimental"]["user_template"].format(
+                context=json.dumps(ctx, ensure_ascii=False)
+            )
+            
+            parsed = self._ask_with_fallback(
+                self._msg("system", sys_text),
+                self._msg("user", user_text),
+                self.schema_obj_opinion
+            )
+            
+            gpt_prediction = float(parsed.get("next_close", last_price))
+            
+            # ML과 GPT 예측을 가중 평균으로 결합
+            final_prediction = (gpt_prediction * gpt_weight) + (ml_prediction * ml_weight)
+            
+            # 범위 내로 클리핑
+            final_prediction = max(min_price, min(max_price, final_prediction))
+            
+            return Target(next_close=final_prediction)
+            
+        else:
+            # 기존 GPT 기반 예측만 사용
+            ctx = {
+                "sentimental_summary": stock_data.sentimental,
+                "current_price": last_price,
+                "currency": currency,
+                "prediction_range": f"{min_price:.2f} - {max_price:.2f} {currency}",
+                "agent_character": "중립적인 센티멘탈 분석가로서 시장 심리와 여론에 기반한 균형 잡힌 예측을 제공합니다."
+            }
+            
+            sys_text = PREDICTER_PROMPTS["sentimental"]["system"]
+            user_text = PREDICTER_PROMPTS["sentimental"]["user_template"].format(
+                context=json.dumps(ctx, ensure_ascii=False)
+            )
+            
+            parsed = self._ask_with_fallback(
+                self._msg("system", sys_text),
+                self._msg("user", user_text),
+                self.schema_obj_opinion
+            )
+            
+            return Target(next_close=float(parsed.get("next_close", 0.0)))
     
     # ------------------------------------------------------------------
     # 3) LLM 메시지 빌드(Opinion): 다음날 종가와 근거를 JSON으로 요구

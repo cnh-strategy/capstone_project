@@ -119,3 +119,8 @@ kaleido>=0.2.1
 
 # 웹 대시보드
 streamlit>=1.28.0
+
+# ML 모듈 (선택적)
+torch>=2.0.0
+transformers>=4.30.0
+scikit-learn>=1.3.0
