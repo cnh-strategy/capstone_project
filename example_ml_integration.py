@@ -18,11 +18,11 @@ def main():
     
     debate_system_basic = DebateSystem(use_ml_modules=False)
     print("✅ 기본 모드로 DebateSystem 초기화 완료")
-    print("   - GPT 기반 센티멘탈 분석만 사용")
+    print("   - GPT 기반 분석만 사용")
     print("   - 기존 방식과 동일한 동작")
     
-    # 2. ML 모듈 통합 모드
-    print("\n🤖 2. ML 모듈 통합 모드")
+    # 2. ML 모듈 통합 모드 (모든 에이전트)
+    print("\n🤖 2. ML 모듈 통합 모드 (모든 에이전트)")
     print("-" * 30)
     
     # 환경변수 확인
@@ -48,8 +48,9 @@ def main():
         debate_system_ml = DebateSystem(use_ml_modules=True)
         print("✅ ML 모듈 통합 모드로 DebateSystem 초기화 완료")
         print("   - GPT + ML 모델 결합 분석")
-        print("   - 실시간 뉴스 수집 (Finnhub API)")
-        print("   - FINBERT + MLP 모델 예측")
+        print("   - Sentimental: FINBERT + MLP 모델 + Finnhub 뉴스")
+        print("   - Technical: Keras 모델 + FRED 매크로 데이터")
+        print("   - Fundamental: LightGBM 모델 + 분기 보고서")
         
         # 3. 토론 실행 예제
         print("\n🚀 3. 토론 실행 예제")
@@ -77,12 +78,15 @@ def main():
     print("1. .env 파일에 API 키 설정:")
     print("   CAPSTONE_OPENAI_API=your_key")
     print("   FINNHUB_API_KEY=your_key")
+    print("   FRED_API_KEY=your_key")
     print()
     print("2. 필요한 패키지 설치:")
-    print("   pip install torch transformers requests")
+    print("   pip install torch transformers requests lightgbm scikit-learn")
     print()
     print("3. ML 모델 파일 복사:")
-    print("   Sentimental 브랜치의 mlp_stock_model.pt를 메인으로 복사")
+    print("   - Sentimental: mlp_stock_model.pt")
+    print("   - Technical: model_artifacts/final_best.keras")
+    print("   - Fundamental: fundamental_model_maker/2025/models22/final_lgbm.pkl")
     print()
     print("4. 코드에서 ML 모듈 활성화:")
     print("   debate_system = DebateSystem(use_ml_modules=True)")

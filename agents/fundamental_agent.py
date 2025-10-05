@@ -2,10 +2,30 @@ import json
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import os
 from agents.base_agent import BaseAgent, Target, Opinion, Rebuttal, RoundLog, StockData
 from typing import Dict, List, Optional, Literal, Tuple
 from prompts import SEARCHER_PROMPTS, PREDICTER_PROMPTS, OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
+from agents.fundamental_modules import FundamentalModuleManager
 class FundamentalAgent(BaseAgent):
+    def __init__(self, 
+                 agent_id: str = "FundamentalAgent",
+                 use_ml_modules: bool = False,
+                 model_path: Optional[str] = None,
+                 **kwargs):
+        super().__init__(agent_id=agent_id, **kwargs)
+        
+        # ML 모듈 설정
+        self.use_ml_modules = use_ml_modules
+        if self.use_ml_modules:
+            self.ml_manager = FundamentalModuleManager(
+                use_ml_searcher=True,
+                use_ml_predictor=True,
+                model_path=model_path or "fundamental_model_maker/2025/models22/final_lgbm.pkl"
+            )
+        else:
+            self.ml_manager = None
+    
     # ------------------------------------------------------------------
     # 1) 데이터 수집 
     # ------------------------------------------------------------------
@@ -43,6 +63,39 @@ class FundamentalAgent(BaseAgent):
             self._msg("user", user_text),
             schema_fund
         )
+        
+        # ML 모듈 사용 여부에 따른 데이터 수집
+        if self.use_ml_modules and self.ml_manager:
+            # ML 모듈을 사용한 향상된 펀더멘털 분석 데이터 수집
+            ml_fundamental_data = self.ml_manager.get_enhanced_fundamental_data(ticker, last_price)
+            
+            # ML 결과를 펀더멘털 데이터에 추가
+            parsed["ml_signals"] = ml_fundamental_data.get('signals', {})
+            parsed["ml_confidence"] = ml_fundamental_data.get('confidence', 0.0)
+            parsed["ml_fundamental_data"] = ml_fundamental_data.get('fundamental_data', {})
+            
+            # ML 결과를 GPT 프롬프트에 포함하여 재분석
+            ml_context = f"""
+ML 모델 분석 결과:
+- 펀더멘털 신호: {ml_fundamental_data.get('signals', {})}
+- 신뢰도: {ml_fundamental_data.get('confidence', 0.0):.2f}
+- 분기 보고서: {ml_fundamental_data.get('fundamental_data', {}).get('period', 'N/A')}
+- 시장 데이터: VIX, S&P500, NASDAQ 등 수집 완료
+"""
+
+            # ML 컨텍스트를 포함한 재분석
+            user_text_with_ml = SEARCHER_PROMPTS["fundamental"]["user_template"].format(
+                ticker=ticker, 
+                current_price=last_price, 
+                currency=currency
+            ) + f"\n\n{ml_context}"
+
+            parsed = self._ask_with_fallback(
+                self._msg("system", sys_text),
+                self._msg("user", user_text_with_ml),
+                schema_fund
+            )
+
         self.stockdata = StockData(
             fundamental=parsed, 
             sentimental={}, 

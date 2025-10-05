@@ -2,11 +2,33 @@ import json
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import os
 from agents.base_agent import BaseAgent, Target, Opinion, Rebuttal, RoundLog, StockData
 from typing import Dict, List, Optional, Literal, Tuple
 from prompts import SEARCHER_PROMPTS, PREDICTER_PROMPTS, OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
+from agents.technical_modules import TechnicalModuleManager
 
 class TechnicalAgent(BaseAgent):
+    def __init__(self, 
+                 agent_id: str = "TechnicalAgent",
+                 use_ml_modules: bool = False,
+                 fred_api_key: Optional[str] = None,
+                 model_path: Optional[str] = None,
+                 **kwargs):
+        super().__init__(agent_id=agent_id, **kwargs)
+        
+        # ML 모듈 설정
+        self.use_ml_modules = use_ml_modules
+        if self.use_ml_modules:
+            self.ml_manager = TechnicalModuleManager(
+                use_ml_searcher=True,
+                use_ml_predictor=True,
+                fred_api_key=fred_api_key or os.getenv('FRED_API_KEY'),
+                model_path=model_path or "model_artifacts/final_best.keras"
+            )
+        else:
+            self.ml_manager = None
+    
     # ------------------------------------------------------------------
     # 1) 데이터 수집 
     # ------------------------------------------------------------------
@@ -41,6 +63,38 @@ class TechnicalAgent(BaseAgent):
             self._msg("user", user_text),
             schema_tech
         )
+
+        # ML 모듈 사용 여부에 따른 데이터 수집
+        if self.use_ml_modules and self.ml_manager:
+            # ML 모듈을 사용한 향상된 기술적 분석 데이터 수집
+            ml_technical_data = self.ml_manager.get_enhanced_technical_data(ticker, last_price)
+            
+            # ML 결과를 기술적 데이터에 추가
+            parsed["ml_signals"] = ml_technical_data.get('signals', {})
+            parsed["ml_confidence"] = ml_technical_data.get('confidence', 0.0)
+            parsed["ml_indicators"] = ml_technical_data.get('indicators', {})
+            
+            # ML 결과를 GPT 프롬프트에 포함하여 재분석
+            ml_context = f"""
+ML 모델 분석 결과:
+- 기술적 신호: {ml_technical_data.get('signals', {})}
+- 신뢰도: {ml_technical_data.get('confidence', 0.0):.2f}
+- 수집된 뉴스: {ml_technical_data.get('news_count', 0)}개
+- 기술적 지표: RSI, MA, 볼린저밴드 등 계산 완료
+"""
+
+            # ML 컨텍스트를 포함한 재분석
+            user_text_with_ml = SEARCHER_PROMPTS["technical"]["user_template"].format(
+                ticker=ticker, 
+                current_price=last_price, 
+                currency=currency
+            ) + f"\n\n{ml_context}"
+
+            parsed = self._ask_with_fallback(
+                self._msg("system", sys_text),
+                self._msg("user", user_text_with_ml),
+                schema_tech
+            )
 
         self.stockdata = StockData(
             sentimental={},

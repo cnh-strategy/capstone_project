@@ -165,14 +165,30 @@ class DebateSystem:
         agents = {}
         
         for agent_type, config in self.agent_configs.items():
-            # SentimentalAgent의 경우 ML 모듈 설정 추가
-            if agent_type == 'sentimental' and self.use_ml_modules:
-                agent = config.agent_class(
-                    agent_id=config.name,
-                    use_ml_modules=True,
-                    finnhub_api_key=os.getenv('FINNHUB_API_KEY'),
-                    model_path="mlp_stock_model.pt"
-                )
+            # ML 모듈 사용시 각 에이전트별 설정
+            if self.use_ml_modules:
+                if agent_type == 'sentimental':
+                    agent = config.agent_class(
+                        agent_id=config.name,
+                        use_ml_modules=True,
+                        finnhub_api_key=os.getenv('FINNHUB_API_KEY'),
+                        model_path="mlp_stock_model.pt"
+                    )
+                elif agent_type == 'technical':
+                    agent = config.agent_class(
+                        agent_id=config.name,
+                        use_ml_modules=True,
+                        fred_api_key=os.getenv('FRED_API_KEY'),
+                        model_path="model_artifacts/final_best.keras"
+                    )
+                elif agent_type == 'fundamental':
+                    agent = config.agent_class(
+                        agent_id=config.name,
+                        use_ml_modules=True,
+                        model_path="fundamental_model_maker/2025/models22/final_lgbm.pkl"
+                    )
+                else:
+                    agent = config.agent_class(agent_id=config.name)
             else:
                 agent = config.agent_class(agent_id=config.name)
             

@@ -275,9 +275,18 @@ logs, final = debate_system.run_debate("AAPL", rounds=3)
 ```
 
 ### ML 모듈 기능
-- **실시간 뉴스 수집**: Finnhub API를 통한 최신 뉴스 데이터
-- **FINBERT 임베딩**: 금융 특화 언어 모델로 텍스트 분석
-- **MLP 예측 모델**: 훈련된 신경망으로 주가 예측
+- **Sentimental Agent**: 
+  - 실시간 뉴스 수집 (Finnhub API)
+  - FINBERT 임베딩으로 텍스트 분석
+  - MLP 신경망 모델로 주가 예측
+- **Technical Agent**:
+  - FRED API로 매크로 경제 데이터 수집
+  - 기술적 지표 자동 계산 (RSI, MA, 볼린저밴드)
+  - Keras 딥러닝 모델로 예측
+- **Fundamental Agent**:
+  - 분기 재무제표 자동 수집
+  - 시장 지수 데이터 통합
+  - LightGBM 모델로 펀더멘털 예측
 - **하이브리드 분석**: GPT + ML 모델 결합으로 정확도 향상
 
 ### 설정 방법
@@ -288,13 +297,15 @@ logs, final = debate_system.run_debate("AAPL", rounds=3)
 
 2. **ML 모델 파일 복사**:
    ```bash
-   # Sentimental 브랜치에서 모델 파일 복사
+   # 각 브랜치에서 모델 파일 복사
    cp feature/sentimental/mlp_stock_model.pt ./
+   cp -r feature/technical/model_artifacts ./
+   cp -r feature/yezi-fundamental/fundamental_model_maker ./
    ```
 
 3. **필요 패키지 설치**:
    ```bash
-   pip install torch transformers
+   pip install torch transformers lightgbm tensorflow scikit-learn
    ```
 
 4. **사용 예제 실행**:
@@ -305,9 +316,10 @@ logs, final = debate_system.run_debate("AAPL", rounds=3)
 ## 🎯 향후 계획
 
 - [x] 웹 인터페이스 추가 (Streamlit 대시보드 완료)
-- [x] ML 모듈 통합 (Sentimental 브랜치 통합 완료)
-- [ ] Technical 브랜치 ML 모듈 통합
-- [ ] Fundamental 브랜치 ML 모듈 통합
+- [x] ML 모듈 통합 (모든 브랜치 통합 완료)
+  - [x] Sentimental 브랜치 통합
+  - [x] Technical 브랜치 통합  
+  - [x] Fundamental 브랜치 통합
 - [ ] 실시간 데이터 스트리밍
 - [ ] 백테스팅 기능
 - [ ] 포트폴리오 최적화
