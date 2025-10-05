@@ -2,23 +2,51 @@
 .capstone/
 env/
 capstone/
+venv/
+.venv/
 
 # 파이썬 캐시
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.py[cod]
+*$py.class
 
 # 환경변수/민감정보
 .env
+.env.local
+.env.*.local
 
 # 로그/임시 파일
 *.log
 *.tmp
+*.temp
 
 # Jupyter Notebook 체크포인트
 .ipynb_checkpoints/
 
+# 생성된 결과물 (이미지, 리포트 등)
+outputs/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+*.svg
+
+# 테스트/데모 파일들 (선택적)
+demos/*.png
+demos/temp_*
+demos/*.log
+
+# IDE 설정
+.vscode/
+.idea/
+*.swp
+*.swo
+
 # 시스템 파일
 .DS_Store
 Thumbs.db
+*.tmp
