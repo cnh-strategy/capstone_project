@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import warnings, os, random, json, pickle
 warnings.filterwarnings("ignore")
 
@@ -29,15 +30,15 @@ from tqdm.auto import tqdm
 # =========================
 SEED = 1234
 np.random.seed(SEED); random.seed(SEED); tf.random.set_seed(SEED)
-# ======= 고정 하이퍼파라미터(Optuna 생략 모드) =======
+# === 고정 하이퍼파라미터 (Optuna 생략 모드) ===
 BEST_PARAMS = {
     "lookback": 50,
-    "units1": 64,
+    "units1": 128,
     "units2": 64,
-    "dropout": 0.3732,
-    "lr": 0.0029661,
+    "dropout": 0.35533278899551846,
+    "lr": 0.002163105979620468,
     "batch_size": 64,
-    "epochs": 80
+    "epochs": 68
 }
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -83,7 +84,7 @@ nasdaq100_kor = {
 }
 
 # =========================
-# 1) 유틸/지표/다운로드
+# 1) 유틸/다운로드/타깃
 # =========================
 START_DATE = "2020-01-01"
 END_DATE_INCLUSIVE = "2024-12-31"   # 학습 종료일 (고정)
@@ -103,33 +104,6 @@ def _coerce_tz_naive(obj):
     if isinstance(obj, (pd.Series, pd.DataFrame)):
         out = obj.copy(); out.index = _to_naive_utc_index(out.index); return out
     return obj
-
-def rsi(s: pd.Series, p: int = 14) -> pd.Series:
-    d = s.diff(); u = d.clip(lower=0); v = -d.clip(upper=0)
-    au = u.rolling(p).mean(); av = v.rolling(p).mean()
-    rs = au/av.replace(0,np.nan); return (100 - (100/(1+rs))).fillna(50)
-
-def ema(s: pd.Series, span: int) -> pd.Series:
-    return s.ewm(span=span, adjust=False).mean()
-
-def tema(s: pd.Series, span: int = 10) -> pd.Series:
-    e1 = ema(s, span); e2 = ema(e1, span); e3 = ema(e2, span)
-    return 3*e1 - 3*e2 + e3
-
-def bollinger(s: pd.Series, p=20, k=2.0):
-    m = s.rolling(p).mean(); sd = s.rolling(p).std()
-    up = m + k*sd; lo = m - k*sd
-    width = (up - lo) / m.replace(0,np.nan)
-    pb = (s - lo) / (up - lo)
-    return up, lo, width, pb
-
-def atr(h, l, c, n: int=14):
-    tr = pd.concat([(h-l).abs(), (h-c.shift(1)).abs(), (l-c.shift(1)).abs()], axis=1).max(axis=1)
-    return tr.rolling(n).mean()
-
-def obv(c: pd.Series, v: pd.Series):
-    direction = np.sign(c.diff().fillna(0.0))
-    return (direction * v.fillna(0.0)).cumsum()
 
 def robust_yf_history(ticker: str, start: str, end_exclusive: str) -> pd.DataFrame:
     df = pd.DataFrame()
@@ -154,45 +128,6 @@ def fetch_ohlcv_fixed_window(ticker: str, start_date: str, end_inclusive: str) -
     df = df[["Open","High","Low","Close","Volume"]].dropna(how="any")
     return _coerce_tz_naive(df)
 
-def fetch_market_series_fixed_window(start_date: str, end_inclusive: str) -> Optional[pd.DataFrame]:
-    end_exclusive = _end_to_exclusive(end_inclusive)
-    market_tickers = ["SPY", "QQQ", "^VIX", "^TNX", "DX-Y.NYB"]
-    try:
-        data = yf.download(market_tickers, start=start_date, end=end_exclusive, interval="1d",
-                           auto_adjust=True, progress=False)
-    except Exception:
-        data = pd.DataFrame()
-
-    if data is None or data.empty or "Close" not in data.columns:
-        return None
-
-    close = data["Close"].copy()
-    close.rename(columns={"^VIX": "VIX", "^TNX": "TNX", "DX-Y.NYB": "DXY"}, inplace=True)
-
-    for col in ["SPY", "QQQ", "VIX", "TNX", "DXY"]:
-        if col not in close.columns:
-            print(f"Warning: Market ticker {col} not found. Skipping.")
-            close[col] = np.nan
-
-    close = _coerce_tz_naive(close.dropna(how="all"))
-    if close.empty: return None
-
-    out = pd.DataFrame(index=close.index)
-    ret = close[["SPY", "QQQ"]].pct_change()
-    out["SPY_ret_1d"] = ret["SPY"]
-    out["QQQ_ret_1d"] = ret["QQQ"]
-    out["SPY_rv_20"]  = out["SPY_ret_1d"].rolling(20).std()
-    out["QQQ_rv_20"]  = out["QQQ_ret_1d"].rolling(20).std()
-
-    macro_cols = ["VIX", "TNX", "DXY"]
-    for col in macro_cols:
-        out[col] = close[col]
-        out[f"{col}_ret_1d"] = close[col].pct_change()
-        out[f"{col}_rv_20"]  = out[f"{col}_ret_1d"].rolling(20).std()
-
-    out = out.replace([np.inf,-np.inf], np.nan).ffill()
-    return out
-
 def fetch_next_trading_close_after(basis_date_inclusive: str, ticker: str) -> Tuple[str, float]:
     start = (pd.to_datetime(basis_date_inclusive) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     end_exclusive = (pd.to_datetime(basis_date_inclusive) + pd.Timedelta(days=15)).strftime("%Y-%m-%d")
@@ -204,65 +139,20 @@ def fetch_next_trading_close_after(basis_date_inclusive: str, ticker: str) -> Tu
     actual_close = float(df["Close"].iloc[0])
     return actual_dt, actual_close
 
-
-def build_features(df: pd.DataFrame, mkt: Optional[pd.DataFrame]=None) -> pd.DataFrame:
-    o,h,l,c,v = df["Open"],df["High"],df["Low"],df["Close"],df["Volume"]
-    out = pd.DataFrame(index=df.index)
-    out["dayofweek"] = df.index.dayofweek
-    out["month"] = df.index.month
-    out["weekofyear"] = df.index.isocalendar().week.astype(float)
-
-    out["ret_1d"]  = c.pct_change(1)
-    out["rsi_14"]  = rsi(c,14)
-    out["ma_5"]    = c.rolling(5).mean()
-    out["ma_20"]   = c.rolling(20).mean()
-    out["ma_50"]   = c.rolling(50).mean()
-    out["ma_200"]  = c.rolling(200).mean()
-    out["tema_10"] = tema(c,10)
-    _,_,bb_w,bbp   = bollinger(c,20,2.0)
-    out["bbp"]     = bbp; out["bb_w"] = bb_w
-    out["atr_14"]  = atr(h,l,c,14)
-    out["hl_range"]= (h-l) / c.replace(0,np.nan)
-    out["obv"]     = obv(c,v)
-
-    if isinstance(mkt, pd.DataFrame):
-        need = [
-            "SPY_ret_1d", "QQQ_ret_1d", "SPY_rv_20", "QQQ_rv_20",
-            "VIX", "TNX", "DXY",
-            "VIX_ret_1d", "TNX_ret_1d", "DXY_ret_1d",
-            "VIX_rv_20", "TNX_rv_20", "DXY_rv_20"
-        ]
-        available_need = [col for col in need if col in mkt.columns]
-        if available_need:
-            m_ = mkt.copy().sort_index().replace([np.inf,-np.inf],np.nan).ffill()
-            m_aligned = m_.reindex(out.index, method="ffill")
-            cov = m_aligned[available_need].notna().mean()
-            valid_cols = cov[cov >= 0.3].index.tolist()
-            if valid_cols:
-                out[valid_cols] = m_aligned[valid_cols]
-
-    out = out.apply(pd.to_numeric, errors="coerce").replace([np.inf,-np.inf], np.nan)
-    na_ratio = out.isna().mean()
-    drop_cols = na_ratio[na_ratio > 0.98].index.tolist()
-    if drop_cols: out = out.drop(columns=drop_cols)
-    out = out.ffill().dropna(how="all")
-    return out
-
 def make_target_logret_next(close: pd.Series, horizon: int=1) -> pd.Series:
     return np.log(close.shift(-horizon) / close)
 
 # =========================
-# 2) 프레임 & 시퀀스
+# 2) 프레임(종가만) & 시퀀스
 # =========================
-def build_frames_for_tickers(tickers: List[str], start_date: str, end_inclusive: str):
-    mkt = fetch_market_series_fixed_window(start_date, end_inclusive)
+def build_frames_close_only(tickers: List[str], start_date: str, end_inclusive: str):
     frames = {}
-    for t in tqdm(tickers, desc="Build frames", unit="ticker"):
+    for t in tqdm(tickers, desc="Build frames (close-only)", unit="ticker"):
         try:
             raw = fetch_ohlcv_fixed_window(t, start_date, end_inclusive)
-            feat = build_features(raw, mkt=mkt)
             y = make_target_logret_next(raw["Close"], 1)
-            frame = pd.concat([feat, y.rename("y"), raw["Close"].rename("C")], axis=1)
+            feats = pd.DataFrame({"feat_close": raw["Close"]}, index=raw.index)  # 단일 특성=종가
+            frame = pd.concat([feats, y.rename("y"), raw["Close"].rename("C")], axis=1)
             frame = frame.replace([np.inf,-np.inf], np.nan).ffill().dropna()
             if len(frame) >= 400:
                 frames[t] = frame
@@ -275,7 +165,6 @@ def build_frames_for_tickers(tickers: List[str], start_date: str, end_inclusive:
     return frames
 
 def align_feature_columns_across_frames(frames: Dict[str, pd.DataFrame]) -> Tuple[Dict[str, pd.DataFrame], List[str]]:
-    # 모든 티커에서 공통 차원 확보: 특성열 union을 만들고 동일 순서로 정렬
     all_feat = set()
     for df in frames.values():
         all_feat.update(df.columns[:-2])  # 마지막 2개(y, C) 제외
@@ -313,7 +202,7 @@ def fit_transform_3d(X_tr: np.ndarray, X_va: np.ndarray, X_te: np.ndarray):
         if X.size==0: return X
         N = X.shape[0]
         Z = scaler.transform(X.reshape(N*W, F)).reshape(N, W, F)
-        return Z.astype(np.float32)  # dtype 일관화
+        return Z.astype(np.float32)
     return scaler, trns(X_tr), trns(X_va), trns(X_te)
 
 def attach_onehot(X: np.ndarray, ids: np.ndarray, K: int) -> np.ndarray:
@@ -388,7 +277,6 @@ def tune_and_train_global(
     trainval_frames = {t: split[t][0] for t in tickers}
     test_frames     = {t: split[t][1] for t in tickers}
 
-    # 모든 프레임의 특성 차원을 이미 정렬·통일했다는 가정
     wf_years = _derive_walkforward_years(trainval_frames, max_folds=wf_max_folds)
 
     def build_global_seqs_from_tv_with_valyear(lookback: int, val_year: int):
@@ -444,24 +332,24 @@ def tune_and_train_global(
         if not fold_metrics:
             return 1e9
         return float(np.mean(fold_metrics))
-    
 
     os.makedirs("model_artifacts", exist_ok=True)
-
+    
     ### optuna 튜닝 생략 모드 ###
-    #study = optuna.create_study(direction="minimize", sampler=TPESampler(seed=SEED))
-    #study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
-    #best = study.best_params
-    #print("Best params:", best)
+    # study = optuna.create_study(direction="minimize", sampler=TPESampler(seed=SEED))
+    # study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+    # best = study.best_params
+    # print("Best params:", best)
+
+    # 고정 하이퍼 파라미터 사용
     best = BEST_PARAMS
-    print("Using fixed BEST_PARAMS:", best)
+    print("Fixed best params:", best)
 
     with open("model_artifacts/best_params.json", "w") as f:
         json.dump(best, f, indent=2)
-    
+
     lookback = best["lookback"]; u1=best["units1"]; u2=best["units2"]
     dr=best["dropout"]; lr=best["lr"]; batch=best["batch_size"]; epochs=best["epochs"]
-    
 
     def build_global_seqs_from_tv_all(lookback:int):
         Xs, ys, Cs, IDs = [], [], [], []
@@ -519,7 +407,6 @@ def tune_and_train_global(
         "방향 정확도(%)": round(dir_acc, 2)
     }
 
-    # 학습에 사용된 참조 특성열 저장(모든 프레임이 동일하므로 임의 티커에서 추출)
     any_t = next(iter(trainval_frames))
     feat_cols_ref = trainval_frames[any_t].columns[:-2].tolist()
 
@@ -535,7 +422,7 @@ def tune_and_train_global(
     return artifact, test_report_fmt
 
 # =========================
-# 4) 예측 (한글/티커 입력 → 다음날 종가)
+# 4) 예측 (한글/티커 입력 → 다음날 종가)  *종가 단일 특성*
 # =========================
 def resolve_ticker(user_input: str, kor_map: Dict[str,str]) -> str:
     user_input = user_input.strip().upper()
@@ -544,17 +431,12 @@ def resolve_ticker(user_input: str, kor_map: Dict[str,str]) -> str:
             return v.upper()
     return user_input
 
-def _build_features_for_infer(ticker: str, start_date: str, end_inclusive: str,
-                              feat_cols_ref: Optional[List[str]] = None) -> Tuple[pd.DataFrame, pd.Series]:
-    mkt = fetch_market_series_fixed_window(start_date, end_inclusive)
+def _build_features_for_infer_close_only(ticker: str, start_date: str, end_inclusive: str,
+                                         feat_cols_ref: Optional[List[str]] = None) -> Tuple[pd.DataFrame, pd.Series]:
     raw = fetch_ohlcv_fixed_window(ticker, start_date, end_inclusive)
-    feat = build_features(raw, mkt=mkt).replace([np.inf,-np.inf], np.nan).ffill()
-
-    # === 중요: 학습 참조 열로 강제 정렬/보강 ===
+    feat = pd.DataFrame({"feat_close": raw["Close"]}, index=raw.index)
     if feat_cols_ref is not None:
-        feat = feat.reindex(columns=feat_cols_ref)
-        feat = feat.ffill().fillna(0.0)
-
+        feat = feat.reindex(columns=feat_cols_ref).ffill().fillna(0.0)
     close = raw["Close"]
     return feat, close
 
@@ -566,7 +448,7 @@ def predict_next_close(user_input: str, artifact: dict,
     feat_cols_ref = artifact.get("feat_cols")
     K = len(id_map)
 
-    feat, close = _build_features_for_infer(ticker, start_date, end_inclusive, feat_cols_ref=feat_cols_ref)
+    feat, close = _build_features_for_infer_close_only(ticker, start_date, end_inclusive, feat_cols_ref=feat_cols_ref)
     if len(feat) < lookback+1:
         raise ValueError(f"Not enough rows for {ticker} to build a window of {lookback}.")
     X_win = feat.iloc[-lookback:].values
@@ -596,13 +478,9 @@ def predict_month_with_daily_assimilation(user_input: str, artifact: dict,
     rows = []
 
     while True:
-        # 1) 기준일까지의 실제 데이터로 다음 거래일 예측
         pred = predict_next_close(user_input, artifact, start_date=start_date, end_inclusive=basis)
-
-        # 2) 실제 다음 거래일 종가 조회
         next_dt, actual_close = fetch_next_trading_close_after(basis, ticker)
 
-        # 월 범위 가드
         next_dt_ts = pd.to_datetime(next_dt)
         if next_dt_ts < pd.to_datetime(month_start):
             basis = next_dt
@@ -621,10 +499,7 @@ def predict_month_with_daily_assimilation(user_input: str, artifact: dict,
             "오차율(%)": ((pred["pred_next_close"] - actual_close) / actual_close) * 100.0
         })
 
-        # 3) 동화: 다음 루프의 기준일을 '실제 다음 거래일'로 이동
         basis = next_dt
-
-        # 종료 가드
         if pd.to_datetime(basis) >= pd.to_datetime(month_end):
             break
 
@@ -648,8 +523,8 @@ if __name__ == "__main__":
     TEST_RATIO = 0.2
 
     print(f"[프레임 구축] {START_DATE} ~ {END_DATE_INCLUSIVE}")
-    raw_frames = build_frames_for_tickers(TICKERS, start_date=START_DATE, end_inclusive=END_DATE_INCLUSIVE)
-    frames, feat_cols_ref = align_feature_columns_across_frames(raw_frames)  # <-- 특성열 통일
+    raw_frames = build_frames_close_only(TICKERS, start_date=START_DATE, end_inclusive=END_DATE_INCLUSIVE)
+    frames, feat_cols_ref = align_feature_columns_across_frames(raw_frames)
     os.makedirs("model_artifacts", exist_ok=True)
 
     print("\n[튜닝/학습] Optuna로 최적 하이퍼파라미터 탐색")
@@ -661,14 +536,12 @@ if __name__ == "__main__":
         wf_max_folds=3
     )
 
-    # 학습에서 저장된 feat_cols 가 없다면(가드) 메인에서 계산한 값을 보관
     if "feat_cols" not in artifact or not artifact["feat_cols"]:
         artifact["feat_cols"] = feat_cols_ref
 
     print("\n[최적 하이퍼파라미터]")
     print(json.dumps(artifact["best_params"], indent=2, ensure_ascii=False))
 
-    # 모델 저장
     model = artifact["model"]
     model.save("model_artifacts/lstm_model.keras")
     with open("model_artifacts/other_artifacts.pkl", "wb") as f:
@@ -680,7 +553,6 @@ if __name__ == "__main__":
     for k,v in test_report.items():
         print(f"{k}: {v}")
 
-    # 2025-01 월간 예측: 재학습 없이, 일별 실제값을 입력에만 누적 반영
     print("\n[2025-01 월간 예측: 재학습 없음, 일별 실제값 동화]")
     for name in ["엔비디아", "애플", "마이크로소프트"]:
         df_jan, mape_jan, dir_acc_jan = predict_month_with_daily_assimilation(
@@ -691,6 +563,6 @@ if __name__ == "__main__":
             start_date=START_DATE,
             last_train_day=END_DATE_INCLUSIVE
         )
-        out_csv = f"model_artifacts/jan2025_{resolve_ticker(name, nasdaq100_kor)}.csv"
+        out_csv = f"model_artifacts/base_jan2025_{resolve_ticker(name, nasdaq100_kor)}.csv"
         df_jan.to_csv(out_csv, index=False)
         print(f"{name} → 2025-01 MAPE={mape_jan:.2f}% | 방향정확도={dir_acc_jan:.2f}% | CSV={out_csv}")
