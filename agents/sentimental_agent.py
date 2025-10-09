@@ -7,6 +7,7 @@ from agents.base_agent import BaseAgent, Target, Opinion, Rebuttal, RoundLog, St
 from typing import Dict, List, Optional, Literal, Tuple
 from prompts import SEARCHER_PROMPTS, PREDICTER_PROMPTS, OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 from agents.sentimental_modules import SentimentalModuleManager
+
 class SentimentalAgent(BaseAgent):
     def __init__(self, 
                  agent_id: str = "SentimentalAgent",
