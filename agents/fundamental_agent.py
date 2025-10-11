@@ -1,143 +1,122 @@
-import json
 import numpy as np
 import pandas as pd
 import joblib
-from datetime import datetime
-from fun_sub import get_price_history, get_multi_index_prices, get_quarterly_report
+from datetime import datetime, timedelta
+from tensorflow.keras.models import load_model
+
+from agents.fundamental_sub import MacroSentimentAgent
+
+# -------------------------------------------------------------
+# 1. 모델과 스케일러 불러오기
+# -------------------------------------------------------------
+model = load_model("models/multi_output_lstm_model.h5", compile=False)
+scaler_X = joblib.load("models/scaler_X.pkl")
+scaler_y = joblib.load("models/scaler_y.pkl")
+
+# -------------------------------------------------------------
+# 2. 기준일 및 윈도우 설정
+# -------------------------------------------------------------
+base_date = datetime(2025, 10, 11)
+window = 40  # 최근 40일 시퀀스 입력
+
+# -------------------------------------------------------------
+# 3. MacroSentimentAgent로 최신 데이터 가져오기
+# -------------------------------------------------------------
+macro_agent = MacroSentimentAgent(base_date=base_date, window=40)
+macro_agent.fetch_data()       # yfinance API에서 직접 1d 데이터 다운로드
+macro_agent.add_features()     # 수익률, 금리차, 위험심리 등 계산
+macro_df = macro_agent.data
+macro_df = macro_df.reset_index()
+
+# 날짜 정리
+macro_df = macro_df.tail(window + 5)
 
 
-class FundamentalAgent:
-    def __init__(self, ticker: str):
-        self.ticker = ticker.upper()
+# -------------------------------------------------------------
+# 4. 피처 정리 (학습 시 동일 구조)
+# -------------------------------------------------------------
+# 매크로 데이터 컬럼 평탄화
+# ✅ 이미 MacroSentimentAgent에서 feature 생성 완료
+macro_full = macro_df.copy()
+# 피처 선택
+feature_cols = [c for c in macro_full.columns if c != "Date"]
+X_input = macro_full[feature_cols]
 
-        # 모델, 스케일러, 피처 순서 로드
-        self.model = joblib.load("models22/final_lgbm.pkl")
-        self.scaler = joblib.load("models22/scaler.pkl")
-        with open("models22/feature_cols.json", "r") as f:
-            self.feature_order = json.load(f)
+# -------------------------------------------------------------
+# 4-1. 스케일러 feature 구조 맞추기 (안정 버전)
+# -------------------------------------------------------------
+expected_features = list(scaler_X.feature_names_in_)
 
-    def _build_features(self, target_date: str):
-        ref_dt = datetime.strptime(target_date, "%Y-%m-%d")
+# 1. 누락된 피처는 0으로 채움
+for col in expected_features:
+    if col not in X_input.columns:
+        X_input[col] = 0
 
-        # 1. 개별 종목 주가
-        df_prices = get_price_history(self.ticker, target_date)
+# 2. 불필요한 피처 제거
+X_input = X_input[expected_features]
 
-        # 2. 시장 지표
-        df_markets = get_multi_index_prices(target_date)
+# ✅ 확인용 로그
+print(f"[Check] 예측 데이터 feature 수: {X_input.shape[1]}, 스케일러 feature 수: {len(expected_features)}")
+missing = [c for c in expected_features if c not in X_input.columns]
+extra = [c for c in X_input.columns if c not in expected_features]
+if missing:
+    print(f"[WARN] 누락된 컬럼 {len(missing)}개: {missing[:5]} ...")
+if extra:
+    print(f"[WARN] 불필요 컬럼 {len(extra)}개: {extra[:5]} ...")
 
-        # 3. 재무제표 (45일 지연 반영)
-        df_fund = get_quarterly_report(self.ticker, target_date)
-        if df_fund is not None:
-            df_fund = pd.DataFrame([df_fund])
-        else:
-            df_fund = pd.DataFrame(columns=["symbol", "period", "year"])
+# -------------------------------------------------------------
+# 5. 스케일링 및 시퀀스 생성
+# -------------------------------------------------------------
+X_scaled = scaler_X.transform(X_input)
+X_scaled = pd.DataFrame(X_scaled, columns=expected_features)
 
-        # 4. 주가 + 시장 + 재무제표 병합
-        panel = df_prices.copy()
-        panel.columns = [c.lower() for c in panel.columns]   # 소문자 변환
-        panel.rename(columns={"date": "Date"}, inplace=True) # 날짜 복구
-        panel = panel.merge(df_markets, on="Date", how="left")
-        panel["symbol"] = self.ticker
-
-        # 재무제표 asof merge
-        if not df_fund.empty:
-            df_fund["period"] = pd.to_datetime(df_fund["period"])
-            merged = pd.merge_asof(
-                panel.sort_values("Date"),
-                df_fund.sort_values("period"),
-                left_on="Date", right_on="period",
-                by="symbol", direction="backward"
-            )
-        else:
-            merged = panel.copy()
-
-        # 파생변수 추가
-        merged = merged.sort_values("Date")
-        merged["ret_1"] = merged["close"].pct_change(1)
-        for w in [5, 20, 60]:
-            merged[f"ma_{w}"] = merged["close"].rolling(w, min_periods=3).mean()
-        merged["vol_20"] = merged["ret_1"].rolling(20, min_periods=10).std()
-        merged["mom_20"] = merged["close"] / merged["ma_20"]
-
-        # === 추가: 펀더멘털 대비 시총 비율 ===
-        if "net_income" in merged.columns and "market_cap" in merged.columns:
-            merged["ni_to_mcap"] = merged["net_income"] / merged["market_cap"]
-        else:
-            merged["ni_to_mcap"] = 0.0
-
-        if "revenue" in merged.columns and "market_cap" in merged.columns:
-            merged["rev_to_mcap"] = merged["revenue"] / merged["market_cap"]
-        else:
-            merged["rev_to_mcap"] = 0.0
-
-        if "operating_cashflow" in merged.columns and "market_cap" in merged.columns:
-            merged["ocf_to_mcap"] = merged["operating_cashflow"] / merged["market_cap"]
-        else:
-            merged["ocf_to_mcap"] = 0.0
-
-        # === 추가: 시장 상대 지표 ===
-        if "NASDAQ_ret1" in merged.columns:
-            merged["excess_ret"] = merged["ret_1"] - merged["NASDAQ_ret1"]
-        else:
-            merged["excess_ret"] = 0.0
-
-        if "VIX" in merged.columns:
-            merged["rel_vol"] = merged["vol_20"] / merged["VIX"]
-        else:
-            merged["rel_vol"] = 0.0
+# 최근 40일 데이터 시퀀스만
+if len(X_scaled) < window:
+    raise ValueError(f"데이터가 {window}일보다 적습니다.")
+X_seq = np.expand_dims(X_scaled.tail(window).values, axis=0)
 
 
+# -------------------------------------------------------------
+# 6. 예측 수행
+# -------------------------------------------------------------
+pred_scaled = model.predict(X_seq)
+pred_inv = scaler_y.inverse_transform(pred_scaled)
 
-        # target_date 이전 가장 가까운 거래일
-        row = merged.loc[merged["Date"] <= ref_dt].tail(1).copy()
-        if row.empty:
-            raise ValueError(f"{target_date} 데이터 없음")
+# -------------------------------------------------------------
+# 7. 예측 결과: 수익률 → 종가 변환
+# -------------------------------------------------------------
+tickers = ["AAPL", "MSFT", "NVDA"]
 
-        used_date = row["Date"].iloc[0]
-        today_close = row["close"].iloc[0]
+# 최근 실제 종가 추출 (MacroSentimentAgent에서 가져온 마지막 행 기준)
+last_prices = {}
+for t in tickers:
+    # MacroSentimentAgent 내부에서 AAPL_ma5, AAPL_ret1 등 있으므로 원 종가를 직접 다운로드했을 가능성 있음.
+    # 종가 컬럼명을 추정 (AAPL_ma5 기준으로 앞부분만 가져옴)
+    close_candidates = [c for c in macro_df.columns if c.startswith(t) and c.endswith("_ma5") is False and "ret" not in c]
+    if len(close_candidates) == 0:
+        raise ValueError(f"{t}의 종가 컬럼을 찾을 수 없습니다.")
+    # 첫 번째 해당 컬럼 사용
+    last_prices[t] = macro_df[close_candidates[0]].iloc[-1]
 
-        # feature_cols.json 순서에 맞게 정렬
-        feat_map = {}
-        for col in self.feature_order:
-            if col.startswith("sym_"):
-                feat_map[col] = 1.0 if col == f"sym_{self.ticker}" else 0.0
-            else:
-                feat_map[col] = row.iloc[0].get(col, 0.0)
+# 예측 수익률을 실제 종가로 변환
+pred_prices = {}
+for i, t in enumerate(tickers):
+    pred_ret = pred_inv[0][i]
+    last_price = last_prices[t]
+    next_price = last_price * (1 + pred_ret)
+    pred_prices[t] = next_price
+    print(f"{t}: 마지막 종가={last_price:.2f} → 예측 종가={next_price:.2f} (예상 수익률 {pred_ret*100:.2f}%)")
 
-        X = pd.DataFrame([feat_map], columns=self.feature_order).fillna(0)
-        return X, used_date, today_close
+# -------------------------------------------------------------
+# 8. (선택) 예측 결과 요약
+# -------------------------------------------------------------
+pred_df = pd.DataFrame({
+    "Ticker": tickers,
+    "Last_Close": [last_prices[t] for t in tickers],
+    "Predicted_Close": [pred_prices[t] for t in tickers],
+    "Predicted_Return": pred_inv[0],
+    "Predicted_%": pred_inv[0] * 100
+})
 
-    def ml_predict_price(self, ref_date: str):
-        # 피처 생성
-        X, used_date, today_close = self._build_features(ref_date)
-
-        # 스케일링
-        X_scaled = self.scaler.transform(X)
-
-        # 예측 (모델 출력은 다음날 수익률)
-        pred_ret = float(self.model.predict(X_scaled)[0])
-
-        # === 안전 가드: 비정상치 감지 ===
-        if abs(pred_ret) > 0.5:  # ±50% 이상이면 경고
-            print(f"[경고] 비정상적인 예측 수익률 감지: {pred_ret:.4f} (날짜={ref_date}, 종목={self.ticker})")
-
-        # 내일 종가 복원
-        pred_price = today_close * (1 + pred_ret)
-
-        return {
-            "ticker": self.ticker,
-            "target_date": ref_date,      # 사용자가 요청한 날짜
-            "used_date": str(used_date),  # 실제로 사용된 기준 거래일
-            "today_close": float(today_close),
-            "pred_ret": pred_ret,
-            "pred_price": float(pred_price)
-        }
-
-
-if __name__ == "__main__":
-    ticker = "MSFT"
-    target_date = "2025-01-02"
-    agent = FundamentalAgent(ticker)
-    out = agent.ml_predict_price(target_date)
-    print("\n=== 예측 결과 ===")
-    print(out)
+print("\n================= 예측 결과 (종가 기준) =================")
+print(pred_df.round(4))
