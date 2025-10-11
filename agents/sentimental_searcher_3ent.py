@@ -8,8 +8,8 @@ import yfinance as yf
 import pandas as pd
 import json
 
-# EODhd API 설정 (기존과 동일)
-API_KEY = '68e3a8c46e9a65.00465987'
+# EODhd API 설정
+API_KEY = 'YOUR_KEY'
 BASE_URL_EODHD = 'https://eodhd.com/api/news'
 
 # 상태 파일명
