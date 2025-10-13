@@ -1,0 +1,18 @@
+@dataclass
+class Opinion:
+    agent_id: str
+    targets: Targets
+    reason: str
+
+@dataclassA
+class Rebuttal:
+    from_agent_id: str
+    to_agent_id: str
+    stance: Literal["REBUT","SUPPORT"]
+    message: str
+    
+r1 = Rebuttal("valuation", "sentiment", "REBUT", "너무 보수적이야.")
+r2 = Rebuttal("event", "valuation", "SUPPORT", "같은 방향성이네요.")
+
+print(r1)
+print(r2)

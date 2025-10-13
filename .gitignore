@@ -1,0 +1,24 @@
+# 가상환경
+.capstone/
+env/
+capstone/
+
+# 파이썬 캐시
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 환경변수/민감정보
+.env
+
+# 로그/임시 파일
+*.log
+*.tmp
+
+# Jupyter Notebook 체크포인트
+.ipynb_checkpoints/
+
+# 시스템 파일
+.DS_Store
+Thumbs.db
