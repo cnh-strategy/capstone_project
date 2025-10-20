@@ -12,6 +12,7 @@ from tensorflow.keras import layers, Model, Input
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping
 
+from agents.dump import CAPSTONE_OPENAI_API
 from fundamental_sub import MacroSentimentAgent
 
 
@@ -24,7 +25,7 @@ class AlphaGenerator:
     """
 
     def __init__(self, model_name="gpt-4o-mini"):
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=CAPSTONE_OPENAI_API)
         self.model_name = model_name
 
     def generate_alpha_with_explanation(self, feature_list, n_alphas=3):

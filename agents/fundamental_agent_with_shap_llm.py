@@ -11,6 +11,8 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.inspection import permutation_importance
+
+from agents.dump import CAPSTONE_OPENAI_API
 from fundamental_sub import MacroSentimentAgent
 from openai import OpenAI
 
@@ -21,7 +23,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # 환경 변수 이름 수정
 
 class LLMExplainer:
     def __init__(self, model_name="gpt-4o-mini"):
-        self.client = OpenAI(api_key=api)
+        self.client = OpenAI(api_key=CAPSTONE_OPENAI_API)
         self.model = model_name
 
     def generate_explanation(self, feature_summary, predictions, importance_summary):
