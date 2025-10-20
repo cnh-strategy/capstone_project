@@ -122,10 +122,14 @@ class MarketPredictor:
         })
 
         self.pred_df = pred_df.round(4)
-        print("\n================= 예측 결과 (종가 기준) =================")
+        print("\n================= 예측 결과 (종가기준 표) =================")
         print(self.pred_df)
 
-        return self.pred_df
+        self.pred_prices = pred_prices
+        print("\n================= 예측 결과 (종가 기준) =================")
+        print(pred_prices)
+
+        return pred_prices
 
     # -------------------------------------------------------------
     # 5. 전체 실행 파이프라인
@@ -134,8 +138,11 @@ class MarketPredictor:
         self.load_assets()
         self.fetch_macro_data()
         X_seq = self.prepare_features()
-        result_df = self.predict(X_seq)
-        return result_df
+        pred_prices = self.predict(X_seq)
+
+        # ✅ np.float64 → float 변환
+        pred_prices = {k: float(v) for k, v in pred_prices.items()}
+        return pred_prices
 
 
 # -------------------------------------------------------------
@@ -148,3 +155,6 @@ if __name__ == "__main__":
         tickers=["AAPL", "MSFT", "NVDA"]
     )
     result = predictor.run_prediction()
+
+    print("\n[최종 결과 반환]")
+    print(result)
