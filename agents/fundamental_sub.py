@@ -19,8 +19,8 @@ class MacroSentimentAgent:
             "^VIX": "^VIX",
             "DX-Y.NYB": "DX-Y.NYB",
             "EURUSD=X": "EURUSD=X", "USDJPY=X": "USDJPY=X",
-            "GC=F": "GC=F", "CL=F": "CL=F", "HG=F": "HG=F",
-            "BTC-USD": "BTC-USD", "ETH-USD": "ETH-USD"
+            "GC=F": "GC=F", "CL=F": "CL=F", "HG=F": "HG=F"
+            # , "BTC-USD": "BTC-USD", "ETH-USD": "ETH-USD"
         }
         self.data = None
         self.base_date = base_date
@@ -137,3 +137,4 @@ class MacroSentimentAgent:
         path = os.path.join(output_dir, "macro_sentiment.csv")
         self.data.to_csv(path, index=False)
         print(f"[MacroSentimentAgent] Saved {path}")
+
