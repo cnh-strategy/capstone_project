@@ -13,6 +13,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.inspection import permutation_importance
 
 from agents.dump import CAPSTONE_OPENAI_API
+from agents.fundamental_agent import MarketPredictor
 from fundamental_sub import MacroSentimentAgent
 from openai import OpenAI
 
@@ -139,14 +140,6 @@ class FundamentalForecastAgent:
         self.model = load_model(self.model_path, compile=False)
 
         self.scaler_X = joblib.load(self.scaler_x_path)
-        self.scaler_y = joblib.load(self.scaler_y_path)
-
-        if isinstance(self.scaler_X, np.ndarray):
-            print("⚠️ Detected ndarray instead of scaler — new MinMaxScaler will be fitted at runtime.")
-            self.scaler_X = MinMaxScaler()
-        if isinstance(self.scaler_y, np.ndarray):
-            print("⚠️ Detected ndarray instead of scaler — new MinMaxScaler will be fitted at runtime.")
-            self.scaler_y = MinMaxScaler()
 
     def run(self):
         print("1️⃣ Collecting macro & stock features...")
@@ -172,44 +165,24 @@ class FundamentalForecastAgent:
         feature_names = feature_df.columns.tolist()
 
 
-        # -------------------------------------------------
-        # (2) 스케일링 및 윈도우 구성
-        # -------------------------------------------------
-        X_scaled = self.scaler_X.transform(feature_df.values)
-        window = 40
-        X_scaled = np.expand_dims(X_scaled[-window:], axis=0)
-
-        # feature_df와 macro_agent.data의 인덱스를 맞추기 위해 최신 40일만 사용
-        macro_agent.data = macro_agent.data.iloc[-len(feature_df):].reset_index(drop=True)
-
-
         # -------------------------------
         # 2️⃣ 예측 수행 및 역변환
         # -------------------------------
-        print("2️⃣ Predicting next-day prices...")
-        y_pred_scaled = self.model.predict(X_scaled)
-        y_pred_inv = self.scaler_y.inverse_transform(y_pred_scaled)
-        y_pred = y_pred_inv[0]
+        predictor = MarketPredictor(
+            base_date=datetime(2025, 10, 11),
+            window=40,
+            tickers=["AAPL", "MSFT", "NVDA"]
+        )
+        pred_prices, X_scaled = predictor.run_prediction()
 
+        # ✅ numpy 변환 추가
+        if isinstance(X_scaled, pd.DataFrame):
+            X_scaled = X_scaled.to_numpy()
 
-        # 최근 종가 (이동평균 기반)
-        last_prices = {
-            "AAPL": feature_df["AAPL_ma5"].iloc[-1],
-            "MSFT": feature_df["MSFT_ma5"].iloc[-1],
-            "NVDA": feature_df["NVDA_ma5"].iloc[-1],
-        }
+        # ✅ LSTM 입력은 3D여야 함 (1, 40, num_features)
+        if X_scaled.ndim == 2:
+            X_scaled = np.expand_dims(X_scaled, axis=0)
 
-        # 종가 복원
-        pred_prices = {}
-        for i, ticker in enumerate(["AAPL", "MSFT", "NVDA"]):
-            next_price = np.float64(last_prices[ticker]) * (1 + np.float64(y_pred[i]))
-            pred_prices[ticker] = round(float(next_price), 2)
-
-
-        print("\nPredicted next-day closing prices (actual scale):")
-        for t in ["AAPL", "MSFT", "NVDA"]:
-            pct = (pred_prices[t] - last_prices[t]) / last_prices[t] * 100
-            print(f"  {t}: {pred_prices[t]} (Predicted return {pct:.2f}%)")
 
         # -------------------------------
         # 3️⃣ SHAP 계산

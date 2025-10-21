@@ -33,6 +33,7 @@ class MarketPredictor:
         self.scaler_y = None
         self.macro_df = None
         self.pred_df = None
+        self.X_scaled = None
 
     # -------------------------------------------------------------
     # 1. 모델 및 스케일러 로드
@@ -86,7 +87,7 @@ class MarketPredictor:
 
         X_seq = np.expand_dims(X_scaled.tail(self.window).values, axis=0)
         print("[OK] 스케일링 및 시퀀스 변환 완료")
-
+        self.X_scaled = X_scaled
         return X_seq
 
     # -------------------------------------------------------------
@@ -142,7 +143,7 @@ class MarketPredictor:
 
         # ✅ np.float64 → float 변환
         pred_prices = {k: float(v) for k, v in pred_prices.items()}
-        return pred_prices
+        return pred_prices, self.X_scaled
 
 
 # -------------------------------------------------------------
@@ -154,7 +155,7 @@ if __name__ == "__main__":
         window=40,
         tickers=["AAPL", "MSFT", "NVDA"]
     )
-    result = predictor.run_prediction()
+    result, _ = predictor.run_prediction()
 
     print("\n[최종 결과 반환]")
     print(result)
