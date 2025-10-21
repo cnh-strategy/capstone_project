@@ -49,8 +49,8 @@ class LLMExplainer:
         금융적 관점에서 분석적으로 설명해 주세요.
 
         특히 다음 사항을 포함해 주십시오.
-        - 금리, 원자재, 변동성 지수 등 거시 요인이 주가에 미치는 영향
-        - 기술적 지표(추세, 거래량, 변동성 등)와의 관련성
+        - 금리, 원자재, 변동성 지수 등 거시 요인이 종목별 주가에 미치는 영향
+        - 기술적 지표(추세, 거래량, 변동성 등)와의 종목별 관련성
         - 각 종목별(AAPL, MSFT, NVDA)로 나누어 간결하면서도 분석적인 설명
         - 어떤 변수가 AAPL, MSFT, NVDA의 예측에 각각 더 크게 작용했는가
         - 중요 피처 상위 3개가 종목마다 어떻게 다른지
@@ -76,40 +76,44 @@ class AttributionAnalyzer:
 
     #종목별 중요도 따로 계산
     def compute_feature_importance(self, X_scaled, feature_names):
-        print("⚙️ Calculating feature importance using SHAP (final stabilized version)...")
+        print("⚙️ Calculating feature importance per ticker using SHAP (fully separated version)...")
 
         try:
-            # ✅ 1️⃣ 모델 복제 (원본 상태 보호)
-            model_copy = tf.keras.models.clone_model(self.model)
-            model_copy.set_weights(self.model.get_weights())
-
-            # ✅ 2️⃣ 입력 형태 변환
+            # numpy 강제 변환
+            X_scaled = np.array(X_scaled, dtype=np.float32)
             time_steps = X_scaled.shape[1]
             num_features = X_scaled.shape[2]
-            X_flat = X_scaled.reshape(X_scaled.shape[0], -1).astype(np.float32)
+            X_flat = X_scaled.reshape(X_scaled.shape[0], -1)
             background = X_flat[:min(10, len(X_flat))]
 
-            # ✅ 3️⃣ SHAP용 wrapper
-            def model_wrapper(X):
-                X = np.array(X).astype(np.float32)
-                X_reshaped = X.reshape(X.shape[0], time_steps, num_features)
-                preds = model_copy.predict(X_reshaped, verbose=0)
-                return preds  # 다중 출력 (AAPL/MSFT/NVDA)
-
-            # ✅ 4️⃣ KernelExplainer
-            explainer = shap.KernelExplainer(model_wrapper, background)
-            shap_values = explainer.shap_values(X_flat[:5])
-
-            # ✅ 5️⃣ 중요도 계산
+            # ✅ SHAP per output node
             tickers = ["AAPL", "MSFT", "NVDA"]
             importance_dict = {}
+
             for i, ticker in enumerate(tickers):
-                mean_importance = np.abs(shap_values[i]).mean(axis=0)
+                print(f"\n[SHAP] Computing for {ticker} ...")
+
+                # 종목별 wrapper
+                def model_wrapper_single(X):
+                    X = np.array(X).astype(np.float32)
+                    X_reshaped = X.reshape(X.shape[0], time_steps, num_features)
+                    preds = self.model.predict(X_reshaped, verbose=0)
+                    # 특정 종목의 예측값만 선택
+                    return preds[:, i]
+
+                # KernelExplainer (종목별로 독립 실행)
+                explainer = shap.KernelExplainer(model_wrapper_single, background)
+                shap_values = explainer.shap_values(X_flat[:5])
+
+                # 중요도 계산 (절댓값 평균)
+                mean_importance = np.abs(shap_values).mean(axis=0)
                 df = pd.DataFrame({
                     "feature": feature_names,
                     "importance": mean_importance
                 }).sort_values("importance", ascending=False)
                 importance_dict[ticker] = df.head(10).to_dict(orient="records")
+
+            return importance_dict
 
         except Exception as e:
             print("⚠️ SHAP computation failed, falling back to permutation importance.")
