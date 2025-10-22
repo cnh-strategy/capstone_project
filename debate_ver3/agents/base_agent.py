@@ -504,15 +504,13 @@ class BaseAgent:
         print(f"✅ {self.agent_id} 모델 로드 완료 ({model_path})")
 
     def pretrain(self):
-        epochs: int = agents_info[self.agent_id]["epochs"]
-        lr: float = agents_info[self.agent_id]["learning_rate"]
-        batch_size: int = agents_info[self.agent_id]["batch_size"]
+        epochs = agents_info[self.agent_id]["epochs"]
+        lr = agents_info[self.agent_id]["learning_rate"]
+        batch_size = agents_info[self.agent_id]["batch_size"]
 
         X, y, cols = load_dataset(self.ticker, self.agent_id, save_dir=self.data_dir)
-        """개별 Agent 사전학습"""
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
-        
-        # 정규화 적용
+
         split_idx = int(len(X) * 0.8)
         X_train, X_val = X[:split_idx], X[split_idx:]
         y_train, y_val = y[:split_idx], y[split_idx:]
@@ -520,58 +518,32 @@ class BaseAgent:
         self.scaler.fit_scalers(X_train, y_train)
         self.scaler.save(self.ticker)
 
-        X_train_scaled, y_train_scaled = self.scaler.transform(X_train, y_train)
-        X_train = torch.tensor(X_train_scaled, dtype=torch.float32)
-        y_train = torch.tensor(y_train_scaled, dtype=torch.float32)
-        
-        # Agent가 nn.Module을 상속받는지 확인
-        if hasattr(self, 'forward') and hasattr(self, 'parameters'):
-            # Agent 자체가 모델인 경우
-            self.train()
-            optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-            loss_fn = torch.nn.MSELoss()
-            train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
-            for epoch in range(epochs):
-                total_loss = 0
-                for Xb, yb in train_loader:
-                    y_pred = self.forward(Xb)
-                    loss = loss_fn(y_pred, yb)
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-                    total_loss += loss.item()
-                if (epoch + 1) % 5 == 0:
-                    print(f"  Epoch {epoch+1:03d} | Loss: {total_loss/len(train_loader):.6f}")
- 
-        else:
-            # 기존 방식 (agent.model 사용)
-            self.model.train()
-            optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-            loss_fn = torch.nn.MSELoss()
+        X_train, y_train = map(torch.tensor, self.scaler.transform(X_train, y_train))
+        X_train, y_train = X_train.float(), y_train.float()
 
-            train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
-            for epoch in range(epochs):
-                total_loss = 0
-                for Xb, yb in train_loader:
-                    y_pred = self.model(Xb)
-                    loss = loss_fn(y_pred, yb)
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-                    total_loss += loss.item()
-                if (epoch + 1) % 5 == 0:
-                    print(f"  Epoch {epoch+1:03d} | Loss: {total_loss/len(train_loader):.6f}")
-                            
-            print(f"✅ {self.agent_id} pretraining finished.\n")
-            os.makedirs(self.model_dir, exist_ok=True)
+        model = self if hasattr(self, 'forward') else self.model
+        model.train()
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        loss_fn = torch.nn.MSELoss()
+        train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
 
-            model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
-            torch.save(self.model.state_dict(), model_path)
-            self.scaler.save(self.ticker)
-            print(f"✅ {self.agent_id} model saved.\n")
-            print(f"✅ {self.agent_id} scaler saved.\n")
-            print(f"✅ {self.agent_id} pretraining finished.\n")
-        
+        for epoch in range(epochs):
+            total_loss = 0
+            for Xb, yb in train_loader:
+                y_pred = model(Xb)
+                loss = loss_fn(y_pred, yb)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            if (epoch + 1) % 5 == 0:
+                print(f"  Epoch {epoch+1:03d} | Loss: {total_loss/len(train_loader):.6f}")
+
+        os.makedirs(self.model_dir, exist_ok=True)
+        model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
+        torch.save(model.state_dict(), model_path)
+        print(f"✅ {self.agent_id} model saved.\n✅ pretraining finished.\n")
+
     # -----------------------------
     # OpenAI API 호출
     # -----------------------------
