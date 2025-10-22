@@ -566,7 +566,7 @@ class BaseAgent:
             os.makedirs(self.model_dir, exist_ok=True)
 
             model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
-            torch.save(self.state_dict(), model_path)
+            torch.save(self.model.state_dict(), model_path)
             self.scaler.save(self.ticker)
             print(f"✅ {self.agent_id} model saved.\n")
             print(f"✅ {self.agent_id} scaler saved.\n")
