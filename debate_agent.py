@@ -33,7 +33,7 @@ class Debate:
     # -------------------------
     def _p(self, msg: str):
         if self.verbose:
-            print(f"[Debate] {msg}")
+            print(f"[Debate] {msg}\n")
 
     def _latest_opinions(self) -> Dict[str, Opinion]:
         """각 에이전트의 최신 Opinion만 뽑아 Dict로."""
@@ -263,3 +263,44 @@ if __name__ == "__main__":
     # 결과 요약 출력
     print("\n=== Debate 결과 요약 ===")
     print(format_debate_summary(logs, final))
+    
+    # 시각화 옵션
+    try:
+        from visualization import DebateVisualizer
+        
+        visualize = input("\n시각화를 생성하시겠습니까? (y/n): ").strip().lower()
+        if visualize in ['y', 'yes', '예', 'ㅇ']:
+            visualizer = DebateVisualizer()
+            
+            print("\n=== 시각화 옵션 ===")
+            print("1. 라운드별 의견 변화")
+            print("2. 의견 일치도 분석") 
+            print("3. 반박/지지 네트워크")
+            print("4. 투자의견 표")
+            print("5. 주식 컨텍스트")
+            print("6. 인터랙티브 대시보드")
+            print("7. 전체 리포트 생성")
+            
+            choice = input("선택하세요 (1-7, all=전체): ").strip().lower()
+            
+            if choice == '1':
+                visualizer.plot_round_progression(logs, final)
+            elif choice == '2':
+                visualizer.plot_consensus_analysis(logs, final)
+            elif choice == '3':
+                visualizer.plot_rebuttal_network(logs)
+            elif choice == '4':
+                visualizer.plot_opinion_table(logs, final)
+            elif choice == '5':
+                visualizer.plot_stock_context(ticker)
+            elif choice == '6':
+                visualizer.create_interactive_dashboard(logs, final, ticker)
+            elif choice == '7' or choice == 'all':
+                visualizer.generate_report(logs, final, ticker)
+            else:
+                print("잘못된 선택입니다.")
+                
+    except ImportError:
+        print("\n시각화 모듈을 찾을 수 없습니다. visualization.py 파일을 확인하세요.")
+    except Exception as e:
+        print(f"\n시각화 생성 중 오류 발생: {e}")
