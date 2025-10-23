@@ -1,5 +1,5 @@
 # ===============================================================
-# File: fundamental_agent_with_alpha_transformer.py
+# File: macro_agent_with_alpha_transformer.py
 # Purpose: LLM 기반 수식 알파 생성 + Transformer 기반 주가 예측
 # ===============================================================
 
@@ -13,7 +13,7 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping
 
 from agents.dump import CAPSTONE_OPENAI_API
-from fundamental_sub import MacroSentimentAgent
+from macro_sub import MacroSentimentAgent
 
 
 # ===============================================================

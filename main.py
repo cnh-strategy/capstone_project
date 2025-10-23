@@ -1,5 +1,5 @@
 # agent 로드
-from agents.fundamental_agent import FundamentalAgent
+from agents.macro_agent import FundamentalAgent
 from agents.valuation_agent import ValuationAgent
 from agents.event_agent import EventAgent
 from agents.sentimental_agent import SentimentalAgent

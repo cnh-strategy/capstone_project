@@ -4,7 +4,7 @@ import joblib
 from datetime import datetime
 from tensorflow.keras.models import load_model
 
-from agents.fundamental_sub import MacroSentimentAgent
+from agents.macro_sub import MacroSentimentAgent
 
 
 class MarketPredictor:

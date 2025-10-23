@@ -9,8 +9,8 @@ from datetime import datetime
 import joblib
 
 from agents.dump import CAPSTONE_OPENAI_API
-from agents.fundamental_agent import MarketPredictor
-from fundamental_sub import MacroSentimentAgent
+from agents.macro_agent import MarketPredictor
+from macro_sub import MacroSentimentAgent
 
 
 # ==============================================================
