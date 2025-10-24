@@ -85,40 +85,42 @@ class BaseSHAPAnalyzer:
         X_scaled = np.array(X_scaled, dtype=np.float32)
         time_steps, num_features = X_scaled.shape[1], X_scaled.shape[2]
 
-        # ✅ baseline 다양화 (mean + noise)
-        X_flat = X_scaled.reshape(X_scaled.shape[0], -1)
+        # baseline 다양화
+        X_flat = X_scaled.reshape(X_scaled.shape[0], -1).astype(np.float32)
         background_mean = X_flat.mean(axis=0)
         background_noise = background_mean + np.random.normal(0, 0.03, size=X_flat.shape[1])
-        background = np.vstack([background_mean, background_noise, X_flat[:5]])
+        background = np.vstack([background_mean, background_noise]).astype(np.float32)
 
-        tickers = ["AAPL", "MSFT", "NVDA"]
-        importance_dict = {}
+        print(f"[SHAP] Computing Base SHAP for AAPL (모델 입력 {num_features}개 피처)")
 
-        for i, ticker in enumerate(tickers):
-            print(f"[SHAP] Computing Base SHAP for {ticker}...")
+        def model_wrapper_single(X):
+            X = np.array(X).astype(np.float32)
+            X = X.reshape(X.shape[0], time_steps, num_features)
+            return self.model.predict(X, verbose=0)[:, 0]
 
-            def model_wrapper_single(X):
-                X = np.array(X).astype(np.float32)
-                X = X.reshape(X.shape[0], time_steps, num_features)
-                return self.model.predictor(X, verbose=0)[:, i]
+        # ✅ SamplingExplainer로 변경 (메모리 절약)
+        explainer = shap.KernelExplainer(model_wrapper_single, background)
 
-            explainer = shap.KernelExplainer(model_wrapper_single, background)
+        # ✅ 샘플 수 제한
+        sample_idx = np.random.choice(len(X_flat), size=min(3, len(X_flat)), replace=False)
+        shap_values = explainer.shap_values(X_flat[sample_idx], nsamples=30)
+        shap_values = np.array(shap_values).reshape(-1, time_steps, num_features)
 
-            # ✅ 더 많은 샘플 반영
-            sample_idx = np.random.choice(len(X_flat), size=min(25, len(X_flat)), replace=False)
-            shap_values = explainer.shap_values(X_flat[sample_idx])
+        mean_importance = np.abs(shap_values).mean(axis=(0, 1))
+        df = pd.DataFrame({
+            "feature": feature_names,
+            "importance": mean_importance
+        })
 
-            shap_values = np.array(shap_values)
-            shap_values = shap_values.reshape(-1, time_steps, num_features)
-            mean_importance = np.abs(shap_values).mean(axis=(0, 1))
+        # ✅ AAPL 관련 + 매크로 피처만 남기기
+        selected_features = [f for f in feature_names if "AAPL_" in f or not any(t in f for t in ["MSFT_", "NVDA_"])]
+        df = df[df["feature"].isin(selected_features)]
+        df = df.sort_values("importance", ascending=False)
 
-            df = pd.DataFrame({
-                "feature": feature_names,
-                "importance": mean_importance
-            }).sort_values("importance", ascending=False)
-            importance_dict[ticker] = df.head(10).to_dict(orient="records")
-
+        importance_dict = {"AAPL": df.head(10).to_dict(orient="records")}
+        print(f"[OK] SHAP 계산 완료: {len(df)}개 feature 중 상위 10개 추출")
         return importance_dict
+
 
 
 # ==============================================================
@@ -129,6 +131,7 @@ class TemporalSHAPAnalyzer:
         self.model = model
 
     def compute_temporal_shap(self, X_scaled, feature_names, target_idx=0):
+        print("[Causal SHAP] Computing temporal perturbation effects...")
         X_scaled = np.array(X_scaled, dtype=np.float32)
         time_steps, num_features = X_scaled.shape[1], X_scaled.shape[2]
 
@@ -141,13 +144,13 @@ class TemporalSHAPAnalyzer:
         def model_wrapper(X):
             X = np.array(X).astype(np.float32)
             X = X.reshape(X.shape[0], time_steps, num_features)
-            return self.model.predictor(X, verbose=0)[:, target_idx]
+            return self.model.predict(X, verbose=0)[:, target_idx]
 
         explainer = shap.KernelExplainer(model_wrapper, background)
 
         # ✅ 더 많은 시점 샘플 사용
-        sample_idx = np.random.choice(len(X_flat), size=min(30, len(X_flat)), replace=False)
-        shap_values = explainer.shap_values(X_flat[sample_idx])
+        sample_idx = np.random.choice(len(X_flat), size=min(5, len(X_flat)), replace=False)
+        shap_values = explainer.shap_values(X_flat[sample_idx], nsamples=30)
         shap_values = np.array(shap_values).reshape(-1, time_steps, num_features)
 
         temporal_importance = np.abs(shap_values).mean(axis=0)
@@ -167,14 +170,14 @@ class CausalSHAPAnalyzer:
         print("[Causal SHAP] Computing causal perturbation effects...")
 
         X_scaled = np.array(X_scaled, dtype=np.float32)
-        baseline_pred = self.model.predictor(X_scaled, verbose=0)[:, target_idx].mean()
+        baseline_pred = self.model.predict(X_scaled, verbose=0)[:, target_idx].mean()
 
         effects = []
         for j, feat in enumerate(feature_names):
             perturbed = X_scaled.copy()
             perturb_factor = np.random.uniform(1.1, 1.3)  # ✅ 더 강한 perturbation
             perturbed[:, :, j] *= perturb_factor
-            new_pred = self.model.predictor(perturbed, verbose=0)[:, target_idx].mean()
+            new_pred = self.model.predict(perturbed, verbose=0)[:, target_idx].mean()
             effects.append(new_pred - baseline_pred)
 
         df = pd.DataFrame({"feature": feature_names, "causal_effect": effects})
@@ -205,7 +208,7 @@ class InteractionSHAPAnalyzer:
         def model_wrapper(X):
             X = np.array(X).astype(np.float32)
             X = X.reshape(X.shape[0], time_steps, num_features)
-            return self.model.predictor(X, verbose=0)[:, target_idx]
+            return self.model.predict(X, verbose=0)[:, target_idx]
 
         explainer = shap.KernelExplainer(model_wrapper, background)
 
@@ -238,17 +241,35 @@ class AttributionAnalyzer:
         self.model = model
 
     def run_all_shap(self, X_scaled, feature_names):
-        base = BaseSHAPAnalyzer(self.model)
-        base_result = base.compute_feature_importance(X_scaled, feature_names)
+        base_result, temporal_df, causal_df, interaction_df = {},{},{},{}
 
-        temporal = TemporalSHAPAnalyzer(self.model)
-        temporal_df = temporal.compute_temporal_shap(X_scaled, feature_names, target_idx=0)
+        # Base SHAP
+        try:
+            base = BaseSHAPAnalyzer(self.model)
+            base_result = base.compute_feature_importance(X_scaled, feature_names)
+        except Exception as e:
+            print(f"[⚠️ Base SHAP Error]: {e}")
 
-        causal = CausalSHAPAnalyzer(self.model)
-        causal_df = causal.compute_causal_shap(X_scaled, feature_names, target_idx=0)
+        # Temporal SHAP
+        try:
+            temporal = TemporalSHAPAnalyzer(self.model)
+            temporal_df = temporal.compute_temporal_shap(X_scaled, feature_names, target_idx=0)
+        except Exception as e:
+            print(f"[⚠️ Temporal SHAP Error]: {e}")
 
-        interaction = InteractionSHAPAnalyzer(self.model)
-        interaction_df = interaction.compute_interaction_importance(X_scaled, feature_names, target_idx=0)
+        # Causal SHAP
+        try:
+            causal = CausalSHAPAnalyzer(self.model)
+            causal_df = causal.compute_causal_shap(X_scaled, feature_names, target_idx=0)
+        except Exception as e:
+            print(f"[⚠️ Causal SHAP Error]: {e}")
+
+        # Interaction SHAP
+        try:
+            interaction = InteractionSHAPAnalyzer(self.model)
+            interaction_df = interaction.compute_interaction_importance(X_scaled, feature_names, target_idx=0)
+        except Exception as e:
+            print(f"[⚠️ Interaction SHAP Error]: {e}")
 
         return base_result, temporal_df, causal_df, interaction_df
 
@@ -304,7 +325,7 @@ class FundamentalForecastAgent:
             agent_id=self.agent_id,
             base_date=base_date,
             window=40,
-            tickers=self.ticker
+            tickers=[self.ticker]
         )
         pred_prices, target, X_scaled = predictor.run_prediction()
 
@@ -320,13 +341,19 @@ class FundamentalForecastAgent:
         # -------------------------------
         # 3️⃣ SHAP 계산
         # -------------------------------
+        # --- (run() 안의 안전 처리) ---
+        X_scaled = X_scaled.astype(np.float32)
+        X_scaled = X_scaled[:, :, :300]
+        feature_names = feature_names[:300]
+
         print("\n3️⃣ Calculating feature importance...")
         analyzer = AttributionAnalyzer(self.model)
         importance_dict, temporal_df, causal_df, interaction_df = analyzer.run_all_shap(X_scaled, feature_names)
 
-        temporal_summary = temporal_df.head().to_dict(orient="records")
-        causal_summary = causal_df.to_dict(orient="records")
-        interaction_summary = interaction_df.iloc[:5, :5].round(3).to_dict()
+        temporal_summary = temporal_df.head().to_dict(orient="records") if temporal_df is not None else []
+        causal_summary = causal_df.to_dict(orient="records") if causal_df is not None else []
+        interaction_summary = interaction_df.iloc[:5, :5].round(3).to_dict() if interaction_df is not None else {}
+
 
         # -------------------------------
         # 4️⃣ llm 생성

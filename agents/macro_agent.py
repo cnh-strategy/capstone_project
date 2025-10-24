@@ -32,6 +32,7 @@ class MacroPredictor(BaseAgent):
         self.base_date = base_date
         self.window = window
         self.tickers = tickers or ["AAPL", "MSFT", "NVDA"]
+        # self.target_tickers = target_tickers or ["AAPL", "MSFT", "NVDA"]
 
         self.model = None
         self.scaler_X = None
@@ -55,7 +56,7 @@ class MacroPredictor(BaseAgent):
     # -------------------------------------------------------------
     def fetch_macro_data(self):
         print("[INFO] MacroSentimentAgent 데이터 수집 중...")
-        macro_agent = MacroSentimentAgent(base_date=self.base_date, window=self.window)
+        macro_agent = MacroSentimentAgent(base_date=self.base_date, window=self.window, target_tickers=self.tickers)
         macro_agent.fetch_data()
         macro_agent.add_features()
         df = macro_agent.data.reset_index()
@@ -100,57 +101,67 @@ class MacroPredictor(BaseAgent):
     # -------------------------------------------------------------
     def predictor(self, X_seq):
         print("[INFO] 예측 수행 중...")
+
         # 1. 모델 예측
         pred_scaled = self.model.predict(X_seq)
         pred_inv = self.scaler_y.inverse_transform(pred_scaled)
 
-        # 2️⃣ 예측 수익률
-        pred_ret = float(pred_inv[0][0])  # 단일 ticker 기준
+        # 2. 종가 추출
+        last_prices = {}
+        for t in self.tickers:
+            close_candidates = [c for c in self.macro_df.columns
+                                if c.startswith(t) and not c.endswith("_ma5") and "ret" not in c]
+            if not close_candidates:
+                raise ValueError(f"{t}의 종가 컬럼을 찾을 수 없습니다.")
+            last_prices[t] = self.macro_df[close_candidates[0]].iloc[-1]
 
-        # 3️⃣ 종가 컬럼 자동 탐색 (ex: AAPL_Close)
-        close_candidates = [c for c in self.macro_df.columns
-                            if c.startswith(self.tickers) and "close" in c.lower()
-                            and not c.endswith("_ma5") and "ret" not in c]
+        # 3. 예측 종가 및 수익률 계산
+        records = []
+        pred_prices = {}
+        for i, t in enumerate(self.tickers):
+            pred_ret = float(pred_inv[0][i])
+            last_price = float(last_prices[t])
+            next_price = last_price * (1 + pred_ret)
+            pred_prices[t] = next_price
 
-        if not close_candidates:
-            raise ValueError(f"{self.tickers}의 종가 컬럼을 찾을 수 없습니다. 현재 컬럼: {self.macro_df.columns.tolist()}")
+            records.append({
+                "Ticker": t,
+                "Last_Close": last_price,
+                "Predicted_Close": next_price,
+                "Predicted_Return": pred_ret,
+                "Predicted_%": pred_ret * 100
+            })
 
+            print(f"{t}: 마지막 종가={last_price:.2f} → 예측 종가={next_price:.2f} (예상 수익률 {pred_ret*100:.2f}%)")
 
-        # 3. 예측 종가 계산
-        last_price = float(self.macro_df[close_candidates[0]].iloc[-1])
-        next_price = last_price * (1 + pred_ret)
-
-        # 4. Monte Carlo Dropout 기반 불확실성 계산
-        std_pred = get_std_pred(self.model, X_seq, n_samples=30, scaler_y=self.scaler_y)
+        # 4. Monte Carlo Dropout 불확실성
+        mean_pred, std_pred = get_std_pred(self.model, X_seq, n_samples=30, scaler_y=self.scaler_y)
         confidence = 1 / (std_pred + 1e-8)
 
-        # 5. 결과 DataFrame 구성
-        pred_df = pd.DataFrame([{
-            "Ticker": self.tickers,
-            "Last_Close": last_price,
-            "Predicted_Close": next_price,
-            "Predicted_Return": pred_ret,
-            "Predicted_%": pred_ret * 100,
-            "uncertainty": float(std_pred[-1]),
-            "confidence": float(confidence[-1]),
-        }]).round(4)
+        # 5. 결과 병합
+        for i, r in enumerate(records):
+            r["uncertainty"] = float(std_pred[i]) if len(std_pred) > 1 else float(std_pred[-1])
+            r["confidence"] = float(confidence[i]) if len(confidence) > 1 else float(confidence[-1])
 
+        pred_df = pd.DataFrame(records).round(4)
         self.pred_df = pred_df
-        self.pred_prices = {self.tickers: next_price}
+        self.pred_prices = pred_prices
 
         print("\n================= 예측 결과 (표) =================")
-        print(self.pred_df)
+        print(pred_df)
 
         print("\n================= 예측 결과 (값) =================")
         print(pred_prices)
 
+        # 단일 티커일 경우 target 요약 제공
         target = {
-            "next_close": next_price,           # 단일 값
-            "uncertainty": float(std_pred[-1]),
-            "confidence": float(confidence[-1])
+            "next_close": float(pred_df["Predicted_Close"].iloc[-1]),
+            "uncertainty": float(pred_df["uncertainty"].iloc[-1]),
+            "confidence": float(pred_df["confidence"].iloc[-1])
         }
 
-        return self.pred_prices, target
+        return pred_prices, target
+
 
     # -------------------------------------------------------------
     # 5. 전체 실행 파이프라인
@@ -167,8 +178,8 @@ class MacroPredictor(BaseAgent):
 
         return pred_prices, target, self.X_scaled
 
-    
-    
+
+
 # -------------------------------------------------------------
 # 실행 예시
 # -------------------------------------------------------------
@@ -176,6 +187,6 @@ if __name__ == "__main__":
     predictor = MacroPredictor(
         base_date=datetime(2025, 10, 11),
         window=40,
-        tickers="AAPL"        #["AAPL", "MSFT", "NVDA"]
+        tickers=["AAPL"]  # ✅ 리스트 형태로 단일 티커 지정
     )
     pred_prices, target_json, _ = predictor.run_prediction()

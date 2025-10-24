@@ -8,11 +8,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 class MacroSentimentAgent:
-    def __init__(self, base_date: datetime, window: int = 40):
-        """
-        base_date: 예측 기준일
-        window: 최근 데이터 일수
-        """
+    def __init__(self, base_date: datetime, window: int = 40, target_tickers=None):
         self.macro_tickers = {
             "SPY": "SPY", "QQQ": "QQQ", "^GSPC": "^GSPC", "^DJI": "^DJI", "^IXIC": "^IXIC",
             "^TNX": "^TNX", "^IRX": "^IRX", "^FVX": "^FVX",
@@ -20,19 +16,20 @@ class MacroSentimentAgent:
             "DX-Y.NYB": "DX-Y.NYB",
             "EURUSD=X": "EURUSD=X", "USDJPY=X": "USDJPY=X",
             "GC=F": "GC=F", "CL=F": "CL=F", "HG=F": "HG=F"
-            # , "BTC-USD": "BTC-USD", "ETH-USD": "ETH-USD"
         }
-        self.data = None
+        self.target_tickers = target_tickers or ["AAPL", "MSFT", "NVDA"]
         self.base_date = base_date
-        self.start_date = base_date - timedelta(days=window + 20)  # 여유 20일 확보
+        self.start_date = base_date - timedelta(days=window + 20)
         self.end_date = base_date
+        self.data = None
 
     # -------------------------------------------------------------
-    # 1. 데이터 다운로드
+    # 1. 데이터 수집
     # -------------------------------------------------------------
     def fetch_data(self):
-        """매크로 + 자산 데이터 다운로드"""
-        df = yf.download(
+        """매크로 자산 + 개별 티커 데이터 다운로드"""
+        print(f"1️⃣ Collecting macro features ({len(self.macro_tickers)} tickers)...")
+        df_macro = yf.download(
             tickers=list(self.macro_tickers.values()),
             start=self.start_date,
             end=self.end_date,
@@ -41,36 +38,66 @@ class MacroSentimentAgent:
             auto_adjust=False
         )
 
-        # ✅ MultiIndex → 단일 인덱스로 변환
-        if isinstance(df.columns, pd.MultiIndex):
-            df = df.stack(level=0)
-            df.index.names = ["Date", "Ticker"]
-            df.sort_index(inplace=True)
-            df.columns = [col for col in df.columns]
-            df = df.unstack(level="Ticker")
-            df.columns = ["_".join(col).strip() for col in df.columns.values]
-        else:
-            df.index.name = "Date"
+        # ✅ MultiIndex → 단일 인덱스 변환
+        if isinstance(df_macro.columns, pd.MultiIndex):
+            df_macro = df_macro.stack(level=0)
+            df_macro.index.names = ["Date", "Ticker"]
+            df_macro = df_macro.unstack(level="Ticker")
+            df_macro.columns = ["_".join(col).strip() for col in df_macro.columns.values]
+        df_macro.reset_index(inplace=True)
+        df_macro["Date"] = pd.to_datetime(df_macro["Date"])
+        print(f"[MacroSentimentAgent] Macro data: {df_macro.shape}")
 
-        # ✅ 인덱스 복원 및 타입 보정
-        df.reset_index(inplace=True)
-        df["Date"] = pd.to_datetime(df["Date"])
+        # ✅ 개별 주식 데이터 별도 수집
+        price_dfs = []
+        for t in self.target_tickers:
+            print(f"   ↳ Downloading {t} ...")
+            try:
+                df_t = yf.download(t, start=self.start_date, end=self.end_date, interval="1d")
+                df_t = df_t.rename(columns={
+                    "Open": f"Open_{t}",
+                    "High": f"High_{t}",
+                    "Low": f"Low_{t}",
+                    "Close": f"Close_{t}",
+                    "Volume": f"Volume_{t}"
+                })
+                df_t[f"{t}_ret1"] = df_t[f"Close_{t}"].pct_change()
+                df_t[f"{t}_ma5"] = df_t[f"Close_{t}"].rolling(5).mean()
+                df_t[f"{t}_ma10"] = df_t[f"Close_{t}"].rolling(10).mean()
+                price_dfs.append(df_t)
+            except Exception as e:
+                print(f"[WARN] {t} 다운로드 실패:", e)
 
-        self.data = df
-        print(f"[MacroSentimentAgent] Data shape: {df.shape}, Columns: {len(df.columns)}")
-        return df
+        # ✅ 주식 데이터 병합
+        price_df = pd.concat(price_dfs, axis=1)
+
+        # ✅ MultiIndex 평탄화
+        if isinstance(price_df.columns, pd.MultiIndex):
+            price_df.columns = ["_".join([str(c) for c in col if c]) for col in price_df.columns]
+
+        price_df.reset_index(inplace=True)
+        price_df = price_df.loc[:, ~price_df.columns.duplicated()]
+
+        print(f"[MacroSentimentAgent] Stock data: {price_df.shape}")
+
+        # ✅ 매크로 + 주가 병합
+        merged_df = pd.merge(df_macro, price_df, on="Date", how="inner").fillna(method="ffill")
+        self.data = merged_df
+        print(f"[MacroSentimentAgent] Data shape: {merged_df.shape}")
+        return merged_df
+
+
+
+
 
     # -------------------------------------------------------------
-    # 2. 피처 생성
+    # 2. 피처 엔지니어링
     # -------------------------------------------------------------
     def add_features(self):
-        """수익률, 금리차, 위험심리 등 계산 + 주요 종목 피처 생성"""
         df = self.data.copy()
         df.set_index("Date", inplace=True)
 
-        # -------------------------------
-        # (1) 매크로 피처 생성
-        # -------------------------------
+        # (1) 매크로 피처
         for ticker in self.macro_tickers.values():
             col_name = f"{ticker}_Close"
             if col_name in df.columns:
@@ -80,54 +107,25 @@ class MacroSentimentAgent:
             df["Yield_spread"] = df["^TNX_Close"] - df["^IRX_Close"]
 
         if "SPY_ret_1d" in df.columns and "DX-Y.NYB_ret_1d" in df.columns and "^VIX_ret_1d" in df.columns:
-            df["Risk_Sentiment"] = (
-                    df["SPY_ret_1d"] - df["DX-Y.NYB_ret_1d"] - df["^VIX_ret_1d"]
-            )
+            df["Risk_Sentiment"] = df["SPY_ret_1d"] - df["DX-Y.NYB_ret_1d"] - df["^VIX_ret_1d"]
 
-        # -------------------------------
-        # (2) 추가: 주요 종목 데이터 (AAPL, MSFT, NVDA)
-        # -------------------------------
-        target_tickers = ["AAPL", "MSFT", "NVDA"]
-        price_dfs = []
-        for t in target_tickers:
-            df_t = yf.download(t, start=self.start_date, end=self.end_date, interval="1d")[["Close"]]
-            df_t.columns = [t]
-            df_t[f"{t}_ret1"] = df_t[t].pct_change()
-            df_t[f"{t}_ma5"] = df_t[t].rolling(5).mean()
-            df_t[f"{t}_ma10"] = df_t[t].rolling(10).mean()
-            price_dfs.append(df_t)
+        # (2) 결측치 처리
+        df = df.fillna(method="ffill").fillna(method="bfill")
 
-        price_df = pd.concat(price_dfs, axis=1).fillna(method="bfill")
-
-        # -------------------------------
-        # (3) 매크로 + 주가 데이터 병합
-        # -------------------------------
-        df.reset_index(inplace=True)
-        price_df.reset_index(inplace=True)
-        merged_df = pd.merge(price_df, df, on="Date", how="inner").fillna(0)
-
-        # -------------------------------
-        # (4) Feature 구조 정리
-        # -------------------------------
-        drop_cols = [c for c in merged_df.columns if c.endswith("_Close") or c in ["AAPL", "MSFT", "NVDA"]]
-        merged_df = merged_df.drop(columns=drop_cols, errors="ignore")
-
-        merged_df.columns = [c.replace("_ret_ret", "_ret") for c in merged_df.columns]
-        merged_df.columns = [c.replace("__", "_") for c in merged_df.columns]
-
-        # ✅ 학습 시 feature 순서와 동기화
+        # (3) 스케일러 순서 맞추기
         try:
             from joblib import load
             scaler_X = load("models/scaler_X.pkl")
             feature_order = list(scaler_X.feature_names_in_)
-            merged_df = merged_df.reindex(columns=feature_order, fill_value=0)
+            df = df.reindex(columns=feature_order, fill_value=0)
         except Exception as e:
             print("[WARN] feature order sync skipped:", e)
-            merged_df = merged_df.reindex(sorted(merged_df.columns), axis=1)
+            df = df.reindex(sorted(df.columns), axis=1)
 
-        self.data = merged_df
-        print(f"[MacroSentimentAgent] Feature engineering complete. Final shape: {merged_df.shape}")
-        return merged_df
+        df.reset_index(inplace=True)
+        self.data = df
+        print(f"[MacroSentimentAgent] Feature engineering complete. Final shape: {df.shape}")
+        return df
 
     # -------------------------------------------------------------
     # 3. 저장
@@ -139,33 +137,24 @@ class MacroSentimentAgent:
         print(f"[MacroSentimentAgent] Saved {path}")
 
 
-
-# 5. Dropout 활성화 (Monte Carlo Dropout)
+# -------------------------------------------------------------
+# 4. Monte Carlo Dropout
+# -------------------------------------------------------------
 def get_std_pred(model, X_seq, n_samples=30, scaler_y=None):
-    """
-    Monte Carlo Dropout 기반 예측 불확실성 계산 함수
-    - model: Keras LSTM 모델
-    - X_seq: 입력 데이터 (shape: (1, window, n_features))
-    - n_samples: 샘플 수 (Dropout 반복 횟수)
-    - scaler_y: y 스케일러 (정규화 복원용)
-    """
     preds = []
-
-    # Dropout을 강제로 활성화한 상태에서 n번 예측
     for _ in range(n_samples):
-        y_pred = model(X_seq, training=True)  # training=True → Dropout 활성화
+        y_pred = model(X_seq, training=True)
         preds.append(y_pred.numpy().flatten())
 
-    preds = np.stack(preds)                   # (n_samples, n_outputs)
+    preds = np.stack(preds)
     mean_pred = preds.mean(axis=0)
     std_pred = preds.std(axis=0)
 
-    # y_scaler가 있으면 정규화 복원
     if scaler_y is not None:
         try:
             mean_pred = scaler_y.inverse_transform(mean_pred.reshape(-1, 1)).flatten()
             std_pred = scaler_y.inverse_transform(std_pred.reshape(-1, 1)).flatten()
         except Exception:
-            pass  # scaler 차원 불일치 시 원본 유지
+            pass
 
     return mean_pred, std_pred
