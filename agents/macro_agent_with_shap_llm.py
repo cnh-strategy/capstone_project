@@ -199,11 +199,10 @@ class InteractionSHAPAnalyzer:
         X_scaled = np.array(X_scaled, dtype=np.float32)
         time_steps, num_features = X_scaled.shape[1], X_scaled.shape[2]
 
-        # baseline 다양화
         X_flat = X_scaled.reshape(X_scaled.shape[0], -1)
         background_mean = X_flat.mean(axis=0)
         background_noise = background_mean + np.random.normal(0, 0.03, size=X_flat.shape[1])
-        background = np.vstack([background_mean, background_noise, X_flat[:5]])
+        background = np.vstack([background_mean, background_noise, X_flat[:3]])
 
         def model_wrapper(X):
             X = np.array(X).astype(np.float32)
@@ -212,25 +211,30 @@ class InteractionSHAPAnalyzer:
 
         explainer = shap.KernelExplainer(model_wrapper, background)
 
-        # ✅ 더 많은 샘플 확보
-        sample_idx = np.random.choice(len(X_flat), size=min(25, len(X_flat)), replace=False)
-        shap_values = explainer.shap_values(X_flat[sample_idx])
+        sample_idx = np.random.choice(len(X_flat), size=min(3, len(X_flat)), replace=False)
+        shap_values = explainer.shap_values(X_flat[sample_idx], nsamples=10)
         shap_values = np.array(shap_values).reshape(-1, time_steps, num_features)
 
-        shap_matrix = shap_values.reshape(-1, num_features)
-        # ✅ NaN 방지
+        # ✅ 여기까진 full feature (189)로 계산
+
+        shap_matrix = shap_values.reshape(-1, num_features).astype(np.float32)
+
         valid_mask = shap_matrix.std(axis=0) > 1e-6
         shap_matrix = shap_matrix[:, valid_mask]
+        valid_features = np.array(feature_names)[valid_mask]
+
+        if shap_matrix.shape[1] > 100:
+            print(f"[Interaction SHAP] Reducing features for correlation: {shap_matrix.shape[1]} → 100")
+            shap_matrix = shap_matrix[:, :100]
+            valid_features = valid_features[:100]
 
         if shap_matrix.shape[1] < 2:
             print("⚠️ Not enough variance for interaction computation.")
             return pd.DataFrame()
 
-        # ✅ 상호작용 상관 행렬
+        print(f"[Interaction SHAP] Computing correlation among {shap_matrix.shape[1]} features...")
         inter_corr = np.corrcoef(shap_matrix, rowvar=False)
-        inter_df = pd.DataFrame(inter_corr, index=np.array(feature_names)[valid_mask],
-                                columns=np.array(feature_names)[valid_mask])
-        inter_df = inter_df.round(3)
+        inter_df = pd.DataFrame(inter_corr, index=valid_features, columns=valid_features).round(3)
         return inter_df
 
 
@@ -352,10 +356,14 @@ class FundamentalForecastAgent:
 
         temporal_summary = temporal_df.head().to_dict(orient="records") if temporal_df is not None else []
         causal_summary = causal_df.to_dict(orient="records") if causal_df is not None else []
-        interaction_summary = interaction_df.iloc[:5, :5].round(3).to_dict() if interaction_df is not None else {}
+        if isinstance(interaction_df, pd.DataFrame):
+            interaction_summary = interaction_df.iloc[:5, :5].round(3).to_dict()
+        else:
+            interaction_summary = {}
 
 
-        # -------------------------------
+
+# -------------------------------
         # 4️⃣ llm 생성
         # -------------------------------
         print("\n4️⃣ Generating explanation using LLM...")
