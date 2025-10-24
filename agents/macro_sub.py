@@ -138,3 +138,34 @@ class MacroSentimentAgent:
         self.data.to_csv(path, index=False)
         print(f"[MacroSentimentAgent] Saved {path}")
 
+
+
+# 5. Dropout 활성화 (Monte Carlo Dropout)
+def get_std_pred(model, X_seq, n_samples=30, scaler_y=None):
+    """
+    Monte Carlo Dropout 기반 예측 불확실성 계산 함수
+    - model: Keras LSTM 모델
+    - X_seq: 입력 데이터 (shape: (1, window, n_features))
+    - n_samples: 샘플 수 (Dropout 반복 횟수)
+    - scaler_y: y 스케일러 (정규화 복원용)
+    """
+    preds = []
+
+    # Dropout을 강제로 활성화한 상태에서 n번 예측
+    for _ in range(n_samples):
+        y_pred = model(X_seq, training=True)  # training=True → Dropout 활성화
+        preds.append(y_pred.numpy().flatten())
+
+    preds = np.stack(preds)                   # (n_samples, n_outputs)
+    mean_pred = preds.mean(axis=0)
+    std_pred = preds.std(axis=0)
+
+    # y_scaler가 있으면 정규화 복원
+    if scaler_y is not None:
+        try:
+            mean_pred = scaler_y.inverse_transform(mean_pred.reshape(-1, 1)).flatten()
+            std_pred = scaler_y.inverse_transform(std_pred.reshape(-1, 1)).flatten()
+        except Exception:
+            pass  # scaler 차원 불일치 시 원본 유지
+
+    return mean_pred, std_pred

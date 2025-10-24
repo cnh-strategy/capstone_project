@@ -3,13 +3,14 @@ import numpy as np
 import pandas as pd
 import shap
 import tensorflow as tf
+from shap.benchmark.experiments import total_done
 from tensorflow.keras.models import load_model
 from openai import OpenAI
 from datetime import datetime
 import joblib
 
 from agents.dump import CAPSTONE_OPENAI_API
-from agents.macro_agent import MarketPredictor
+from agents.macro_agent import MacroPredictor
 from macro_sub import MacroSentimentAgent
 
 
@@ -24,46 +25,46 @@ class LLMExplainer:
     def generate_explanation(self, feature_summary, predictions, importance_summary,
                              temporal_summary=None, causal_summary=None, interaction_summary=None):
         prompt = f"""
-    당신은 금융 시장을 분석하는 인공지능 애널리스트입니다.
-    아래는 LSTM 기반 예측 모델의 해석 결과입니다.
-    주어진 데이터를 정량적으로 해석하고, 변수 간 관계를 논리적으로 분석하세요.
-
-    ### 1. 모델 예측 결과
-    {predictions}
-
-    ### 2. 종목별 주요 변수 중요도 (Base SHAP)
-    {importance_summary}
-
-    ### 3. 시점별 변수 영향 변화 (Temporal SHAP)
-    {temporal_summary}
-
-    ### 4. 변수별 인과 효과 (Causal SHAP)
-    {causal_summary}
-
-    ### 5. 변수 간 상호작용 행렬 (Interaction SHAP)
-    {interaction_summary}
-
-    위 데이터를 바탕으로 아래 내용을 체계적으로 작성하세요:
-
-    (1) **Temporal 분석:** 
-        - 어떤 변수들이 최근 시점으로 갈수록 영향력이 커졌는가?
-        - 영향이 약해진 변수는 무엇인가?
-        - 시간 흐름에 따라 피처 영향이 달라진 이유를 금융적 관점에서 설명.
-
-    (2) **Causal 분석:** 
-        - causal_effect가 양(+)이면 주가 상승 요인, 음(-)이면 하락 요인으로 해석.
-        - 각 종목별로 어떤 피처가 인과적으로 강한 영향을 미쳤는가?
-        - 예: “금리 상승(+) → 달러 강세 → 기술주 약세” 형태로 인과 구조를 제시.
-
-    (3) **Interaction 분석:** 
-        - 상관도가 높은 피처 쌍을 찾아 그 상호작용을 해석.
-        - 예: “유가와 금리 동반 상승 → 비용 압박 증가 → AAPL/MSFT 부정적 영향”.
-
-    (4) **종합 결론:** 
-        - 세 가지 관점을 통합하여 각 종목(AAPL, MSFT, NVDA)의 예측 방향과 원인을 설명.
-        - 특정 종목이 타 종목 대비 어떤 변수에 더 민감했는지 논리적으로 요약.
-
-    분석 시 단순 설명이 아니라, 위 수치들을 근거로 금융적 추론을 포함해 주세요.
+            당신은 금융 시장을 분석하는 인공지능 애널리스트입니다.
+            아래는 LSTM 기반 예측 모델의 해석 결과입니다.
+            주어진 데이터를 정량적으로 해석하고, 변수 간 관계를 논리적으로 분석하세요.
+        
+            ### 1. 모델 예측 결과
+            {predictions}
+        
+            ### 2. 종목별 주요 변수 중요도 (Base SHAP)
+            {importance_summary}
+        
+            ### 3. 시점별 변수 영향 변화 (Temporal SHAP)
+            {temporal_summary}
+        
+            ### 4. 변수별 인과 효과 (Causal SHAP)
+            {causal_summary}
+        
+            ### 5. 변수 간 상호작용 행렬 (Interaction SHAP)
+            {interaction_summary}
+        
+            위 데이터를 바탕으로 아래 내용을 체계적으로 작성하세요:
+        
+            (1) **Temporal 분석:** 
+                - 어떤 변수들이 최근 시점으로 갈수록 영향력이 커졌는가?
+                - 영향이 약해진 변수는 무엇인가?
+                - 시간 흐름에 따라 피처 영향이 달라진 이유를 금융적 관점에서 설명.
+        
+            (2) **Causal 분석:** 
+                - causal_effect가 양(+)이면 주가 상승 요인, 음(-)이면 하락 요인으로 해석.
+                - 각 종목별로 어떤 피처가 인과적으로 강한 영향을 미쳤는가?
+                - 예: “금리 상승(+) → 달러 강세 → 기술주 약세” 형태로 인과 구조를 제시.
+        
+            (3) **Interaction 분석:** 
+                - 상관도가 높은 피처 쌍을 찾아 그 상호작용을 해석.
+                - 예: “유가와 금리 동반 상승 → 비용 압박 증가 → AAPL/MSFT 부정적 영향”.
+        
+            (4) **종합 결론:** 
+                - 세 가지 관점을 통합하여 각 종목(AAPL, MSFT, NVDA)의 예측 방향과 원인을 설명.
+                - 특정 종목이 타 종목 대비 어떤 변수에 더 민감했는지 논리적으로 요약.
+        
+            분석 시 단순 설명이 아니라, 위 수치들을 근거로 금융적 추론을 포함해 주세요.
         """
         response = self.client.chat.completions.create(
             model=self.model,
@@ -99,7 +100,7 @@ class BaseSHAPAnalyzer:
             def model_wrapper_single(X):
                 X = np.array(X).astype(np.float32)
                 X = X.reshape(X.shape[0], time_steps, num_features)
-                return self.model.predict(X, verbose=0)[:, i]
+                return self.model.predictor(X, verbose=0)[:, i]
 
             explainer = shap.KernelExplainer(model_wrapper_single, background)
 
@@ -140,7 +141,7 @@ class TemporalSHAPAnalyzer:
         def model_wrapper(X):
             X = np.array(X).astype(np.float32)
             X = X.reshape(X.shape[0], time_steps, num_features)
-            return self.model.predict(X, verbose=0)[:, target_idx]
+            return self.model.predictor(X, verbose=0)[:, target_idx]
 
         explainer = shap.KernelExplainer(model_wrapper, background)
 
@@ -166,14 +167,14 @@ class CausalSHAPAnalyzer:
         print("[Causal SHAP] Computing causal perturbation effects...")
 
         X_scaled = np.array(X_scaled, dtype=np.float32)
-        baseline_pred = self.model.predict(X_scaled, verbose=0)[:, target_idx].mean()
+        baseline_pred = self.model.predictor(X_scaled, verbose=0)[:, target_idx].mean()
 
         effects = []
         for j, feat in enumerate(feature_names):
             perturbed = X_scaled.copy()
             perturb_factor = np.random.uniform(1.1, 1.3)  # ✅ 더 강한 perturbation
             perturbed[:, :, j] *= perturb_factor
-            new_pred = self.model.predict(perturbed, verbose=0)[:, target_idx].mean()
+            new_pred = self.model.predictor(perturbed, verbose=0)[:, target_idx].mean()
             effects.append(new_pred - baseline_pred)
 
         df = pd.DataFrame({"feature": feature_names, "causal_effect": effects})
@@ -204,7 +205,7 @@ class InteractionSHAPAnalyzer:
         def model_wrapper(X):
             X = np.array(X).astype(np.float32)
             X = X.reshape(X.shape[0], time_steps, num_features)
-            return self.model.predict(X, verbose=0)[:, target_idx]
+            return self.model.predictor(X, verbose=0)[:, target_idx]
 
         explainer = shap.KernelExplainer(model_wrapper, background)
 
@@ -256,7 +257,10 @@ class AttributionAnalyzer:
 # 3️⃣ 메인 예측 에이전트 (통합형)
 # ==============================================================
 class FundamentalForecastAgent:
-    def __init__(self):
+    def __init__(self,
+                 agent_id='MacroAgent',
+                 ticker='AAPL'
+                 ):
         self.model_path = "models/multi_output_lstm_model.h5"
         self.scaler_x_path = "models/scaler_X.pkl"
         self.scaler_y_path = "models/scaler_y.pkl"
@@ -264,9 +268,13 @@ class FundamentalForecastAgent:
         self.model = load_model(self.model_path, compile=False)
         self.scaler_X = joblib.load(self.scaler_x_path)
         self.scaler_y = joblib.load(self.scaler_y_path)
+        self.agent_id = agent_id
+        self.ticker = ticker
 
     def run(self):
         print("1️⃣ Collecting macro & stock features...")
+        explanation=None
+
         # 예측 일자 설정
         # base_date = datetime.today()
         base_date = datetime(2025, 10, 11)
@@ -292,12 +300,13 @@ class FundamentalForecastAgent:
         # -------------------------------
         # 2️⃣ 예측 수행 및 역변환
         # -------------------------------
-        predictor = MarketPredictor(
+        predictor = MacroPredictor(
+            agent_id=self.agent_id,
             base_date=base_date,
             window=40,
-            tickers=["AAPL", "MSFT", "NVDA"]
+            tickers=self.ticker
         )
-        pred_prices, X_scaled = predictor.run_prediction()
+        pred_prices, target, X_scaled = predictor.run_prediction()
 
         # ✅ numpy 변환 추가
         if isinstance(X_scaled, pd.DataFrame):
@@ -320,11 +329,11 @@ class FundamentalForecastAgent:
         interaction_summary = interaction_df.iloc[:5, :5].round(3).to_dict()
 
         # -------------------------------
-        # 4️⃣ llm 생
+        # 4️⃣ llm 생성
         # -------------------------------
         print("\n4️⃣ Generating explanation using LLM...")
-        explanation=None
-        llm = LLMExplainer()
+
+        llm  = LLMExplainer()
         feature_summary = feature_df.tail(5).describe().round(3).to_dict()
         explanation = llm.generate_explanation(feature_summary, pred_prices, importance_dict,
                                                temporal_summary, causal_summary, interaction_summary)
@@ -335,9 +344,18 @@ class FundamentalForecastAgent:
         print(explanation)
         print("===================================================")
 
-        return pred_prices, explanation, importance_dict, temporal_df, causal_df, interaction_df
+        total_json = {
+            'agent_id' : self.agent_id,
+            'target' : target,
+            'reason' : explanation
+        }
 
+        # return total_json, pred_prices, explanation, importance_dict, temporal_df, causal_df, interaction_df
+        return total_json
 
 if __name__ == "__main__":
-    agent = FundamentalForecastAgent()
-    predictions, llm_explanation, shap_info, temporal_df, causal_df, interaction_df = agent.run()
+    agent = FundamentalForecastAgent(agent_id = 'MacroAgent', ticker='AAPL')
+    # total_json, predictions, llm_explanation, shap_info, temporal_df, causal_df, interaction_df = agent.run()
+    total_json = agent.run()
+
+    print("total_json:", total_json)
