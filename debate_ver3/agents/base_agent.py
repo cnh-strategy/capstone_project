@@ -8,10 +8,17 @@ from collections import defaultdict
 import os, json, time, requests, yfinance as yf
 from datetime import datetime
 from dotenv import load_dotenv
+import os, sys
+PROJECT_ROOT = os.path.abspath(os.path.join(__file__, "..", "..", ".."))
+if PROJECT_ROOT not in sys.path: sys.path.insert(0, PROJECT_ROOT)
+
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
-from config.agents import agents_info, dir_info
-from core.data_set import build_dataset, load_dataset
+from ..config.agents import agents_info, dir_info
+from ..core.data_set import build_dataset, load_dataset
+
 import torch
+import torch.nn as nn
+
 import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
@@ -70,7 +77,7 @@ class StockData:
 # ===============================================================
 # BaseAgent 클래스
 # ===============================================================
-class BaseAgent:
+class BaseAgent(nn.Module):
     """LLM 기반 Multi-Agent Debate 공통 클래스"""
 
     OPENAI_URL = "https://api.openai.com/v1/responses"
@@ -88,6 +95,7 @@ class BaseAgent:
         ticker: str = "TSLA",
 
     ):
+        super().__init__()  # nn.Module 초기화
 
         load_dotenv()
         self.agent_id = agent_id # 에이전트 식별자

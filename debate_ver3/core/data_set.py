@@ -3,7 +3,7 @@ import numpy as np
 import os
 import yfinance as yf
 from sklearn.preprocessing import MinMaxScaler
-from config.agents import agents_info, dir_info
+from ..config.agents import agents_info, dir_info # 아연 수정
 
 # --------------------------------------------
 # 1. Raw Dataset 생성
