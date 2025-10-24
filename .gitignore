@@ -22,3 +22,7 @@ __pycache__/
 # 시스템 파일
 .DS_Store
 Thumbs.db
+
+# 캐시 파일/폴더
+__pycache__/
+*.pyc
