@@ -1,0 +1,15 @@
+
+Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+
+
+  You can now view your Streamlit app in your browser.
+
+  URL: http://0.0.0.0:8501
+
+  Stopping...
+🎯 Multi-Agent Debate System for Stock Price Prediction
+============================================================
+
+🚀 자동으로 Streamlit 웹 대시보드를 시작합니다...
+📱 브라우저에서 http://localhost:8501 에 접속하세요
+⏹️  중지하려면 Ctrl+C를 누르세요

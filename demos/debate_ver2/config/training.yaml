@@ -1,0 +1,21 @@
+# ===============================================
+# MCP Training & Debate Hyperparameters
+# ===============================================
+
+pretraining:
+  epochs: 20
+  learning_rate: 0.001
+  batch_size: 32
+  window_size: 7
+
+mutual_learning:
+  rounds: 5
+  confidence_metric: "beta"     # 선택지: [beta, inverse_mse]
+  smoothing: 0.8                # 과도한 변동 방지용 감쇠 계수
+
+debate:
+  rounds: 3
+  temperature: 0.8
+  reasoning_model: "gpt-5"      # LLM 모델명 (실제 API 호출 시 사용)
+  max_tokens: 1024
+  consensus_strategy: "mean"    # [mean, weighted, majority]

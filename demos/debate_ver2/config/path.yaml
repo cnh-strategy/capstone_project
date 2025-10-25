@@ -1,0 +1,23 @@
+# ===============================================
+# MCP System Path Configuration
+# ===============================================
+
+data:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+
+models:
+  base_dir: "models"
+  pretrained:
+    technical: "models/technical_agent.pt"
+    fundamental: "models/fundamental_agent.pt"
+    sentimental: "models/sentimental_agent.pt"
+  finetuned:
+    technical: "models/technical_agent_finetuned.pt"
+    fundamental: "models/fundamental_agent_finetuned.pt"
+    sentimental: "models/sentimental_agent_finetuned.pt"
+
+logs:
+  base_dir: "logs"
+  training_log: "logs/training.log"
+  debate_log: "logs/debate.log"

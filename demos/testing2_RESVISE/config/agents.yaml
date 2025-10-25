@@ -1,0 +1,15 @@
+models_dir: "models"
+data_dir: "data"
+agents:
+  technical:
+    class_name: "TechnicalAgent"
+    model_file: "technical_agent.pt"
+    feature_cols: ["Open", "High", "Low", "Close", "Volume", "returns", "sma_5", "sma_20", "rsi", "volume_z"]
+  fundamental:
+    class_name: "FundamentalAgent"
+    model_file: "fundamental_agent.pt"
+    feature_cols: ["Close", "USD_KRW", "NASDAQ", "VIX", "priceEarningsRatio", "forwardPE", "priceToBook", "debtEquityRatio", "returnOnAssets", "returnOnEquity", "profitMargins", "grossMargins"]
+  sentimental:
+    class_name: "SentimentalAgent"
+    model_file: "sentimental_agent.pt"
+    feature_cols: ["Close", "returns", "sentiment_mean", "sentiment_vol"]
