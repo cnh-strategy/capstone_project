@@ -26,3 +26,29 @@ matplotlib>=3.5.0
 # Development and testing (optional)
 pytest>=6.0.0
 jupyter>=1.0.0
+
+# LLM and AI packages
+openai>=1.0.0
+anthropic>=0.3.0
+transformers>=4.30.0
+
+# Data processing
+openpyxl>=3.0.0
+xlrd>=2.0.0
+
+# Time series analysis
+ta>=0.10.0
+
+# Statistical analysis
+scipy>=1.7.0
+statsmodels>=0.13.0
+
+# Web scraping (for news/sentiment)
+beautifulsoup4>=4.9.0
+newspaper3k>=0.2.8
+
+# Progress bars
+tqdm>=4.62.0
+
+# Configuration management
+pyyaml>=6.0
