@@ -4,10 +4,14 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 import warnings
+
+from debate_ver3_tmp.config.agents import dir_info
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+model_dir: str = dir_info["model_dir"]
 
-class MacroSentimentAgent:
+class MakeDatasetMacro:
     def __init__(self, base_date: datetime, window: int = 40, target_tickers=None):
         self.macro_tickers = {
             "SPY": "SPY", "QQQ": "QQQ", "^GSPC": "^GSPC", "^DJI": "^DJI", "^IXIC": "^IXIC",
@@ -115,7 +119,7 @@ class MacroSentimentAgent:
         # (3) 스케일러 순서 맞추기
         try:
             from joblib import load
-            scaler_X = load("models/scaler_X.pkl")
+            scaler_X = load(f"{model_dir}/scaler_X.pkl")
             feature_order = list(scaler_X.feature_names_in_)
             df = df.reindex(columns=feature_order, fill_value=0)
         except Exception as e:

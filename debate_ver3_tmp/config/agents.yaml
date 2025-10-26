@@ -1,0 +1,34 @@
+# ===============================================
+# MCP Agent Configuration
+# ===============================================
+
+agents_info:
+  TechnicalAgent:
+    description: "기술적 분석 기반 단기 추세 예측 모델 (TCN)"
+    input_dim: 10
+    hidden_dim: 64
+    dropout: 0.1
+    data_cols: ["Open", "High", "Low", "Close", "Volume", "returns", "sma_5", "sma_20", "rsi", "volume_z"]
+    data_dir="data/processed",
+    window_size=7
+    
+  FundamentalAgent:
+    description: "재무 데이터 기반 기업가치 예측 모델 (LSTM)"
+    input_dim: 16
+    hidden_dim: 64
+    num_layers: 2
+    dropout: 0.1
+    data_cols: ["Open", "High", "Low", "Close", "Volume", "returns", "sma_5", "sma_20", "rsi", "volume_z", "USD_KRW", "NASDAQ", "VIX", "priceEarningsRatio", "forwardPE", "priceToBook"]
+    data_dir="data/processed",
+    window_size=7
+
+  SentimentalAgent:
+    description: "투자자 심리 및 뉴스 감성 기반 시장 예측 모델 (Transformer)"
+    input_dim: 8
+    d_model: 64
+    nhead: 4
+    num_layers: 2
+    dropout: 0.1
+    data_cols: ["returns", "sentiment_mean", "sentiment_vol", "Close", "Volume", "Open", "High", "Low"]
+    data_dir="data/processed",
+    window_size=7

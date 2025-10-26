@@ -1,3 +1,4 @@
+import json
 import os
 import numpy as np
 import pandas as pd
@@ -11,7 +12,10 @@ import joblib
 
 from agents.dump import CAPSTONE_OPENAI_API
 from agents.macro_agent import MacroPredictor
+from debate_ver3_tmp.agents.base_agent import Opinion, StockData, Rebuttal
 from macro_sub import MacroSentimentAgent
+from typing import Dict, List, Optional, Literal, Tuple
+from collections import defaultdict
 
 
 # ==============================================================
@@ -22,56 +26,83 @@ class LLMExplainer:
         self.client = OpenAI(api_key=CAPSTONE_OPENAI_API)
         self.model = model_name
 
-    def generate_explanation(self, feature_summary, predictions, importance_summary,
-                             temporal_summary=None, causal_summary=None, interaction_summary=None):
-        prompt = f"""
-            당신은 금융 시장을 분석하는 인공지능 애널리스트입니다.
-            아래는 LSTM 기반 예측 모델의 해석 결과입니다.
-            주어진 데이터를 정량적으로 해석하고, 변수 간 관계를 논리적으로 분석하세요.
-        
-            ### 1. 모델 예측 결과
-            {predictions}
-        
-            ### 2. 종목별 주요 변수 중요도 (Base SHAP)
-            {importance_summary}
-        
-            ### 3. 시점별 변수 영향 변화 (Temporal SHAP)
-            {temporal_summary}
-        
-            ### 4. 변수별 인과 효과 (Causal SHAP)
-            {causal_summary}
-        
-            ### 5. 변수 간 상호작용 행렬 (Interaction SHAP)
-            {interaction_summary}
-        
-            위 데이터를 바탕으로 아래 내용을 체계적으로 작성하세요:
-        
-            (1) **Temporal 분석:** 
-                - 어떤 변수들이 최근 시점으로 갈수록 영향력이 커졌는가?
-                - 영향이 약해진 변수는 무엇인가?
-                - 시간 흐름에 따라 피처 영향이 달라진 이유를 금융적 관점에서 설명.
-        
-            (2) **Causal 분석:** 
-                - causal_effect가 양(+)이면 주가 상승 요인, 음(-)이면 하락 요인으로 해석.
-                - 각 종목별로 어떤 피처가 인과적으로 강한 영향을 미쳤는가?
-                - 예: “금리 상승(+) → 달러 강세 → 기술주 약세” 형태로 인과 구조를 제시.
-        
-            (3) **Interaction 분석:** 
-                - 상관도가 높은 피처 쌍을 찾아 그 상호작용을 해석.
-                - 예: “유가와 금리 동반 상승 → 비용 압박 증가 → AAPL/MSFT 부정적 영향”.
-        
-            (4) **종합 결론:** 
-                - 세 가지 관점을 통합하여 각 종목(AAPL, MSFT, NVDA)의 예측 방향과 원인을 설명.
-                - 특정 종목이 타 종목 대비 어떤 변수에 더 민감했는지 논리적으로 요약.
-        
-            분석 시 단순 설명이 아니라, 위 수치들을 근거로 금융적 추론을 포함해 주세요.
+
+    def generate_explanation(
+            self,
+            feature_summary,
+            predictions,
+            importance_summary,
+            temporal_summary=None,
+            causal_summary=None,
+            interaction_summary=None,
+            stock_data=None,
+            target=None,
+    ):
         """
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.4
+        SHAP / LSTM 결과 기반으로 LLM Reasoning 생성 (system + user 구조)
+        """
+
+        # 1️⃣ system 메시지
+        sys_text = (
+            "너는 금융 시장을 분석하는 인공지능 애널리스트이며, "
+            "LSTM 기반의 시계열 모델 예측 결과를 해석해야 한다. "
+            "모델의 예측값, 변수 중요도, 인과 관계, 상호작용 정보를 종합하여 논리적 금융 분석을 수행한다."
         )
-        return response.choices[0].message.content.strip()
+
+        # 2️⃣ user 메시지 (LSTM 예측 결과 중심)
+        user_text = f"""
+        ### 1. 모델 예측 결과
+        {predictions}
+    
+        ### 2. 종목별 주요 변수 중요도 (Base SHAP)
+        {importance_summary}
+    
+        ### 3. 시점별 변수 영향 변화 (Temporal SHAP)
+        {temporal_summary}
+    
+        ### 4. 변수별 인과 효과 (Causal SHAP)
+        {causal_summary}
+    
+        ### 5. 변수 간 상호작용 행렬 (Interaction SHAP)
+        {interaction_summary}
+    
+        ---
+        위 데이터를 바탕으로 아래 내용을 체계적으로 작성하세요:
+    
+        (1) **Temporal 분석:** 
+            - 어떤 변수들이 최근 시점으로 갈수록 영향력이 커졌는가?
+            - 영향이 약해진 변수는 무엇인가?
+            - 시간 흐름에 따라 피처 영향이 달라진 이유를 금융적 관점에서 설명.
+    
+        (2) **Causal 분석:** 
+            - causal_effect가 양(+)이면 주가 상승 요인, 음(-)이면 하락 요인으로 해석.
+            - 각 종목별로 어떤 피처가 인과적으로 강한 영향을 미쳤는가?
+            - 예: “금리 상승(+) → 달러 강세 → 기술주 약세” 형태로 인과 구조를 제시.
+    
+        (3) **Interaction 분석:** 
+            - 상관도가 높은 피처 쌍을 찾아 그 상호작용을 해석.
+            - 예: “유가와 금리 동반 상승 → 비용 압박 증가 → AAPL/MSFT 부정적 영향”.
+    
+        (4) **종합 결론:** 
+            - 세 가지 관점을 통합하여 각 종목(AAPL, MSFT, NVDA)의 예측 방향과 원인을 설명.
+            - 특정 종목이 타 종목 대비 어떤 변수에 더 민감했는지 논리적으로 요약.
+        
+        ---
+        추가 맥락:
+        최근 종가: {getattr(stock_data, 'last_price', 'N/A')}
+        예측 종가: {getattr(target, 'next_close', 'N/A')}
+        """
+
+        # 3️⃣ 메시지 빌드 (system + user)
+        msg_sys = self._msg("system", sys_text)
+        msg_user = self._msg("user", user_text)
+
+        # 4️⃣ LLM 호출
+        parsed = self._ask_with_fallback(msg_sys, msg_user, self.schema_obj_opinion)
+        reason = parsed.get("reason") or "(사유 생성 실패: 미입력)"
+
+        return reason
+
 
 
 # ==============================================================
@@ -296,6 +327,12 @@ class FundamentalForecastAgent:
         self.agent_id = agent_id
         self.ticker = ticker
 
+
+        # 상태값
+        self.stockdata: Optional[StockData] = None
+        self.opinions: List[Opinion] = []
+        self.rebuttals: Dict[int, List[Rebuttal]] = defaultdict(list)
+
     def run(self):
         print("1️⃣ Collecting macro & stock features...")
         explanation=None
@@ -385,8 +422,28 @@ class FundamentalForecastAgent:
             'reason' : explanation
         }
 
+        stock_data = {
+            'temporal_summary' : temporal_summary,
+            'causal_summary' : causal_summary,
+            'interaction_summary' : interaction_summary
+
+        }
+
+        context = json.dumps({
+            "agent_id": self.agent_id,
+            "predicted_next_close": round(target.next_close, 3),
+            "uncertainty_sigma": round(target.uncertainty or 0.0, 4),
+            "confidence_beta": round(target.confidence or 0.0, 4),
+            "latest_data": str(stock_data)
+        }, ensure_ascii=False, indent=2)
+
+        reason = explanation
+
+        # 4) Opinion 기록/반환 (항상 최신 값 append)
+        self.opinions.append(Opinion(agent_id=self.agent_id, target=target, reason=reason))
+
         # return total_json, pred_prices, explanation, importance_dict, temporal_df, causal_df, interaction_df
-        return total_json
+        return total_json, self.opinions[-1]
 
 if __name__ == "__main__":
     agent = FundamentalForecastAgent(agent_id = 'MacroAgent', ticker='AAPL')

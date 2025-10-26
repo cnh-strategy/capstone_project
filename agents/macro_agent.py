@@ -4,9 +4,12 @@ import joblib
 from datetime import datetime
 from tensorflow.keras.models import load_model
 
-from agents.macro_sub import MacroSentimentAgent, get_std_pred
-from debate_ver3.agents.base_agent import BaseAgent
+from agents.macro_sub import get_std_pred, MakeDatasetMacro
+from debate_ver3_tmp.agents.base_agent import BaseAgent, Target
+from debate_ver3_tmp.config.agents import dir_info
 
+model_dir: str = dir_info["model_dir"]
+data_dir: str = dir_info["data_dir"]
 
 class MacroPredictor(BaseAgent):
     """
@@ -16,22 +19,19 @@ class MacroPredictor(BaseAgent):
     """
 
     def __init__(self,
-                 model_path="models/multi_output_lstm_model.h5",
-                 scaler_X_path="models/scaler_X.pkl",
-                 scaler_y_path="models/scaler_y.pkl",
-                 base_date=datetime(2025, 10, 11),
+                 base_date=datetime.today(),
                  window=40,
-                 tickers=None
+                 ticker=None
                  ,agent_id='MacroAgent',
                  **kwargs):
         self.agent_id = agent_id
         BaseAgent.__init__(self, self.agent_id, **kwargs)
-        self.model_path = model_path
-        self.scaler_X_path = scaler_X_path
-        self.scaler_y_path = scaler_y_path
+        self.model_path = f"{model_dir}/{ticker}_{agent_id}.h5"
+        self.scaler_X_path = f"{model_dir}/scaler_X.pkl"
+        self.scaler_y_path = f"{model_dir}/scaler_y.pkl"
         self.base_date = base_date
         self.window = window
-        self.tickers = tickers or ["AAPL", "MSFT", "NVDA"]
+        self.tickers = [ticker] or ["AAPL", "MSFT", "NVDA"]
         # self.target_tickers = target_tickers or ["AAPL", "MSFT", "NVDA"]
 
         self.model = None
@@ -56,7 +56,7 @@ class MacroPredictor(BaseAgent):
     # -------------------------------------------------------------
     def fetch_macro_data(self):
         print("[INFO] MacroSentimentAgent 데이터 수집 중...")
-        macro_agent = MacroSentimentAgent(base_date=self.base_date, window=self.window, target_tickers=self.tickers)
+        macro_agent = MakeDatasetMacro(base_date=self.base_date, window=self.window, target_tickers=self.tickers)
         macro_agent.fetch_data()
         macro_agent.add_features()
         df = macro_agent.data.reset_index()
@@ -154,11 +154,12 @@ class MacroPredictor(BaseAgent):
         print(pred_prices)
 
         # 단일 티커일 경우 target 요약 제공
-        target = {
-            "next_close": float(pred_df["Predicted_Close"].iloc[-1]),
-            "uncertainty": float(pred_df["uncertainty"].iloc[-1]),
-            "confidence": float(pred_df["confidence"].iloc[-1])
-        }
+        target = Target(
+            next_close=float(pred_df["Predicted_Close"].iloc[-1]),
+            uncertainty=float(std_pred[-1]),
+            confidence=float(pred_df["confidence"].iloc[-1])
+        )
+
 
         return pred_prices, target
 
