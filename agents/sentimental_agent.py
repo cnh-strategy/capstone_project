@@ -26,9 +26,7 @@ class SentimentalAgent(BaseAgent, nn.Module):
         batch_size=agents_info["SentimentalAgent"]["batch_size"],
         **kwargs
     ):
-        # -----------------------------
-        # ✅ 기본 초기화
-        # -----------------------------
+        # 기본 초기화
         BaseAgent.__init__(self, agent_id, **kwargs)
         nn.Module.__init__(self)
 
@@ -38,26 +36,20 @@ class SentimentalAgent(BaseAgent, nn.Module):
         self.nhead = nhead
         self.num_layers = num_layers
 
-        # -----------------------------
-        # ✅ 입력 프로젝션
-        # -----------------------------
+        # 입력 프로젝션
         self.input_projection = nn.Linear(input_dim, d_model)
         
-        # -----------------------------
-        # ✅ Transformer 인코더 정의 (float형 dropout 사용)
-        # -----------------------------
+        # Transformer 인코더 정의 (float형 dropout 사용)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
-            dropout=self.dropout_rate,  # ✅ float값 전달
+            dropout=self.dropout_rate,  # float값 전달
             batch_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        # -----------------------------
-        # ✅ 출력 레이어 및 학습 세팅
-        # -----------------------------
-        self.dropout = nn.Dropout(self.dropout_rate)  # ✅ nn.Dropout 객체는 따로
+        # 출력 레이어 및 학습 세팅
+        self.dropout = nn.Dropout(self.dropout_rate)  # nn.Dropout 객체는 따로
         self.fc = nn.Linear(d_model, 1)
         
         self.optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)
@@ -82,22 +74,27 @@ class SentimentalAgent(BaseAgent, nn.Module):
                 encoder_layer = nn.TransformerEncoderLayer(
                     d_model=d_model,
                     nhead=nhead,
+                    dim_feedforward=d_model * 2,
                     dropout=dropout_rate,
+                    activation='gelu',
                     batch_first=True
                 )
                 self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
                 self.dropout = nn.Dropout(dropout_rate)
-                self.fc = nn.Linear(d_model, 1)
+                self.fc = nn.Sequential(
+                    nn.Linear(d_model, 1),
+                    nn.Tanh()   # 🔹출력값을 -1~1로 제한
+                )
 
             def forward(self, x):
                 x = self.input_projection(x)
-                x = self.transformer(x)     # ✅ TransformerEncoder는 Tensor 반환
-                x = x[:, -1, :]             # ✅ 마지막 시점 hidden 사용
+                x = self.transformer(x)     # TransformerEncoder는 Tensor 반환
+                x = x[:, -1, :]             # 마지막 시점 hidden 사용
                 x = self.dropout(x)
                 return self.fc(x)
 
         model = TransformerNet(input_dim, d_model, nhead, num_layers, dropout_rate)
-        print(f"🧠 SentimentalAgent Transformer 생성 완료 "
+        print(f" SentimentalAgent Transformer 생성 완료 "
             f"(d_model={d_model}, nhead={nhead}, layers={num_layers})")
         return model
 
@@ -113,7 +110,7 @@ class SentimentalAgent(BaseAgent, nn.Module):
         return output
         
 
-   # 4️. LLM Reasoning 메시지
+   # LLM Reasoning 메시지
     def _build_messages_opinion(self, stock_data, target):
         """FundamentalAgent용 LLM 프롬프트 메시지 구성 (시계열 포함 버전)"""
 
@@ -121,7 +118,7 @@ class SentimentalAgent(BaseAgent, nn.Module):
         if not agent_data or not isinstance(agent_data, dict):
             raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
 
-        # 1️. 기본 컨텍스트
+        # 기본 컨텍스트
         ctx = {
             "ticker": getattr(stock_data, "ticker", "Unknown"),
             "currency": getattr(stock_data, "currency", "USD"),
@@ -132,7 +129,7 @@ class SentimentalAgent(BaseAgent, nn.Module):
             "recent_days": len(next(iter(agent_data.values()))) if agent_data else 0,
         }
 
-        # 2️. 각 컬럼별 최근 시계열 그대로 포함
+        # 각 컬럼별 최근 시계열 그대로 포함
         # (최근 7~14일 정도면 LLM이 이해 가능한 범위)
         for col, values in agent_data.items():
             if isinstance(values, (list, tuple)):
@@ -140,7 +137,7 @@ class SentimentalAgent(BaseAgent, nn.Module):
             else:
                 ctx[col] = [values]
 
-        # 3️. 프롬프트 구성
+        # 프롬프트 구성
         system_text = OPINION_PROMPTS[self.agent_id]["system"]
         user_text = OPINION_PROMPTS[self.agent_id]["user"].format(
             context=json.dumps(ctx, ensure_ascii=False)
@@ -180,7 +177,7 @@ class SentimentalAgent(BaseAgent, nn.Module):
                 "confidence": float(target_opinion.target.confidence),
             }
         }
-        # 2️. 각 컬럼별 최근 시계열 그대로 포함
+        # 각 컬럼별 최근 시계열 그대로 포함
         # (최근 7~14일 정도면 LLM이 이해 가능한 범위)
         for col, values in agent_data.items():
             if isinstance(values, (list, tuple)):
@@ -206,18 +203,14 @@ class SentimentalAgent(BaseAgent, nn.Module):
         - 내 의견(my_opinion), 타 에이전트 의견(others), 주가데이터(stock_data) 기반
         - rebuttals 중 나(self.agent_id)를 대상으로 한 내용만 포함
         """
-        # -----------------------------
-        # 1️⃣ 기본 메타데이터
-        # -----------------------------
+        # 기본 메타데이터
         t = getattr(stock_data, "ticker", "UNKNOWN")
         ccy = getattr(stock_data, "currency", "USD").upper()
         agent_data = getattr(stock_data, self.agent_id, None)
         if not agent_data or not isinstance(agent_data, dict):
             raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
 
-        # -----------------------------
-        # 2️⃣ 타 에이전트 의견 및 rebuttal 통합 요약
-        # -----------------------------
+        # 타 에이전트 의견 및 rebuttal 통합 요약
         others_summary = []
         for o in others:
             entry = {
@@ -240,9 +233,7 @@ class SentimentalAgent(BaseAgent, nn.Module):
 
             others_summary.append(entry)
 
-        # -----------------------------
-        # 3️⃣ Context 구성
-        # -----------------------------
+        # Context 구성
         ctx = {
             "ticker": t,
             "currency": ccy,
@@ -264,9 +255,7 @@ class SentimentalAgent(BaseAgent, nn.Module):
             else:
                 ctx[col] = [values]
 
-        # -----------------------------
-        # 4️⃣ Prompt 구성
-        # -----------------------------
+        # Prompt 구성
         prompt_set = REVISION_PROMPTS.get(self.agent_id)
         system_text = prompt_set["system"]
         user_text = prompt_set["user"].format(context=json.dumps(ctx, ensure_ascii=False, indent=2))

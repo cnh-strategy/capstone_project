@@ -31,7 +31,7 @@ class FundamentalAgent(BaseAgent, nn.Module):
         self.num_layers = num_layers
         self.dropout_rate = dropout
 
-        # ✅ 2. LSTM 모델 정의
+        # LSTM 모델 정의
         self.lstm = nn.LSTM(
             self.input_dim, hidden_dim, num_layers,
             batch_first=True, dropout=dropout if num_layers > 1 else 0
@@ -39,16 +39,18 @@ class FundamentalAgent(BaseAgent, nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.fc = nn.Linear(hidden_dim, 1)
 
-        # ✅ 3. 학습 세팅
+        # 학습 세팅
         self.optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)
         self.loss_fn = nn.MSELoss()
 
     def _build_model(self):
-        """FundamentalAgent 기본 LSTM 모델 자동 생성"""
+        """FundamentalAgent 기본 LSTM 모델 자동 생성 (학습 수렴 개선 버전)"""
+        import torch.nn as nn
+
         input_dim = getattr(self, "input_dim", 16)
         hidden_dim = getattr(self, "hidden_dim", 64)
         num_layers = getattr(self, "num_layers", 2)
-        dropout_rate = getattr(self, "dropout_rate", 0.2)
+        dropout_rate = getattr(self, "dropout_rate", 0.1)  # 🔹조정: 0.2 → 0.1
 
         class LSTMNet(nn.Module):
             def __init__(self, input_dim, hidden_dim, num_layers, dropout_rate):
@@ -61,18 +63,23 @@ class FundamentalAgent(BaseAgent, nn.Module):
                     dropout=dropout_rate if num_layers > 1 else 0
                 )
                 self.dropout = nn.Dropout(dropout_rate)
-                self.fc = nn.Linear(hidden_dim, 1)
+                # 🔹출력층에 Tanh 추가 (출력 제한)
+                self.fc = nn.Sequential(
+                    nn.Linear(hidden_dim, 1),
+                    nn.Tanh()    # 🔹출력값 -1~1로 제한
+                )
 
             def forward(self, x):
                 out, _ = self.lstm(x)
-                out = out[:, -1, :]
+                out = out[:, -1, :]       # 마지막 시점 hidden
                 out = self.dropout(out)
                 return self.fc(out)
 
         model = LSTMNet(input_dim, hidden_dim, num_layers, dropout_rate)
         print(f"🧠 FundamentalAgent LSTM 생성 완료 "
-              f"(input_dim={input_dim}, hidden_dim={hidden_dim}, layers={num_layers})")
+            f"(input_dim={input_dim}, hidden_dim={hidden_dim}, layers={num_layers}, dropout={dropout_rate})")
         return model
+
 
     def forward(self, x) -> torch.Tensor:
         # LSTM 모델 출력 계산
@@ -87,7 +94,7 @@ class FundamentalAgent(BaseAgent, nn.Module):
         return output
     
 
-    # 4️. LLM Reasoning 메시지
+    # LLM Reasoning 메시지
     def _build_messages_opinion(self, stock_data, target):
         """FundamentalAgent용 LLM 프롬프트 메시지 구성 (시계열 포함 버전)"""
 
@@ -95,7 +102,7 @@ class FundamentalAgent(BaseAgent, nn.Module):
         if not agent_data or not isinstance(agent_data, dict):
             raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
 
-        # 1️. 기본 컨텍스트
+        # 기본 컨텍스트
         ctx = {
             "ticker": getattr(stock_data, "ticker", "Unknown"),
             "currency": getattr(stock_data, "currency", "USD"),
@@ -106,7 +113,7 @@ class FundamentalAgent(BaseAgent, nn.Module):
             "recent_days": len(next(iter(agent_data.values()))) if agent_data else 0,
         }
 
-        # 2️. 각 컬럼별 최근 시계열 그대로 포함
+        # 각 컬럼별 최근 시계열 그대로 포함
         # (최근 7~14일 정도면 LLM이 이해 가능한 범위)
         for col, values in agent_data.items():
             if isinstance(values, (list, tuple)):
@@ -114,7 +121,7 @@ class FundamentalAgent(BaseAgent, nn.Module):
             else:
                 ctx[col] = [values]
 
-        # 3️. 프롬프트 구성
+        # 프롬프트 구성
         system_text = OPINION_PROMPTS[self.agent_id]["system"]
         user_text = OPINION_PROMPTS[self.agent_id]["user"].format(
             context=json.dumps(ctx, ensure_ascii=False)
@@ -154,7 +161,7 @@ class FundamentalAgent(BaseAgent, nn.Module):
                 "confidence": float(target_opinion.target.confidence),
             }
         }
-        # 2️. 각 컬럼별 최근 시계열 그대로 포함
+        # 각 컬럼별 최근 시계열 그대로 포함
         # (최근 7~14일 정도면 LLM이 이해 가능한 범위)
         for col, values in agent_data.items():
             if isinstance(values, (list, tuple)):
@@ -181,7 +188,7 @@ class FundamentalAgent(BaseAgent, nn.Module):
         - rebuttals 중 나(self.agent_id)를 대상으로 한 내용만 포함
         """
         # -----------------------------
-        # 1️⃣ 기본 메타데이터
+        # 기본 메타데이터
         # -----------------------------
         t = getattr(stock_data, "ticker", "UNKNOWN")
         ccy = getattr(stock_data, "currency", "USD").upper()
@@ -190,7 +197,7 @@ class FundamentalAgent(BaseAgent, nn.Module):
             raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
 
         # -----------------------------
-        # 2️⃣ 타 에이전트 의견 및 rebuttal 통합 요약
+        # 타 에이전트 의견 및 rebuttal 통합 요약
         # -----------------------------
         others_summary = []
         for o in others:
@@ -215,7 +222,7 @@ class FundamentalAgent(BaseAgent, nn.Module):
             others_summary.append(entry)
 
         # -----------------------------
-        # 3️⃣ Context 구성
+        # Context 구성
         # -----------------------------
         ctx = {
             "ticker": t,
@@ -239,7 +246,7 @@ class FundamentalAgent(BaseAgent, nn.Module):
                 ctx[col] = [values]
 
         # -----------------------------
-        # 4️⃣ Prompt 구성
+        # Prompt 구성
         # -----------------------------
         prompt_set = REVISION_PROMPTS.get(self.agent_id)
         system_text = prompt_set["system"]

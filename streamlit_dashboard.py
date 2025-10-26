@@ -135,16 +135,16 @@ def run_real_debate_with_progress(ticker, rounds):
         status_container = st.container()
         
         with progress_container:
-            st.subheader("🚀 토론 진행 상황")
+            st.subheader("■ 토론 진행 상황")
             progress_bar = st.progress(0)
             status_text = st.empty()
         
         # DebateAgent 초기화
-        status_text.text("📋 DebateAgent 초기화 중...")
+        status_text.text("■ DebateAgent 초기화 중...")
         progress_bar.progress(10)
         
         debate_agent = DebateAgent(rounds=rounds, ticker=ticker)
-        status_text.text("👥 에이전트 생성 중...")
+        status_text.text("■ 에이전트 생성 중...")
         progress_bar.progress(20)
         
         # 에이전트 정보 표시
@@ -410,7 +410,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "■ 반박/지지 패턴"
 ])
 
-# 1. 최종의견 표
+# 최종의견 표
 with tab1:
     st.header("■ 최종의견 표")
     
@@ -439,11 +439,11 @@ with tab1:
     else:
         st.info("토론 데이터가 없습니다. '토론 시작' 버튼을 눌러주세요.")
 
-# 2. 투자의견 표
+# 투자의견 표
 with tab2:
     st.header("■ 투자의견 표")
     
-    # 투자의견 데이터 준비 - debate_ver3의 데이터 구조 사용
+    # 투자의견 데이터 준비
     if debate_agent and debate_agent.opinions:
         st.markdown("### ■ 라운드별 에이전트 의견 상세")
         
@@ -504,11 +504,10 @@ with tab2:
     else:
         st.info("투자의견 데이터가 없습니다. '토론 시작' 버튼을 눌러주세요.")
 
-# 3. 최종 예측 비교
+# 최종 예측 비교
 with tab3:
     st.header("■ 최종 예측 비교")
     
-    # 최종 예측 데이터 준비
     if debate_agent and debate_agent.opinions:
         final_round = max(debate_agent.opinions.keys())
         final_opinions = debate_agent.opinions[final_round]
@@ -547,11 +546,10 @@ with tab3:
     else:
         st.info("토론 데이터가 없습니다. '토론 시작' 버튼을 눌러주세요.")
 
-# 4. 라운드별 의견 변화
+# 라운드별 의견 변화
 with tab4:
     st.header("■ 라운드별 의견 변화")
     
-    # 라운드별 데이터 준비
     if debate_agent and debate_agent.opinions:
         rounds_data = []
         agents_data = {}
@@ -597,11 +595,11 @@ with tab4:
     else:
         st.info("토론 데이터가 없습니다. '토론 시작' 버튼을 눌러주세요.")
 
-# 5. 반박/지지 패턴
+# 반박/지지 패턴
 with tab5:
     st.header("■ 반박/지지 패턴")
     
-    # 반박/지지 데이터 준비 - debate_ver3의 데이터 구조 사용
+    # 반박/지지 데이터 준비
     if debate_agent and debate_agent.rebuttals:
         agent_rebuttal_data = {}
         all_rebuttals = []  # 모든 반박/지지 메시지 저장
@@ -678,7 +676,7 @@ with tab5:
             st.plotly_chart(fig, use_container_width=True)
             
             # 요약 통계
-            st.markdown("### 📈 반박/지지 요약 통계")
+            st.markdown("### ■ 반박/지지 요약 통계")
             col1, col2, col3 = st.columns(3)
             
             total_rebuts = sum(rebut_counts)
@@ -740,7 +738,7 @@ with col2:
         """)
 
 with col3:
-    st.markdown("### 💡 사용 팁")
+    st.markdown("### ■ 사용 팁")
     st.warning("""
     - 사이드바에서 종목과 라운드 수 변경
     - 차트 높이와 표시 옵션 조정
@@ -749,4 +747,4 @@ with col3:
     """)
 
 st.markdown("---")
-st.markdown("🚀 **Streamlit 대시보드** | 📈 **실시간 데이터 시각화** | 🎨 **인터랙티브 차트**")
+st.markdown("■ **Streamlit 대시보드** | ■ **실시간 데이터 시각화** | ■ **인터랙티브 차트**")

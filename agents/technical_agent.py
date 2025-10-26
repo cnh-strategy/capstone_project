@@ -26,17 +26,14 @@ class TechnicalAgent(BaseAgent, nn.Module):
         BaseAgent.__init__(self, agent_id, **kwargs)
         nn.Module.__init__(self)
 
-        # -----------------------------
-        # ✅ 모델 하이퍼파라미터 설정
-        # -----------------------------
+        # 모델 하이퍼파라미터 설정
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.dropout_rate = float(dropout)  # float로 고정 저장
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
-        # -----------------------------
-        # ✅ GRU 모델 정의 (dropout_rate 사용)
-        # -----------------------------
+
+        # GRU 모델 정의 (dropout_rate 사용)
         self.gru = nn.GRU(
             input_dim,
             hidden_dim,
@@ -44,15 +41,17 @@ class TechnicalAgent(BaseAgent, nn.Module):
             dropout=self.dropout_rate
         )
 
-        # ✅ Dropout 레이어 별도 정의
+        # Dropout 레이어 별도 정의
         self.dropout = nn.Dropout(self.dropout_rate)
         self.fc = nn.Linear(hidden_dim, 1)
 
-        # -----------------------------
-        # ✅ Optimizer / Loss 설정
-        # -----------------------------
+        # Optimizer / Loss 설정
         self.optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)
-        self.loss_fn = nn.MSELoss()
+        # 기존: MSE Loss 사용
+        # self.loss_fn = nn.MSELoss()
+        # 수정: Huber Loss 사용 - 이상치에 덜 민감하고 더 안정적인 학습
+        # delta=1.0으로 조정 (타겟 스케일링 후 적절한 값)
+        self.loss_fn = nn.HuberLoss(delta=1.0)
         self.last_pred = None
 
 
@@ -71,13 +70,17 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 super().__init__()
                 self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True, dropout=dropout_rate)
                 self.dropout = nn.Dropout(dropout_rate)
-                self.fc = nn.Linear(hidden_dim, 1)
+                self.fc = nn.Sequential(
+                    nn.Linear(hidden_dim, 1),
+                    # nn.Tanh()  # 기존: 출력을 -1~1로 제한 (문제 원인)
+                    # 수정: Tanh 제거하여 선형 출력으로 변경 - 상승/하락율 예측에 적합
+                )
 
             def forward(self, x):
-                out, _ = self.gru(x)          # ✅ out: (batch, seq, hidden)
-                out = out[:, -1, :]           # ✅ 마지막 시점(hidden state)
+                out, _ = self.gru(x)          # out: (batch, seq, hidden)
+                out = out[:, -1, :]           # 마지막 시점(hidden state)
                 out = self.dropout(out)
-                return self.fc(out)           # ✅ (batch, 1)
+                return self.fc(out)           # (batch, 1)
 
         model = GRUNet(input_dim, hidden_dim, dropout_rate)
         print(f"🧠 GRU 모델 생성됨 (input={input_dim}, hidden={hidden_dim}, dropout={dropout_rate})")
@@ -93,7 +96,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         output = self.fc(last_output)
         return output
 
-   # 4️. LLM Reasoning 메시지
+   # LLM Reasoning 메시지
     def _build_messages_opinion(self, stock_data, target):
         """FundamentalAgent용 LLM 프롬프트 메시지 구성 (시계열 포함 버전)"""
 
@@ -101,7 +104,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         if not agent_data or not isinstance(agent_data, dict):
             raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
 
-        # 1️. 기본 컨텍스트
+        # 기본 컨텍스트
         ctx = {
             "ticker": getattr(stock_data, "ticker", "Unknown"),
             "currency": getattr(stock_data, "currency", "USD"),
@@ -112,7 +115,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             "recent_days": len(next(iter(agent_data.values()))) if agent_data else 0,
         }
 
-        # 2️. 각 컬럼별 최근 시계열 그대로 포함
+        # 각 컬럼별 최근 시계열 그대로 포함
         # (최근 7~14일 정도면 LLM이 이해 가능한 범위)
         for col, values in agent_data.items():
             if isinstance(values, (list, tuple)):
@@ -120,7 +123,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             else:
                 ctx[col] = [values]
 
-        # 3️. 프롬프트 구성
+        # 프롬프트 구성
         system_text = OPINION_PROMPTS[self.agent_id]["system"]
         user_text = OPINION_PROMPTS[self.agent_id]["user"].format(
             context=json.dumps(ctx, ensure_ascii=False)
@@ -160,7 +163,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 "confidence": float(target_opinion.target.confidence),
             }
         }
-        # 2️. 각 컬럼별 최근 시계열 그대로 포함
+        # 각 컬럼별 최근 시계열 그대로 포함
         # (최근 7~14일 정도면 LLM이 이해 가능한 범위)
         for col, values in agent_data.items():
             if isinstance(values, (list, tuple)):
@@ -186,18 +189,14 @@ class TechnicalAgent(BaseAgent, nn.Module):
         - 내 의견(my_opinion), 타 에이전트 의견(others), 주가데이터(stock_data) 기반
         - rebuttals 중 나(self.agent_id)를 대상으로 한 내용만 포함
         """
-        # -----------------------------
-        # 1️⃣ 기본 메타데이터
-        # -----------------------------
+        # 기본 메타데이터
         t = getattr(stock_data, "ticker", "UNKNOWN")
         ccy = getattr(stock_data, "currency", "USD").upper()
         agent_data = getattr(stock_data, self.agent_id, None)
         if not agent_data or not isinstance(agent_data, dict):
             raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
 
-        # -----------------------------
-        # 2️⃣ 타 에이전트 의견 및 rebuttal 통합 요약
-        # -----------------------------
+        # 타 에이전트 의견 및 rebuttal 통합 요약
         others_summary = []
         for o in others:
             entry = {
@@ -220,9 +219,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
             others_summary.append(entry)
 
-        # -----------------------------
-        # 3️⃣ Context 구성
-        # -----------------------------
+        # Context 구성
         ctx = {
             "ticker": t,
             "currency": ccy,
@@ -244,9 +241,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             else:
                 ctx[col] = [values]
 
-        # -----------------------------
-        # 4️⃣ Prompt 구성
-        # -----------------------------
+        # Prompt 구성
         prompt_set = REVISION_PROMPTS.get(self.agent_id)
         system_text = prompt_set["system"]
         user_text = prompt_set["user"].format(context=json.dumps(ctx, ensure_ascii=False, indent=2))

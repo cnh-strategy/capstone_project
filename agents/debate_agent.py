@@ -25,18 +25,18 @@ class DebateAgent(BaseAgent):
 
         opinions = {}
         for agent_id, agent in self.agents.items():
-            # 1️⃣ 데이터 로드
+            # 데이터 로드
             X = agent.searcher(ticker)
 
-            # 2️⃣ 예측 수행
+            # 예측 수행
             target = agent.predict(X)
 
-            # 3️⃣ Opinion 생성 (LLM Reason 포함)
+            # Opinion 생성 (LLM Reason 포함)
             opinion = agent.reviewer_draft(agent.stockdata, target)
             opinions[agent_id] = opinion
 
         self.opinions[round] = opinions
-        print(f"✅ Round {round} 의견 수집 완료 ({len(opinions)} agents)")
+        print(f" Round {round} 의견 수집 완료 ({len(opinions)} agents)")
         return opinions
 
 
@@ -49,7 +49,7 @@ class DebateAgent(BaseAgent):
         for agent_id, agent in self.agents.items():
             my_opinion = opinions[agent_id]
 
-            # ✅ 각 agent가 자신 외 모든 agent에게 rebuttal 생성
+            # 각 agent가 자신 외 모든 agent에게 rebuttal 생성
             for other_agent_id, other_opinion in opinions.items():
                 if other_agent_id == agent_id:
                     continue
@@ -58,7 +58,7 @@ class DebateAgent(BaseAgent):
                 round_rebuttals.append(rebuttal)
 
         self.rebuttals[round] = round_rebuttals
-        print(f"✅ Round {round} rebuttals 생성 완료 ({len(round_rebuttals)} agents)")
+        print(f" Round {round} rebuttals 생성 완료 ({len(round_rebuttals)} agents)")
         return round_rebuttals
 
     def get_revise(self, round: int):
@@ -88,9 +88,9 @@ class DebateAgent(BaseAgent):
             # revise 결과 opinion 갱신
             round_revises[agent_id] = revise
 
-        # ✅ opinions에 다음 라운드 의견으로 등록
+        # opinions에 다음 라운드 의견으로 등록
         self.opinions[round] = round_revises
-        print(f"✅ Round {round} revise 완료 및 opinions 갱신 ({len(round_revises)} agents)")
+        print(f" Round {round} revise 완료 및 opinions 갱신 ({len(round_revises)} agents)")
 
         return round_revises
 
@@ -102,6 +102,9 @@ class DebateAgent(BaseAgent):
         for round in range(1, self.rounds + 1):
             self.get_rebuttal(round)
             self.get_revise(round)
+            print(f" Round {round} 토론 완료")
+
+        print(self.get_ensemble())  # 최종 결과 출력
 
     def get_ensemble(self):
         """토론 결과를 바탕으로 ensemble 정보 생성"""
@@ -138,9 +141,3 @@ class DebateAgent(BaseAgent):
             "currency": currency,
             "last_price": current_price,
         }
-
-    def debate(self, stock_data: StockData, target: Target) -> Opinion:
-        return super().reviewer_draft(stock_data, target)
-
-    def rebut(self, my_opinion: Opinion, other_opinion: Opinion) -> Rebuttal:
-        return super().reviewer_rebut(my_opinion, other_opinion)

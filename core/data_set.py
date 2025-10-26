@@ -5,13 +5,10 @@ import yfinance as yf
 from sklearn.preprocessing import MinMaxScaler
 from config.agents import agents_info, dir_info
 
-# --------------------------------------------
-# 1. Raw Dataset 생성
-# --------------------------------------------
+# Raw Dataset 생성
 def fetch_ticker_data(ticker: str) -> pd.DataFrame:
     period = "2y"
     interval = "1d"
-    """yfinance로 주가 데이터 다운로드"""
     df = yf.download(ticker, period=period, interval=interval, auto_adjust=True)
     df.dropna(inplace=True)
     
@@ -63,9 +60,7 @@ def fetch_ticker_data(ticker: str) -> pd.DataFrame:
     df.dropna(inplace=True)
     return df
 
-# --------------------------------------------
-# 2️⃣ 시퀀스 생성
-# --------------------------------------------
+# 시퀀스 생성
 def create_sequences(features, target, window_size=14):
     X, y = [], []
     for i in range(len(features) - window_size):
@@ -73,9 +68,7 @@ def create_sequences(features, target, window_size=14):
         y.append(target[i + window_size])
     return np.array(X), np.array(y)
 
-# --------------------------------------------
-# 4️⃣ 통합 함수
-# --------------------------------------------
+# 통합 함수
 def build_dataset(ticker: str = "TSLA", save_dir=dir_info["data_dir"]):
     os.makedirs(save_dir, exist_ok=True)
 
@@ -93,7 +86,15 @@ def build_dataset(ticker: str = "TSLA", save_dir=dir_info["data_dir"]):
         
         # 타겟을 상승/하락율로 변경 (기존 종가 예측은 주석 처리)
         # y = df["Close"].values.reshape(-1, 1)  # 기존: 절대 종가 예측
-        y = df["Close"].pct_change().shift(-1).fillna(0).values.reshape(-1, 1)  # 새로운: 상승/하락율 예측 (NaN을 0으로 처리)
+        # 기존: NaN을 0으로 처리 (문제 원인 - 노이즈 증가)
+        # y = df["Close"].pct_change().shift(-1).fillna(0).values.reshape(-1, 1)
+        # 수정: NaN 값을 제거하여 더 깨끗한 데이터 사용
+        returns = df["Close"].pct_change().shift(-1)
+        valid_mask = ~returns.isna()
+        y = returns[valid_mask].values.reshape(-1, 1)
+        
+        # X 데이터도 동일한 마스크 적용
+        X = X[valid_mask]
 
         X_seq, y_seq = create_sequences(X, y, window_size=agents_info[agent_id]["window_size"])
         samples, time_steps, features = X_seq.shape
@@ -121,16 +122,14 @@ def build_dataset(ticker: str = "TSLA", save_dir=dir_info["data_dir"]):
         print(f"✅ {ticker} {agent_id} dataset saved to CSV ({len(X_seq)} samples, {len(col)} features)")
 
 # --------------------------------------------
-# 5️⃣ CSV 데이터 로드 함수들
+# CSV 데이터 로드 함수들
 # --------------------------------------------
 def load_dataset(ticker, agent_id=None, save_dir=dir_info["data_dir"]):
-    """CSV에서 데이터셋 로드"""
     csv_path = os.path.join(save_dir, f"{ticker}_{agent_id}_dataset.csv")
     
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Dataset file not found: {csv_path}")
-    
-    # 데이터 로드
+
     df = pd.read_csv(csv_path)
 
     # 피처 컬럼 추출 (sample_id, time_step, target 제외)
@@ -152,7 +151,6 @@ def load_dataset(ticker, agent_id=None, save_dir=dir_info["data_dir"]):
     return X, y, feature_cols
 
 def get_latest_close_price(ticker, save_dir=dir_info["data_dir"]):
-    """가장 최근 Close 가격 반환"""
     # 원본 데이터에서 최신 Close 가격 가져오기
     raw_data_path = os.path.join(save_dir, f"{ticker}_raw_data.csv")
     if os.path.exists(raw_data_path):
@@ -166,7 +164,6 @@ def get_latest_close_price(ticker, save_dir=dir_info["data_dir"]):
 
 
 def compute_rsi(series, window=14):
-    """RSI 계산"""
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -1 * delta.clip(upper=0)
