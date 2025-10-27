@@ -1,28 +1,25 @@
-# 가상환경
-.capstone/
-env/
-capstone/
-
-# 파이썬 캐시
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# 환경변수/민감정보
+# Virtual environment
+venv/
+venv2/
 .env
 
-# 로그/임시 파일
+# Models / Data / Cache
+*.pt
+*.pkl
+*.csv
+models/
+data/
 *.log
-*.tmp
 
-# Jupyter Notebook 체크포인트
-.ipynb_checkpoints/
+# IDE
+.vscode/
+.idea/
 
-# 시스템 파일
-.DS_Store
-Thumbs.db
-
-# 캐시 파일/폴더
-__pycache__/
-*.pyc
+# Build
+debate_ver3.egg-info/

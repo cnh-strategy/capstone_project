@@ -147,25 +147,24 @@ class SentimentalAgent(BaseAgent):
         # ================================
         
         # 🌟 실제 모델 구조 정의 (LSTM)
-        self.model = StockSentimentLSTM()
-        
-        # 스케일러 및 모델 가중치 로드 로직 (이전과 동일)
         self.scaler_X = None
-        self.scaler_y = None
-        
-        try:
-            if os.path.exists(SCALER_X_PATH):
-                self.scaler_X = joblib.load(SCALER_X_PATH)
-                print(f"[SUCCESS] 입력 스케일러(X) 로드 완료: {SCALER_X_PATH}")
-            if os.path.exists(SCALER_Y_PATH):
-                self.scaler_y = joblib.load(SCALER_Y_PATH)
-                print(f"[SUCCESS] 출력 스케일러(Y) 로드 완료: {SCALER_Y_PATH}")
-            if os.path.exists(MODEL_PATH):
-                self.model.load_state_dict(torch.load(MODEL_PATH))
-                self.model.eval()
-                print(f"**실제 LSTM 모델 가중치 로드 완료:** {MODEL_PATH}")
-        except Exception as e:
-            print(f"모델/스케일러 로드 중 오류 발생: {e}. 임시 가중치 사용.")
+        self.scaler_y = None
+        
+        try:
+            if os.path.exists(SCALER_X_PATH):
+                self.scaler_X = joblib.load(SCALER_X_PATH)
+                print(f"[SUCCESS] 입력 스케일러(X) 로드 완료: {SCALER_X_PATH}")
+            if os.path.exists(SCALER_Y_PATH):
+                self.scaler_y = joblib.load(SCALER_Y_PATH)
+                print(f"[SUCCESS] 출력 스케일러(Y) 로드 완료: {SCALER_Y_PATH}")
+            if os.path.exists(MODEL_PATH):
+                # ✅ 이 줄만 수정 - map_location 추가
+                self.model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device('cpu')))
+                self.model.eval()
+                print(f"**실제 LSTM 모델 가중치 로드 완료:** {MODEL_PATH}")
+        except Exception as e:
+            print(f"모델/스케일러 로드 중 오류 발생: {e}. 임시 가중치 사용.")
+
 
     # ==========================================================================
     # 🌟 LLM Context 및 Opinion 빌드 헬퍼 메서드 (이전과 동일)

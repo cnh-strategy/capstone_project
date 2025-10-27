@@ -1,0 +1,12 @@
+[project]
+name = "debate_ver3"
+version = "0.0.1"
+description = "Multi-agent debate demo"
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["debate_ver3","debate_ver3.agents","debate_ver3.core","debate_ver3.config"]

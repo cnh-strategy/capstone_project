@@ -140,7 +140,7 @@ class StockDataset(torch.utils.data.Dataset):
 
 # DataLoader를 사용하여 데이터셋 배치 처리 준비
 train_loader = torch.utils.data.DataLoader(StockDataset(X_train_scaled, y_train_scaled), batch_size=32, shuffle=True)
-val_loader   = torch.utils.data.DataLoader(StockDataset(X_val_scaled, y_val_scaled), batch_size=32, shuffle=False)
+val_loader = torch.utils.data.DataLoader(StockDataset(X_val_scaled, y_val_scaled), batch_size=32, shuffle=False)
 
 # --- LSTM 모델 정의 ---
 class StockSentimentLSTM(nn.Module):
@@ -360,19 +360,13 @@ plot_single_symbol(results_df, worst_symbol)
 best_overall_symbol = results_df.groupby('Symbol')['Squared_Error'].mean().idxmin()
 print(f"\n--- 가장 예측이 쉬웠던 종목 시각화: {best_overall_symbol} ---\n")
 plot_single_symbol(results_df, best_overall_symbol)
-
-# --- 라이브러리 및 모델/스케일러는 이미 로드된 상태로 가정 ---
-# X_pred, y_pred, symbol_pred, date_pred 및 pred_loader는 이미 생성되었다고 가정
-
 # ----------------------------------------------------
-# 1. 모델 로드 및 예측 수행 (3,735개 시퀀스 전체)
+# 1. 모델 로드 및 예측 수행 (3,735개 시퀀스 전체) - 재실행 필요 없음.
+#    이전 코드에서 pred_results_df_all에 필요한 변수들이 이미 생성되었다고 가정합니다.
 # ----------------------------------------------------
 
-# model_eval.eval() 및 예측 코드는 이미 실행되어
-# preds_price, targets_price, pred_results_df (전체 예측 결과) 가 생성되었다고 가정합니다.
-
-# 2. 예측 결과 DataFrame 재정의 (2025년 1월 필터링 제거)
-# 'data'의 마지막 날짜까지의 모든 예측 결과 사용
+# 2. 예측 결과 DataFrame 재정의 (전체 유효 예측 결과)
+#    (이 부분이 2025년 1월 데이터까지 포함된 전체 예측 결과를 담고 있습니다.)
 pred_results_df_all = pd.DataFrame({
     'Date': date_pred,
     'Symbol': symbol_pred,
@@ -392,12 +386,34 @@ print(f"최종 예측일: {pred_results_df_all['Date'].max().strftime('%Y-%m-%d'
 print("="*50 + "\n")
 
 # ----------------------------------------------------
-# 3. 종목별 예측 결과 시각화
+# 3. 2025년 1월 예측 결과 필터링
+# ----------------------------------------------------
+start_date_pred_target = pd.to_datetime('2025-01-01')
+end_date_pred_target = pd.to_datetime('2025-01-31')
+
+pred_results_df_jan = pred_results_df_all[
+    (pred_results_df_all['Date'] >= start_date_pred_target) & 
+    (pred_results_df_all['Date'] <= end_date_pred_target)
+].sort_values(['Symbol', 'Date']).reset_index(drop=True)
+
+if pred_results_df_jan.empty:
+    print("\n[결과 없음] 2025년 1월 예측에 해당하는 유효한 데이터가 없습니다. 데이터 수집 단계가 2025년 1월 31일까지 완료되었는지 확인해주세요.")
+    sys.exit()
+
+print("="*50)
+print("## ✅ 2025년 1월 예측 결과")
+print(f"총 유효 예측 샘플 수: {len(pred_results_df_jan)}개")
+print(f"최초 예측일: {pred_results_df_jan['Date'].min().strftime('%Y-%m-%d')}")
+print(f"최종 예측일: {pred_results_df_jan['Date'].max().strftime('%Y-%m-%d')}")
+print(pred_results_df_jan.head().to_string(float_format='%.4f'))
+print("="*50 + "\n")
+
+# ----------------------------------------------------
+# 4. 2025년 1월 예측 종가 vs 실제 종가 시각화 및 RMSE 계산
 # ----------------------------------------------------
 
-# 시각화 함수 정의 (Validation set에서 사용한 함수 재사용)
-def plot_single_symbol_en(results_df, symbol, title_prefix=f"Full Valid Prediction Period (W=10)"):
-    """특정 종목에 대한 실제값과 예측값을 시각화 (영문 제목)"""
+def plot_single_symbol_jan(results_df, symbol):
+    """2025년 1월 특정 종목에 대한 실제값과 예측값을 시각화"""
     symbol_df = results_df[results_df['Symbol'] == symbol].reset_index(drop=True)
     if symbol_df.empty:
         return
@@ -409,8 +425,8 @@ def plot_single_symbol_en(results_df, symbol, title_prefix=f"Full Valid Predicti
     # RMSE 계산 및 제목에 추가
     mse = ((symbol_df['Actual_Next_Close'] - symbol_df['Predicted_Next_Close']) ** 2).mean()
     rmse = np.sqrt(mse)
-
-    plt.title(f'{title_prefix} - {symbol}: Actual vs Predicted Next Day Close (RMSE: {rmse:.4f})')
+    
+    plt.title(f'January 2025 Forecast (W=10) - {symbol}: Actual vs Predicted Next Day Close (RMSE: {rmse:.4f})')
     plt.xlabel('Date')
     plt.ylabel('Next Day Close Price')
     plt.legend()
@@ -419,22 +435,18 @@ def plot_single_symbol_en(results_df, symbol, title_prefix=f"Full Valid Predicti
     plt.tight_layout()
     plt.show()
 
-# 예측 결과가 있는 모든 종목에 대해 시각화 (최대 3개 종목 예시)
-predicted_symbols_all = pred_results_df_all['Symbol'].unique()
-print(f"### 📈({len(predicted_symbols_all)} 종목 중 3개 예시)")
+# 2025년 1월 예측 결과에 대해 시각화 실행
+predicted_symbols_jan = pred_results_df_jan['Symbol'].unique()
+print(f"### 📈 2025년 1월 예측 시각화 시작 ({len(predicted_symbols_jan)} 종목)")
 
-for i, symbol in enumerate(predicted_symbols_all):
-    if i < 3: # 예시로 첫 3개 종목 (NVDA, MSFT, AAPL) 재실행
-        plot_single_symbol_en(pred_results_df_all, symbol)
-    elif i == 3:
-        print(f"... 나머지 {len(predicted_symbols_all) - 3}개 종목은 생략되었습니다.")
-        break
-
+for symbol in predicted_symbols_jan:
+    plot_single_symbol_jan(pred_results_df_jan, symbol)
+    
 # 전체 종목에 대한 RMSE 계산
-mse_pred_per_symbol_all = pred_results_df_all.groupby('Symbol').apply(
+mse_pred_per_symbol_jan = pred_results_df_jan.groupby('Symbol').apply(
     lambda x: ((x['Actual_Next_Close'] - x['Predicted_Next_Close']) ** 2).mean()
 )
-rmse_pred_per_symbol_all = np.sqrt(mse_pred_per_symbol_all).sort_values(ascending=False)
+rmse_pred_per_symbol_jan = np.sqrt(mse_pred_per_symbol_jan).sort_values(ascending=False)
 
-print("\n## 💰 전체 유효 예측 기간 종목별 RMSE")
-print(rmse_pred_per_symbol_all.to_string(float_format='%.4f'))
+print("\n## 💰 2025년 1월 종목별 예측 RMSE")
+print(rmse_pred_per_symbol_jan.to_string(float_format='%.4f'))
