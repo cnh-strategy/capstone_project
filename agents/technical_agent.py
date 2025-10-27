@@ -1,250 +1,249 @@
-import json
-import numpy as np
-import pandas as pd
+import torch
+import torch.nn as nn
 import yfinance as yf
+import pandas as pd
 import os
-from agents.base_agent import BaseAgent, Target, Opinion, Rebuttal, RoundLog, StockData
-from typing import Dict, List, Optional, Literal, Tuple
-from prompts import SEARCHER_PROMPTS, PREDICTER_PROMPTS, OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
-from agents.technical_modules import TechnicalModuleManager
+from agents.base_agent import BaseAgent, StockData, Target, Opinion, Rebuttal
+from config.agents import agents_info, dir_info
+import json
+from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
+from typing import List, Optional
 
-class TechnicalAgent(BaseAgent):
+class TechnicalAgent(BaseAgent, nn.Module):
+    """Technical Agent: BaseAgent + GRU 기반 DL 모델"""
     def __init__(self, 
-                 agent_id: str = "TechnicalAgent",
-                 use_ml_modules: bool = False,
-                 fred_api_key: Optional[str] = None,
-                 model_path: Optional[str] = None,
-                 **kwargs):
-        super().__init__(agent_id=agent_id, **kwargs)
-        
-        # ML 모듈 설정
-        self.use_ml_modules = use_ml_modules
-        if self.use_ml_modules:
-            self.ml_manager = TechnicalModuleManager(
-                use_ml_searcher=True,
-                use_ml_predictor=True,
-                fred_api_key=fred_api_key or os.getenv('FRED_API_KEY'),
-                model_path=model_path or "model_artifacts/final_best.keras"
-            )
-        else:
-            self.ml_manager = None
-    
-    # ------------------------------------------------------------------
-    # 1) 데이터 수집 
-    # ------------------------------------------------------------------
-    def searcher(self, ticker: str) -> StockData:
-        df = yf.download(ticker, period="5d", interval="1d")
-        last_price = df["Close"].dropna().iloc[-1].item()
-        info = yf.Ticker(ticker).info
-        currency = (info.get("currency") or "USD").upper()
+        agent_id="TechnicalAgent", 
+        input_dim=agents_info["TechnicalAgent"]["input_dim"],
+        hidden_dim=agents_info["TechnicalAgent"]["hidden_dim"],
+        dropout=agents_info["TechnicalAgent"]["dropout"],
+        data_dir=dir_info["data_dir"],
+        window_size=agents_info["TechnicalAgent"]["window_size"],
+        epochs=agents_info["TechnicalAgent"]["epochs"],
+        learning_rate=agents_info["TechnicalAgent"]["learning_rate"],
+        batch_size=agents_info["TechnicalAgent"]["batch_size"],
+        **kwargs
+    ):
+        BaseAgent.__init__(self, agent_id, **kwargs)
+        nn.Module.__init__(self)
 
-        schema_tech = {
-            "type": "object",
-            "properties": {
-                "trend":    {"type": "string", "enum": ["UP", "DOWN", "SIDEWAYS"]},
-                "strength": {"type": "number"},
-                "signals":  {"type": "array", "items": {"type": "string"}},
-                "evidence": {"type": "array", "items": {"type": "string"}},
-                "summary":  {"type": "string"},
-            },
-            "required": ["trend", "strength", "signals", "evidence", "summary"],
-            "additionalProperties": False,
-        }
+        # 모델 하이퍼파라미터 설정
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.dropout_rate = float(dropout)  # float로 고정 저장
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
 
-        sys_text = SEARCHER_PROMPTS["technical"]["system"]
-        user_text = SEARCHER_PROMPTS["technical"]["user_template"].format(
-            ticker=ticker, 
-            current_price=last_price, 
-            currency=currency
+        # GRU 모델 정의 (dropout_rate 사용)
+        self.gru = nn.GRU(
+            input_dim,
+            hidden_dim,
+            batch_first=True,
+            dropout=self.dropout_rate
         )
 
-        parsed = self._ask_with_fallback(
-            self._msg("system", sys_text),
-            self._msg("user", user_text),
-            schema_tech
-        )
+        # Dropout 레이어 별도 정의
+        self.dropout = nn.Dropout(self.dropout_rate)
+        self.fc = nn.Linear(hidden_dim, 1)
 
-        # ML 모듈 사용 여부에 따른 데이터 수집
-        if self.use_ml_modules and self.ml_manager:
-            # ML 모듈을 사용한 향상된 기술적 분석 데이터 수집
-            ml_technical_data = self.ml_manager.get_enhanced_technical_data(ticker, last_price)
-            
-            # ML 결과를 기술적 데이터에 추가
-            parsed["ml_signals"] = ml_technical_data.get('signals', {})
-            parsed["ml_confidence"] = ml_technical_data.get('confidence', 0.0)
-            parsed["ml_indicators"] = ml_technical_data.get('indicators', {})
-            
-            # ML 결과를 GPT 프롬프트에 포함하여 재분석
-            ml_context = f"""
-ML 모델 분석 결과:
-- 기술적 신호: {ml_technical_data.get('signals', {})}
-- 신뢰도: {ml_technical_data.get('confidence', 0.0):.2f}
-- 수집된 뉴스: {ml_technical_data.get('news_count', 0)}개
-- 기술적 지표: RSI, MA, 볼린저밴드 등 계산 완료
-"""
+        # Optimizer / Loss 설정
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)
+        # 기존: MSE Loss 사용
+        # self.loss_fn = nn.MSELoss()
+        # 수정: Huber Loss 사용 - 이상치에 덜 민감하고 더 안정적인 학습
+        # delta=1.0으로 조정 (타겟 스케일링 후 적절한 값)
+        self.loss_fn = nn.HuberLoss(delta=1.0)
+        self.last_pred = None
 
-            # ML 컨텍스트를 포함한 재분석
-            user_text_with_ml = SEARCHER_PROMPTS["technical"]["user_template"].format(
-                ticker=ticker, 
-                current_price=last_price, 
-                currency=currency
-            ) + f"\n\n{ml_context}"
 
-            parsed = self._ask_with_fallback(
-                self._msg("system", sys_text),
-                self._msg("user", user_text_with_ml),
-                schema_tech
-            )
-
-        self.stockdata = StockData(
-            sentimental={},
-            fundamental={},
-            technical=parsed,
-            last_price=last_price,
-            currency=currency
-        )
-        self.current_ticker = ticker  # 현재 티커 저장
-        return self.stockdata
-    # ------------------------------------------------------------------
-    # 2) 1차 예측 (LLM-only)
-    #    - 기술 요약(트렌드/강도/신호) + 현재가 앵커로 next_close 산출
-    # ------------------------------------------------------------------
-    def predicter(self, stock_data: StockData) -> Target:
-        # 현재 가격 정보 가져오기
-        ticker = getattr(self, 'current_ticker', 'UNKNOWN')
-        df = yf.download(ticker, period="1d", interval="1d")
-        last_price = df["Close"].dropna().iloc[-1].item()
-        info = yf.Ticker(ticker).info
-        currency = (info.get("currency") or "USD").upper()
         
-        # 기술적 분석가 특성: 공격적, 현재가 대비 ±15% 범위
-        min_price = last_price * 0.85
-        max_price = last_price * 1.15
-        
+    def _build_model(self):
+        """TechnicalAgent 기본 GRU 모델 자동 생성"""
+        import torch.nn as nn
+        import torch
+
+        input_dim = getattr(self, "input_dim", 10)
+        hidden_dim = getattr(self, "hidden_dim", 64)
+        dropout_rate = getattr(self, "dropout_rate", 0.2)
+
+        class GRUNet(nn.Module):
+            def __init__(self, input_dim, hidden_dim, dropout_rate):
+                super().__init__()
+                self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True, dropout=dropout_rate)
+                self.dropout = nn.Dropout(dropout_rate)
+                self.fc = nn.Sequential(
+                    nn.Linear(hidden_dim, 1),
+                    # nn.Tanh()  # 기존: 출력을 -1~1로 제한 (문제 원인)
+                    # 수정: Tanh 제거하여 선형 출력으로 변경 - 상승/하락율 예측에 적합
+                )
+
+            def forward(self, x):
+                out, _ = self.gru(x)          # out: (batch, seq, hidden)
+                out = out[:, -1, :]           # 마지막 시점(hidden state)
+                out = self.dropout(out)
+                return self.fc(out)           # (batch, 1)
+
+        model = GRUNet(input_dim, hidden_dim, dropout_rate)
+        print(f"🧠 GRU 모델 생성됨 (input={input_dim}, hidden={hidden_dim}, dropout={dropout_rate})")
+        return model
+
+    def forward(self, x) -> torch.Tensor:
+        """Forward pass for the model"""
+        # x shape: (batch, time, features)
+        gru_out, _ = self.gru(x)
+        # 마지막 시점의 출력 사용
+        last_output = gru_out[:, -1, :]
+        last_output = self.dropout(last_output)
+        output = self.fc(last_output)
+        return output
+
+   # LLM Reasoning 메시지
+    def _build_messages_opinion(self, stock_data, target):
+        """FundamentalAgent용 LLM 프롬프트 메시지 구성 (시계열 포함 버전)"""
+
+        agent_data = getattr(stock_data, self.agent_id, None)
+        if not agent_data or not isinstance(agent_data, dict):
+            raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
+
+        # 기본 컨텍스트
         ctx = {
-            "technical_summary": stock_data.technical,
-            "current_price": last_price,
-            "currency": currency,
-            "prediction_range": f"{min_price:.2f} - {max_price:.2f} {currency}",
-            "agent_character": "공격적인 기술적 분석가로서 차트 패턴과 모멘텀에 기반한 적극적인 예측을 제공합니다."
-            }
-        sys_text = PREDICTER_PROMPTS["technical"]["system"]
-        user_text = PREDICTER_PROMPTS["technical"]["user_template"].format(
-            context=json.dumps(ctx, ensure_ascii=False)
-        )
-        parsed = self._ask_with_fallback(
-            self._msg("system", sys_text),
-            self._msg("user", user_text),
-            self.schema_obj_opinion
-        )
-        return Target(next_close=float(parsed.get("next_close", 0.0)))
-    
-    # ------------------------------------------------------------------
-    # 3) Opinion 메시지 빌드 (기술 관점)
-    # ------------------------------------------------------------------
-    def _build_messages_opinion(self, stock_data: StockData, target: Target) -> tuple[str, str]:
-        t = getattr(self, "_last_ticker", "UNKNOWN")
-        ccy = (stock_data.currency or "USD").upper()
-        last = float(stock_data.last_price or 0.0)
-
-        ctx = {
-            "ticker": t,
-            "currency": ccy,
-            "last_price": last,
-            "technical_summary": stock_data.technical or {},
+            "ticker": getattr(stock_data, "ticker", "Unknown"),
+            "currency": getattr(stock_data, "currency", "USD"),
+            "last_price": getattr(stock_data, "last_price", None),
             "our_prediction": float(target.next_close),
+            "uncertainty": float(target.uncertainty),
+            "confidence": float(target.confidence),
+            "recent_days": len(next(iter(agent_data.values()))) if agent_data else 0,
         }
 
-        system_text = OPINION_PROMPTS["technical"]["system"]
-        user_text   = OPINION_PROMPTS["technical"]["user"].format(
+        # 각 컬럼별 최근 시계열 그대로 포함
+        # (최근 7~14일 정도면 LLM이 이해 가능한 범위)
+        for col, values in agent_data.items():
+            if isinstance(values, (list, tuple)):
+                ctx[col] = values[self.window_size:]  # 최근 14일치 전체 시계열
+            else:
+                ctx[col] = [values]
+
+        # 프롬프트 구성
+        system_text = OPINION_PROMPTS[self.agent_id]["system"]
+        user_text = OPINION_PROMPTS[self.agent_id]["user"].format(
             context=json.dumps(ctx, ensure_ascii=False)
         )
+
         return system_text, user_text
 
-    # ------------------------------------------------------------------
-    # 4) Rebuttal/Revision (기술 관점 문구)
-    # ------------------------------------------------------------------
+
+
     def _build_messages_rebuttal(self,
                                 my_opinion: Opinion,
-                                target_agent: str,
                                 target_opinion: Opinion,
                                 stock_data: StockData) -> tuple[str, str]:
-        t = getattr(self, "_last_ticker", "UNKNOWN")
+
+        t = stock_data.ticker or "UNKNOWN"
         ccy = (stock_data.currency or "USD").upper()
+        agent_data = getattr(stock_data, self.agent_id, None)
+        if not agent_data or not isinstance(agent_data, dict):
+            raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
 
         ctx = {
             "ticker": t,
             "currency": ccy,
-            "technical_summary": stock_data.technical or {},
+            "data_summary": getattr(stock_data, self.agent_id, {}).get("feature_cols", []),
             "me": {
                 "agent_id": self.agent_id,
                 "next_close": float(my_opinion.target.next_close),
                 "reason": str(my_opinion.reason)[:2000],
+                "uncertainty": float(my_opinion.target.uncertainty),
+                "confidence": float(my_opinion.target.confidence),
             },
             "other": {
-                "agent_id": target_agent,
+                "agent_id": target_opinion.agent_id,
                 "next_close": float(target_opinion.target.next_close),
                 "reason": str(target_opinion.reason)[:2000],
+                "uncertainty": float(target_opinion.target.uncertainty),
+                "confidence": float(target_opinion.target.confidence),
             }
         }
+        # 각 컬럼별 최근 시계열 그대로 포함
+        # (최근 7~14일 정도면 LLM이 이해 가능한 범위)
+        for col, values in agent_data.items():
+            if isinstance(values, (list, tuple)):
+                ctx[col] = values[self.window_size:]  # 최근 14일치 전체 시계열
+            else:
+                ctx[col] = [values]
 
-        system_text = REBUTTAL_PROMPTS["technical"]["system"]
-        user_text   = REBUTTAL_PROMPTS["technical"]["user"].format(
+        system_text = REBUTTAL_PROMPTS[self.agent_id]["system"]
+        user_text   = REBUTTAL_PROMPTS[self.agent_id]["user"].format(
             context=json.dumps(ctx, ensure_ascii=False)
         )
         return system_text, user_text
 
+    def _build_messages_revision(
+        self,
+        my_opinion: Opinion,
+        others: List[Opinion],
+        rebuttals: Optional[List[Rebuttal]] = None,
+        stock_data: StockData = None,
+    ) -> tuple[str, str]:
+        """
+        Revision용 LLM 메시지 생성기
+        - 내 의견(my_opinion), 타 에이전트 의견(others), 주가데이터(stock_data) 기반
+        - rebuttals 중 나(self.agent_id)를 대상으로 한 내용만 포함
+        """
+        # 기본 메타데이터
+        t = getattr(stock_data, "ticker", "UNKNOWN")
+        ccy = getattr(stock_data, "currency", "USD").upper()
+        agent_data = getattr(stock_data, self.agent_id, None)
+        if not agent_data or not isinstance(agent_data, dict):
+            raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
 
-    def _build_messages_revision(self,
-                                my_lastest: Opinion,
-                                others_latest: Dict[str, Opinion],
-                                received_rebuttals: List[Rebuttal],
-                                stock_data: StockData) -> tuple[str, str]:
-        ccy = (stock_data.currency or "USD").upper()
+        # 타 에이전트 의견 및 rebuttal 통합 요약
+        others_summary = []
+        for o in others:
+            entry = {
+                "agent_id": o.agent_id,
+                "predicted_price": float(o.target.next_close),
+                "confidence": float(o.target.confidence),
+                "uncertainty": float(o.target.uncertainty),
+                "reason": str(o.reason)[:500],
+            }
 
-        me = {
-            "agent_id": my_lastest.agent_id,
-            "next_close": float(my_lastest.target.next_close),
-            "reason": str(my_lastest.reason)[:2000],
-        }
-        peers = [{
-            "agent_id": aid,
-            "next_close": float(op.target.next_close),
-            "reason": str(op.reason)[:2000],
-        } for aid, op in (others_latest or {}).items()]
-        feedback = [{
-            "from": r.from_agent_id,
-            "to":   r.to_agent_id,
-            "stance": r.stance,
-            "message": str(r.message)[:500],
-        } for r in (received_rebuttals or [])]
+            # 나에게 온 rebuttal만 stance/message 추출
+            if rebuttals:
+                related_rebuts = [
+                    {"stance": r.stance, "message": r.message}
+                    for r in rebuttals
+                    if r.from_agent_id == o.agent_id and r.to_agent_id == self.agent_id
+                ]
+                if related_rebuts:
+                    entry["rebuttals_to_me"] = related_rebuts
 
+            others_summary.append(entry)
+
+        # Context 구성
         ctx = {
-            "me": me,
-            "peers": peers,
-            "feedback": feedback,
-            "technical_summary": stock_data.technical or {},
-            "currency": ccy
+            "ticker": t,
+            "currency": ccy,
+            "agent_type": self.agent_id,
+            "my_opinion": {
+                "predicted_price": float(my_opinion.target.next_close),
+                "confidence": float(my_opinion.target.confidence),
+                "uncertainty": float(my_opinion.target.uncertainty),
+                "reason": str(my_opinion.reason)[:1000],
+            },
+            "others_summary": others_summary,
+            "data_summary": getattr(stock_data, self.agent_id, {}).get("feature_cols", []),
         }
 
-        system_text = REVISION_PROMPTS["technical"]["system"]
-        user_text   = REVISION_PROMPTS["technical"]["user"].format(
-            context=json.dumps(ctx, ensure_ascii=False)
-        )
+        # 최근 시계열 데이터 포함 (기술/심리적 패턴)
+        for col, values in agent_data.items():
+            if isinstance(values, (list, tuple)):
+                ctx[col] = values[-14:]  # 최근 14일치
+            else:
+                ctx[col] = [values]
+
+        # Prompt 구성
+        prompt_set = REVISION_PROMPTS.get(self.agent_id)
+        system_text = prompt_set["system"]
+        user_text = prompt_set["user"].format(context=json.dumps(ctx, ensure_ascii=False, indent=2))
+
         return system_text, user_text
-    
-    def _update_prompts(self, prompt_configs: Dict[str, str]) -> None:
-        """프롬프트 설정 업데이트 (main.py에서 호출)"""
-        global PREDICTER_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
-        
-        # predicter 프롬프트 업데이트
-        if "predicter_system" in prompt_configs:
-            PREDICTER_PROMPTS["technical"]["system"] = prompt_configs["predicter_system"]
-        
-        # rebuttal 프롬프트 업데이트
-        if "rebuttal_system" in prompt_configs:
-            REBUTTAL_PROMPTS["technical"]["system"] = prompt_configs["rebuttal_system"]
-        
-        # revision 프롬프트 업데이트
-        if "revision_system" in prompt_configs:
-            REVISION_PROMPTS["technical"]["system"] = prompt_configs["revision_system"]

@@ -1,9 +1,0 @@
-# OpenAI API Key (필수)
-CAPSTONE_OPENAI_API=your_openai_api_key_here
-
-# Finnhub API Key (선택적 - ML 모듈 사용시)
-FINNHUB_API_KEY=your_finnhub_api_key_here
-
-# ML 모델 설정 (선택적)
-ML_MODEL_PATH=mlp_stock_model.pt
-USE_ML_MODULES=false
