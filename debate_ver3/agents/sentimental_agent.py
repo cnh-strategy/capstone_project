@@ -45,9 +45,6 @@ class SentimentalNet(nn.Module):
 
 # ---------------------------------------------------------------
 # 에이전트 구현
-#  - BaseAgent.searcher(): CSV 로딩 + last_price 설정 (BaseAgent에 있음)
-#  - BaseAgent.predict(): MC Dropout + 역스케일 + 가격 변환 (BaseAgent에 있음)
-#  - 이 클래스는 nn.Module까지 상속하여 self 자체가 model 처럼 동작
 # ---------------------------------------------------------------
 class SentimentalAgent(BaseAgent, nn.Module):
     def __init__(self, agent_id: str = "SentimentalAgent", verbose: bool = False, ticker: str = "TSLA"):
@@ -55,27 +52,19 @@ class SentimentalAgent(BaseAgent, nn.Module):
         nn.Module.__init__(self)
 
         cfg = agents_info.get("SentimentalAgent", {})
-        # config의 data_cols 개수에 맞춰 input_dim이 설정되어 있어야 합니다.
         input_dim  = int(cfg.get("input_dim", 8))
         hidden_dim = int(cfg.get("d_model", 128))
         num_layers = int(cfg.get("num_layers", 2))
         dropout    = float(cfg.get("dropout", 0.2))
 
-        # self 자체를 모델처럼 쓰기 위해 내부 모듈 구성
         self.net = SentimentalNet(input_dim, hidden_dim, num_layers, dropout)
-
-        # BaseAgent.pretrain/save/load가 state_dict() 접근을 위해 alias 제공
-        # (BaseAgent.pretrain에서 model = self 로 사용)
-        # forward는 아래에서 self.net.forward를 호출
-        # window_size는 메시지 컨텍스트 구성에 사용
         self.window_size = int(cfg.get("window_size", 40))
 
-    # nn.Module 이므로 BaseAgent.pretrain()/predict()에서 self(X) 호출 가능
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
     # -----------------------------------------------------------
-    # LLM: Opinion 메시지 구성 (Debate 초안 Reason 생성에 사용)
+    # LLM: Opinion 메시지 구성
     # -----------------------------------------------------------
     def _build_messages_opinion(self, stock_data: StockData, target: Target) -> Tuple[str, str]:
         """
@@ -91,6 +80,7 @@ class SentimentalAgent(BaseAgent, nn.Module):
             "user": "다음 컨텍스트를 바탕으로 의견을 작성:\n{context}",
         }
 
+        # ✅ 뉴스 감성 점수(news_sentiment) 포함된 컨텍스트
         ctx = {
             "agent_id": self.agent_id,
             "ticker": stock_data.ticker,
@@ -99,8 +89,8 @@ class SentimentalAgent(BaseAgent, nn.Module):
             "our_prediction": float(getattr(target, "next_close", 0.0)),
             "uncertainty": float(getattr(target, "uncertainty", 0.0) or 0.0),
             "confidence": float(getattr(target, "confidence", 0.0) or 0.0),
-            # feature_cols는 core/data_set.py에서 CSV 로딩 시 채워집니다. 너무 길면 일부만 사용.
             "feature_cols": (stock_data.feature_cols[:12] if stock_data.feature_cols else None),
+            "news_sentiment": getattr(stock_data, "news_sentiment", None),
         }
 
         system_text = prompt_set["system"]
@@ -108,9 +98,7 @@ class SentimentalAgent(BaseAgent, nn.Module):
         return system_text, user_text
 
     # -----------------------------------------------------------
-    # (선택) Rebuttal/Revision 메시지 기본 구현
-    #  - BaseAgent가 직접 REBUTTAL_PROMPTS/REVISION_PROMPTS를 쓰므로
-    #    반드시 필요하진 않지만, 안전하게 기본 버전 제공
+    # Rebuttal / Revision 메시지 기본 구현
     # -----------------------------------------------------------
     def _build_messages_rebuttal(self, *args, **kwargs) -> Tuple[str, str]:
         prompt_set = REBUTTAL_PROMPTS.get("SentimentalAgent") or {
