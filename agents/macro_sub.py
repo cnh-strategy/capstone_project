@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
+import torch
 import yfinance as yf
 from datetime import datetime, timedelta
 import warnings
@@ -144,21 +145,77 @@ class MakeDatasetMacro:
 # -------------------------------------------------------------
 # 4. Monte Carlo Dropout
 # -------------------------------------------------------------
-def get_std_pred(model, X_seq, n_samples=30, scaler_y=None):
+def get_std_pred(model, X_seq, n_samples=30, scaler_y=None, current_price=None, stockdata=None):
+    """
+    Monte Carlo Dropout 기반 불확실성 예측 (확장 버전)
+    --------------------------------------------------
+    기능:
+    - n회 반복 예측으로 평균(mean) / 표준편차(std) 계산
+    - torch.no_grad() 안정 처리
+    - σ 기반 confidence 계산
+    - scaler_y 역변환 지원
+    - 현재가 반영한 예측 종가(predicted_price) 계산
+    --------------------------------------------------
+    Args:
+        model : PyTorch 모델
+        X_seq : 입력 시퀀스 (Tensor)
+        n_samples : Monte Carlo 반복 횟수
+        scaler_y : 출력 스케일러 (MinMax 또는 StandardScaler)
+        current_price : 현재 종가 (float, optional)
+        stockdata : StockData 객체 (last_price 가져올 수 있음)
+    Returns:
+        mean_pred (np.ndarray) : 평균 예측값
+        std_pred (np.ndarray)  : 표준편차 (불확실성)
+        confidence (float)     : σ 기반 신뢰도 (0~1)
+        predicted_price (float): 현재가 × (1 + 예측 수익률)
+    """
     preds = []
-    for _ in range(n_samples):
-        y_pred = model(X_seq, training=True)
-        preds.append(y_pred.numpy().flatten())
 
-    preds = np.stack(preds)
+    # -------------------------------------------------
+    # (1) 모델 예측 (Monte Carlo Dropout)
+    # -------------------------------------------------
+    model.eval()  # 안정 모드
+    with torch.no_grad():
+        for _ in range(n_samples):
+            # training=True 설정으로 dropout 유지
+            y_pred = model(X_seq, training=True)
+            preds.append(y_pred.cpu().numpy().flatten())
+
+    preds = np.stack(preds)  # (samples, output_dim)
     mean_pred = preds.mean(axis=0)
-    std_pred = preds.std(axis=0)
+    std_pred = np.abs(preds.std(axis=0))  # 항상 양수
 
+    # -------------------------------------------------
+    # (2) σ 기반 confidence 계산
+    # -------------------------------------------------
+    sigma = float(std_pred[-1]) if std_pred.ndim > 0 else float(std_pred)
+    sigma = max(sigma, 1e-6)
+    confidence = 1 / (1 + np.log1p(sigma))  # σ가 작을수록 1에 가까움
+
+    # -------------------------------------------------
+    # (3) 스케일러 역변환
+    # -------------------------------------------------
     if scaler_y is not None:
         try:
             mean_pred = scaler_y.inverse_transform(mean_pred.reshape(-1, 1)).flatten()
             std_pred = scaler_y.inverse_transform(std_pred.reshape(-1, 1)).flatten()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] scaler_y inverse_transform 실패: {e}")
 
-    return mean_pred, std_pred
+    # -------------------------------------------------
+    # (4) 현재가 및 예측 가격 변환
+    # -------------------------------------------------
+    if current_price is None:
+        if stockdata is not None and hasattr(stockdata, "last_price"):
+            current_price = float(getattr(stockdata, "last_price"))
+        else:
+            current_price = 100.0  # 기본값
+
+    predicted_return = float(mean_pred[-1])  # 예측된 수익률
+    predicted_price = current_price * (1 + predicted_return)
+
+    # -------------------------------------------------
+    # (5) 결과 반환
+    # -------------------------------------------------
+    return mean_pred, std_pred, confidence, predicted_price
+

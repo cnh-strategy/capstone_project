@@ -3,24 +3,25 @@
 # ===============================================================
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Literal, Tuple
+from typing import Dict, List, Optional, Literal, Tuple, Any
+from dataclasses import field
 from collections import defaultdict
-import os, json, requests
+import os, json, time, requests, yfinance as yf
 from datetime import datetime
 from dotenv import load_dotenv
-
-from debate_ver3_tmp.agents.prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
-from debate_ver3_tmp.config.agents import agents_info, dir_info
-from debate_ver3_tmp.core.data_set import build_dataset, load_dataset
+from debate_ver4.prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
+from debate_ver4.config.agents import agents_info, dir_info
+from debate_ver4.core.data_set import build_dataset, load_dataset
 import torch
 import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 import joblib
 
-# -----------------------------
+# ===============================================================
 # 데이터 구조 정의
-# -----------------------------
+# ===============================================================
+
 @dataclass
 class Target:
     """예측 목표값 + 불확실성 정보 포함
@@ -31,8 +32,6 @@ class Target:
     next_close: float
     uncertainty: Optional[float] = None
     confidence: Optional[float] = None
-    feature_cols: Optional[List[str]] = None
-    importances: Optional[List[float]] = None
 
 @dataclass
 class Opinion:
@@ -56,17 +55,19 @@ class RoundLog:
 
 @dataclass
 class StockData:
-    agent_id: str = ""
-    ticker: str = ""
-    X: Optional[np.ndarray] = None
-    y: Optional[np.ndarray] = None
-    feature_cols: Optional[List[str]] = None
+    """에이전트 입력 원천 데이터(필요 시 자유 확장)
+    - sentimental: 심리/커뮤니티/뉴스 스냅샷
+    - fundamental: 재무/밸류에이션 요약
+    - technical  : 가격/지표 스냅샷
+    - last_price : 최신 종가
+    - currency   : 통화코드
+    """
+    SentimentalAgent: Optional[Dict[str, Any]] = field(default_factory=dict)
+    FundamentalAgent: Optional[Dict[str, Any]] = field(default_factory=dict)
+    TechnicalAgent: Optional[Dict[str, Any]] = field(default_factory=dict)
     last_price: Optional[float] = None
-    technical: Optional[Dict] = None
-    
-    def __post_init__(self):
-        if self.last_price is None:
-            self.last_price = 100.0
+    currency: Optional[str] = None
+
 
 # ===============================================================
 # BaseAgent 클래스
@@ -86,8 +87,9 @@ class BaseAgent:
         need_training: bool = True,
         data_dir: str = dir_info["data_dir"],
         model_dir: str = dir_info["model_dir"],
-        ticker: str = "TSLA",
-
+        ticker: str=None,
+        gamma: float = 0.3,
+        delta_limit: float = 0.05,
     ):
 
         load_dotenv()
@@ -100,6 +102,7 @@ class BaseAgent:
         self.model_dir = model_dir
         self.ticker = ticker
         self.scaler = DataScaler(agent_id)
+        self.window_size = agents_info[agent_id]["window_size"]
         # 모델 폴백 우선순위
         self.preferred_models = preferred_models or ["gpt-5-mini", "gpt-4.1-mini"]
         if model:
@@ -110,7 +113,7 @@ class BaseAgent:
         # API 키 로드
         self.api_key = os.getenv("CAPSTONE_OPENAI_API")
         if not self.api_key:
-            raise RuntimeError("환경변수 CAPSTONE_OPENAI_API가 설정되지 않았습니다.")
+            self.api_key = ""
 
         # 공통 헤더
         self.headers = {
@@ -120,8 +123,13 @@ class BaseAgent:
 
         # 상태값
         self.stockdata: Optional[StockData] = None
+        self.targets: List[Target] = []
         self.opinions: List[Opinion] = []
         self.rebuttals: Dict[int, List[Rebuttal]] = defaultdict(list)
+
+        # 수렴율 및 이동 한계
+        self.gamma = agents_info[agent_id]["gamma"]
+        self.delta_limit = agents_info[agent_id]["delta_limit"]
 
         # JSON Schema
         self.schema_obj_opinion = {
@@ -144,59 +152,84 @@ class BaseAgent:
         }
 
     def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
-        """
-        preprocessing.py 기반 데이터 검색기
-        - CSV가 없을 경우 build_dataset()으로 자동 생성
-        - 마지막 window 시퀀스를 torch.tensor로 반환
-        """
+        import yfinance as yf
+        import pandas as pd
+
+        agent_id = self.agent_id
 
         if ticker is None:
             ticker = self.ticker
-            
-        dataset_path = os.path.join(self.data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
 
-        # 데이터셋이 존재하지 않으면 생성
+        dataset_path = os.path.join(self.data_dir, f"{ticker}_{agent_id}_dataset.csv")
+
+        # 데이터셋이 없으면 자동 생성
         if not os.path.exists(dataset_path) or rebuild:
-            print(f"⚙️ {ticker} {self.agent_id} dataset not found. Building new dataset...")
+            print(f"⚙️ {ticker} {agent_id} dataset not found. Building new dataset...")
             build_dataset(ticker=ticker, save_dir=self.data_dir)
 
-        # CSV에서 데이터셋 로드
-        X, y, feature_cols = load_dataset(ticker, agent_id=self.agent_id, save_dir=self.data_dir)
+        # CSV 로드
+        X, y, feature_cols = load_dataset(ticker, agent_id=agent_id, save_dir=self.data_dir)
 
-        # StockData 인스턴스 생성해서 self.stockdata에 저장 (Load_csv_dataset 결과 반영)
+        # StockData 초기화
         self.stockdata = StockData()
-        self.stockdata.agent_id = self.agent_id
-        self.stockdata.ticker = ticker
-        self.stockdata.X = X
-        self.stockdata.y = y
-        self.stockdata.feature_cols = feature_cols
-        
-        # 가장 최근 window 데이터만 사용
-        X_latest = X[-1:]  # shape: (1, window_size, n_features)
+
+        # 최근 window
+        X_latest = X[-1:]
         X_tensor = torch.tensor(X_latest, dtype=torch.float32)
+
+        # DataFrame 변환
+        df_latest = pd.DataFrame(X_latest[0], columns=feature_cols)
+
+        # 컬럼별 리스트 저장
+        feature_dict = {col: df_latest[col].tolist() for col in df_latest.columns}
+
+        setattr(self.stockdata, agent_id, feature_dict)
+
+        # 종가 및 통화 정보
+        self.stockdata.ticker = ticker
         
-        # 실제 현재 가격 저장 (yfinance로 최신 Close 가격 가져오기)
-        import yfinance as yf
         try:
             data = yf.download(ticker, period="1d", interval="1d")
-            self.stockdata.last_price = float(data['Close'].iloc[-1])
-        except:
-            self.stockdata.last_price = 100.0  # 기본값
+            self.stockdata.last_price = float(data["Close"].iloc[-1])
+        except Exception as e:
+            print(f"yfinance 오류 발생")
 
-        return X_tensor
+
+        try:
+            self.stockdata.currency = yf.Ticker(ticker).info.get("currency", "USD")
+        except Exception as e:
+            print(f"yfinance 오류 발생, 통화 기본값 사용: {e}")
+            self.stockdata.currency = "USD"
+
+        print(f"■ {agent_id} StockData 생성 완료 ({ticker}, {self.stockdata.currency})")
+
+        return X_tensor #X_seq
 
     def predict(self, X, n_samples: int = 30, current_price: float = None):
         """
-        Monte Carlo Dropout 기반 예측 + 불확실성 계산 (공통)
-        모든 Agent에서 사용 가능
+        Monte Carlo Dropout 기반 예측 + 불확실성(σ) 및 confidence 계산 (안정형)
         """
+        # -----------------------------
+        # 모델 준비 및 스케일러 로드
+        # -----------------------------
+        if self.model is None or not hasattr(self.model, "parameters"):
+            model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
+            if os.path.exists(model_path):
+                print(f"■ {self.agent_id} 모델 자동 로드 시도...")
+                self.load_model(model_path)
+            else:
+                print(f"■ {self.agent_id} 모델 없음 → pretrain 수행...")
+                self.pretrain()
 
-        # 1. 스케일러 로드
+        if self.model is None:
+            raise RuntimeError(f"{self.agent_id} 모델이 초기화되지 않음")
+
         self.scaler.load(self.ticker)
 
-        # 2. 입력 텐서 변환
+        # -----------------------------
+        # 입력 변환
+        # -----------------------------
         if isinstance(X, np.ndarray):
-            # transform()은 (X_t, y_t) 형태로 반환 → X_t만 사용
             X_scaled, _ = self.scaler.transform(X)
             X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
         elif isinstance(X, torch.Tensor):
@@ -204,139 +237,102 @@ class BaseAgent:
         else:
             raise TypeError(f"Unsupported input type: {type(X)}")
 
-        # 3. 모델 선택 (self.model 또는 self)
-        model = getattr(self, "model", None)
-        if model is None:
-            model = self
-
-        if not hasattr(model, "parameters"):
-            raise AttributeError(f"{model} has no parameters()")
-
-        # 4. 디바이스 설정
-        try:
-            device = next(model.parameters()).device
-        except StopIteration:
-            device = torch.device("cpu")
-
+        model = self.model
+        device = next(model.parameters()).device
         X_tensor = X_tensor.to(device)
 
-        # 5. Dropout 활성화 (Monte Carlo Dropout)
+        # -----------------------------
+        # Monte Carlo Dropout 추론
+        # -----------------------------
         model.train()
-
         preds = []
         with torch.no_grad():
             for _ in range(n_samples):
                 y_pred = model(X_tensor).cpu().numpy().flatten()
                 preds.append(y_pred)
 
-        preds = np.stack(preds)
+        preds = np.stack(preds)  # (samples, seq)
         mean_pred = preds.mean(axis=0)
-        std_pred = preds.std(axis=0)
+        std_pred = np.abs(preds.std(axis=0))  # ✅ 항상 양수
 
-        # 6. 정규화 복원 (상승/하락율 복원)
+        # -----------------------------
+        # σ 기반 confidence 계산
+        # -----------------------------
+        sigma = float(std_pred[-1])
+        sigma = max(sigma, 1e-6)
+
+        # 신뢰도: 불확실성 작을수록 1에 가까움
+        confidence = 1 / (1 + np.log1p(sigma))
+
+        # -----------------------------
+        # 역변환 및 가격 계산
+        # -----------------------------
         if hasattr(self.scaler, 'y_scaler') and self.scaler.y_scaler is not None:
             mean_pred = self.scaler.inverse_y(mean_pred)
             std_pred = self.scaler.inverse_y(std_pred)
-        else:
-            # 스케일러가 없으면 원본 값 사용
-            pass
 
-        # 7. 상승/하락율을 실제 가격으로 변환
         if current_price is None:
-            # self.stockdata에서 실제 현재 가격 가져오기
             current_price = getattr(self.stockdata, 'last_price', 100.0)
-        
-        # 기존: 절대 종가 예측
-        # return Target(
-        #     next_close=float(mean_pred[-1]),
-        #     uncertainty=float(std_pred[-1]),
-        #     confidence=float(confidence[-1])
-        # )
-        
-        # 새로운: 상승/하락율 예측
-        return_rate = float(mean_pred[-1])
-        predicted_price = self.scaler.convert_return_to_price(return_rate, current_price) if hasattr(self.scaler, 'convert_return_to_price') else current_price * (1 + return_rate)
-        
-        # confidence 계산
-        confidence = 1 / (std_pred + 1e-8)
 
-        return Target(
+        # ✅ 현재 모델은 "다음날 수익률(return)"을 예측하므로, 종가로 변환 시 (1 + return)
+        predicted_return = float(mean_pred[-1])  # 예측된 상승률 (%)
+        predicted_price = current_price * (1 + predicted_return) 
+
+        # -----------------------------
+        # Target 생성 및 반환
+        # -----------------------------
+        target = Target(
             next_close=float(predicted_price),
-            uncertainty=float(std_pred[-1]),
-            confidence=float(confidence[-1])
+            uncertainty=sigma,
+            confidence=float(confidence),
         )
+        self.targets.append(target)
+        return target
 
 
 
     # -----------------------------
     # 메인 워크플로
     # -----------------------------
-    def reviewer_draft(self, stock_data, target: Target) -> Opinion:
+    def reviewer_draft(self, stock_data: StockData = None, target: Target = None) -> Opinion:
         """(1) searcher → (2) predicter → (3) LLM(JSON Schema)로 reason 생성 → Opinion 반환"""
 
         # 1) 데이터 수집
-        X = self.searcher(self.ticker)
+        if stock_data is None:
+            stock_data = getattr(self.stockdata, self.agent_id)
 
         # 2) 예측값 생성
-        target = self.predict(X)
+        if target is None:
+            target = self.predict(stock_data)
 
-        # 3) LLM 호출(reason 생성)
-
+        # 3) LLM 호출(reason 생성) - 전달받은 stock_data 사용
         sys_text, user_text = self._build_messages_opinion(self.stockdata, target)
-        msg_sys = self._msg("system", sys_text)
-        msg_user = self._msg("user",   user_text)
-
-        parsed = self._ask_with_fallback(msg_sys, msg_user, self.schema_obj_opinion)
-        reason = parsed.get("reason") or "(사유 생성 실패: 미입력)"
-
-        prompt_set = OPINION_PROMPTS.get(self.agent_id, OPINION_PROMPTS[self.agent_id])
-
-        #ctx
-        context = json.dumps({
-            "agent_id": self.agent_id,
-            "predicted_next_close": round(target.next_close, 3),
-            "uncertainty_sigma": round(target.uncertainty or 0.0, 4),
-            "confidence_beta": round(target.confidence or 0.0, 4),
-            "latest_data": str(stock_data)
-        }, ensure_ascii=False, indent=2)
-
-        sys_text = prompt_set["system"]
-        user_text = prompt_set["user"].format(context=context)
 
         parsed = self._ask_with_fallback(
             self._msg("system", sys_text),
             self._msg("user", user_text),
-            {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}
+            {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"], "additionalProperties": False}
         )
 
         reason = parsed.get("reason", "(사유 생성 실패)")
 
         # 4) Opinion 기록/반환 (항상 최신 값 append)
-        self.opinions.append(Opinion(agent_id=self.agent_id, target=target, reason=reason))
+        self.opinions.append(Opinion(agent_id=self.agent_id, target=target, reason=reason)) 
 
         # 최신 오피니언 반환
         return self.opinions[-1]
 
-    def reviewer_rebut(self, my_opinion: Opinion, other_opinion: Opinion) -> Rebuttal:
+    def reviewer_rebut(self, my_opinion: Opinion, other_opinion: Opinion, round: int) -> Rebuttal:
         """LLM을 통해 상대 의견에 대한 반박/지지 생성"""
-        prompt_set = REBUTTAL_PROMPTS.get(self.agent_id)
+        
+        # 메시지 생성 (context 구성은 별도 헬퍼에서)
+        sys_text, user_text = self._build_messages_rebuttal(
+            my_opinion=my_opinion,
+            target_opinion=other_opinion,
+            stock_data=self.stockdata
+        )
 
-        context = json.dumps({
-            "self_agent": my_opinion.agent_id,
-            "self_next_close": my_opinion.target.next_close,
-            "self_confidence": my_opinion.target.confidence,
-            "self_uncertainty": my_opinion.target.uncertainty,
-            "self_reason": my_opinion.reason,
-            "other_agent": other_opinion.agent_id,
-            "other_next_close": other_opinion.target.next_close,
-            "other_confidence": other_opinion.target.confidence,
-            "other_uncertainty": other_opinion.target.uncertainty,
-            "other_reason": other_opinion.reason
-        }, ensure_ascii=False, indent=2)
-
-        sys_text = prompt_set["system"]
-        user_text = prompt_set["user"].format(context=context)
-
+        # LLM 호출
         parsed = self._ask_with_fallback(
             self._msg("system", sys_text),
             self._msg("user", user_text),
@@ -346,45 +342,95 @@ class BaseAgent:
                     "stance": {"type": "string", "enum": ["REBUT", "SUPPORT"]},
                     "message": {"type": "string"}
                 },
-                "required": ["stance", "message"]
+                "required": ["stance", "message"],
+                "additionalProperties": False
             }
         )
 
-        self.rebuttals.append(Rebuttal(
+        # 결과 정리 및 기록
+        result = Rebuttal(
             from_agent_id=my_opinion.agent_id,
             to_agent_id=other_opinion.agent_id,
             stance=parsed.get("stance", "REBUT"),
             message=parsed.get("message", "(반박/지지 사유 생성 실패)")
-        ))
+        )
 
-        return self.rebuttals[-1]
+        # 저장
+        self.rebuttals[round].append(result)
+        
+        # 디버깅 로그
+        if self.verbose:
+            print(
+                f"[{self.agent_id}] rebuttal 생성 → {result.stance} "
+                f"({my_opinion.agent_id} → {other_opinion.agent_id})"
+            )
+
+        return result
 
     def reviewer_revise(
         self,
-        revised_target: Target,
-        old_opinion: Opinion,
-        rebuttals: list,
-        others: list,
-        X_input=None,
+        my_opinion: Opinion,
+        others: List[Opinion],
+        rebuttals: List[Rebuttal],
+        stock_data: StockData,
         fine_tune: bool = True,
         lr: float = 1e-4,
-        epochs: int = 3,
+        epochs: int = 20,
     ):
         """
-        Monte Carlo 기반 β-weighted revised_target을 받아
-        - 모델 파라미터 업데이트(fine-tuning)
-        - 수정된 수치에 대한 LLM reasoning 생성
-        - Opinion 업데이트까지 한 번에 수행
+        Revision 단계 
+        - σ 기반 β-weighted 신뢰도 계산
+        - γ 수렴율로 예측값 보정
+        - fine-tuning (수익률 단위)
+        - reasoning 생성
         """
+        gamma = getattr(self, "gamma", 0.3)               # 수렴율 (0~1)
+        delta_limit = getattr(self, "delta_limit", 0.05)  # fine-tuning 보정 한계
 
-        # --------------------------------------------
-        # 1️⃣ Fine-tuning 단계 (모델 파라미터 업데이트)
-        # --------------------------------------------
-        if fine_tune and hasattr(self, "model") and X_input is not None:
+        try:
+            # ===================================
+            # ① β 계산 (불확실성 작을수록 신뢰 높음)
+            # ===================================
+            my_price = my_opinion.target.next_close
+            my_sigma = abs(my_opinion.target.uncertainty or 1e-6)
+
+            other_prices = np.array([o.target.next_close for o in others])
+            other_sigmas = np.array([abs(o.target.uncertainty or 1e-6) for o in others])
+
+            all_sigmas = np.concatenate([[my_sigma], other_sigmas])
+            all_prices = np.concatenate([[my_price], other_prices])
+
+            inv_sigmas = 1 / (all_sigmas + 1e-6)
+            betas = inv_sigmas / inv_sigmas.sum()
+
+            # ===================================
+            # ② 논문식 수렴 업데이트
+            #     y_i_rev = y_i + γ Σ β_j (y_j - y_i)
+            # ===================================
+            delta = np.sum(betas[1:] * (other_prices - my_price))
+            revised_price = my_price + gamma * delta
+
+        except Exception as e:
+            print(f"[{self.agent_id}] revised_target 계산 실패: {e}")
+            revised_price = my_opinion.target.next_close
+            current_price = getattr(self.stockdata, "last_price", 100.0)
+            price_uplimit = current_price * (1 + delta_limit)
+            price_downlimit = current_price * (1 - delta_limit)
+            revised_price = min(max(revised_price, price_downlimit), price_uplimit)
+
+        # ===================================
+        # ③ Fine-tuning (return 단위)
+        # ===================================
+        loss_value = None
+        if fine_tune and hasattr(self, "model"):
             try:
+                current_price = getattr(self.stockdata, "last_price", 100.0)
+                revised_return = (revised_price / current_price) - 1  # 🔹수익률 변환
+
+                X_input = self.searcher(self.ticker)
                 device = next(self.model.parameters()).device
                 X_tensor = torch.tensor(X_input, dtype=torch.float32).to(device)
-                y_tensor = torch.tensor([[revised_target.next_close]], dtype=torch.float32).to(device)
+                y_tensor = torch.tensor([[revised_return]], dtype=torch.float32).to(device)
 
                 self.model.train()
                 optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
@@ -393,46 +439,43 @@ class BaseAgent:
                 for _ in range(epochs):
                     optimizer.zero_grad()
                     pred = self.model(X_tensor)
-                    loss = criterion(pred, y_tensor)
+                    delta_loss = pred - y_tensor
+                    loss = criterion(pred - delta_loss, y_tensor)
                     loss.backward()
                     optimizer.step()
 
                 loss_value = float(loss.item())
+                print(f"[{self.agent_id}] fine-tuning 완료: loss={loss_value:.6f}")
+
             except Exception as e:
-                loss_value = None
                 print(f"[{self.agent_id}] fine-tuning 실패: {e}")
-        else:
-            loss_value = None
 
-        # --------------------------------------------
-        # 2️⃣ LLM Reasoning 생성 단계
-        # --------------------------------------------
-        prompt_set = REVISION_PROMPTS.get(self.agent_id, REVISION_PROMPTS.get("default"))
+        # ===================================
+        # ④ fine-tuning 이후 새 예측 생성
+        # ===================================
+        try:
+            X_latest = self.searcher(self.ticker)
+            new_target = self.predict(X_latest)
+        except Exception as e:
+            print(f"[{self.agent_id}] predict 실패: {e}")
+            new_target = my_opinion.target
 
-        context = json.dumps({
-            "agent_id": self.agent_id,
-            "new_next_close": revised_target.next_close,
-            "my_reason": old_opinion.reason if old_opinion else "(이전 의견 없음)",
-            "my_confidence": getattr(old_opinion.target, "confidence", None) if old_opinion else None,
-            "my_uncertainty": getattr(old_opinion.target, "uncertainty", None) if old_opinion else None,
-            "others": [
-                {
-                    "agent": o.agent_id,
-                    "reason": o.reason,
-                    "confidence": getattr(o.target, "confidence", None),
-                    "uncertainty": getattr(o.target, "uncertainty", None),
-                }
-                for o in others
-            ],
-            "rebuttals": [
-                {"from": r.from_agent_id, "stance": r.stance, "message": r.message}
-                for r in rebuttals
-            ],
-            "fine_tune_loss": loss_value,
-        }, ensure_ascii=False, indent=2)
-
-        sys_text = prompt_set["system"]
-        user_text = prompt_set["user"].format(context=context)
+        # ===================================
+        # ⑤ reasoning 생성
+        # ===================================
+        try:
+            sys_text, user_text = self._build_messages_revision(
+                my_opinion=my_opinion,
+                others=others,
+                rebuttals=rebuttals,
+                stock_data=stock_data,
+            )
+        except Exception as e:
+            print(f"[{self.agent_id}] _build_messages_revision 실패: {e}")
+            sys_text, user_text = (
+                "너는 금융 분석가다. 간단히 reason만 생성하라.",
+                json.dumps({"reason": "기본 메시지 생성 실패"}),
+            )
 
         parsed = self._ask_with_fallback(
             self._msg("system", sys_text),
@@ -441,49 +484,22 @@ class BaseAgent:
                 "type": "object",
                 "properties": {"reason": {"type": "string"}},
                 "required": ["reason"],
-                "additionalProperties": False
+                "additionalProperties": False,
             },
         )
 
-        # --------------------------------------------
-        # 3️⃣ 수정된 Opinion 기록
-        # --------------------------------------------
         revised_reason = parsed.get("reason", "(수정 사유 생성 실패)")
         revised_opinion = Opinion(
             agent_id=self.agent_id,
-            target=revised_target,
+            target=new_target,
             reason=revised_reason,
         )
+
         self.opinions.append(revised_opinion)
-
-        # --------------------------------------------
-        # 4️⃣ 디버깅 / 로깅용 출력
-        # --------------------------------------------
-        if self.verbose:
-            print(
-                f"[{self.agent_id}] revise 완료 → "
-                f"new_target={revised_target.next_close:.4f}, "
-                f"σ={getattr(revised_target, 'uncertainty', None)}, "
-                f"β={getattr(revised_target, 'confidence', None)}, "
-                f"loss={loss_value:.6f if loss_value else 'N/A'}"
-            )
-
+        print(f"[{self.agent_id}] revise 완료 → new_close={new_target.next_close:.2f}, loss={loss_value}")
         return self.opinions[-1]
 
-    # -----------------------------
-    # 공통 유틸
-    # -----------------------------
-    def _p(self, msg: str):
-        if self.verbose:
-            print(f"[{self.agent_id}] {msg}")
-
-    @staticmethod
-    def _msg(role: str, text: str) -> dict:
-        return {"role": role, "content": [{"type": "input_text", "text": text}]}
-
-    # -----------------------------
-    # 구현 필요 함수 (추상)
-    # -----------------------------
+        
 
     def _build_messages_opinion(self, stock_data: StockData, target: Target) -> Tuple[str, str]:
         """LLM(system/user) 메시지 생성(구현 필요)"""
@@ -494,24 +510,74 @@ class BaseAgent:
         raise NotImplementedError(f"{self.__class__.__name__} must implement _build_messages_rebuttal method")
     
     def load_model(self, model_path: Optional[str] = None):
-        """저장된 모델 가중치 로드"""
-
+        """저장된 모델 가중치 로드 (객체/딕셔너리/state_dict 자동 인식 + model 자동 생성)"""
         if model_path is None:
             model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
-        
+
         if not os.path.exists(model_path):
-            print(f"⚠️ 모델 파일 없음: {model_path}")
+            print(f"■ 모델 파일 없음: {model_path}")
             return False
 
-        checkpoint = torch.load(model_path, map_location=torch.device("cpu"))
-        self.load_state_dict(checkpoint["model_state_dict"])
-        print(f"✅ {self.agent_id} 모델 로드 완료 ({model_path})")
+        try:
+            checkpoint = torch.load(model_path, map_location=torch.device("cpu"))
+
+            # 모델 인스턴스가 없으면 새로 생성
+            if getattr(self, "model", None) is None:
+                if hasattr(self, "_build_model"):
+                    self.model = self._build_model()
+                    print(f"■ {self.agent_id} 모델 새로 생성됨 (로드 전 초기화).")
+                elif hasattr(self, "forward"):
+                    # Agent 자체가 nn.Module인 경우
+                    self.model = self
+                    print(f"■ {self.agent_id} 모델 직접 self로 설정됨.")
+                else:
+                    raise RuntimeError(f"{self.agent_id}에 _build_model()이 정의되어 있지 않음.")
+
+            model = self.model
+
+            # 다양한 저장 포맷 처리
+            if isinstance(checkpoint, torch.nn.Module):
+                model.load_state_dict(checkpoint.state_dict())
+                print(f" {self.agent_id} 모델(객체) 로드 완료 ({model_path})")
+
+            elif isinstance(checkpoint, dict):
+                state_dict = (
+                    checkpoint.get("model_state_dict")
+                    or checkpoint.get("state_dict")
+                    or checkpoint
+                )
+                model.load_state_dict(state_dict)
+                print(f" {self.agent_id} 모델(state_dict) 로드 완료 ({model_path})")
+
+            else:
+                print(f" 알 수 없는 체크포인트 포맷: {type(checkpoint)}")
+                return False
+
+            # 항상 메모리 연결 보장
+            self.model = model
+            model.eval()
+
+            # 모델이 여전히 None이라면 self 자체를 모델로 설정
+            if self.model is None and hasattr(self, "forward"):
+                self.model = self
+                print(f"■ {self.agent_id} 모델 self로 대체됨.")
+
+            return True
+
+        except Exception as e:
+            print(f"■ 모델 로드 실패: {model_path}")
+            print(f"오류 내용: {e}")
+            return False
 
     def pretrain(self):
+        """Agent별 사전학습 루틴 (모델 생성, 학습, 저장, self.model 연결까지 포함)"""
         epochs = agents_info[self.agent_id]["epochs"]
         lr = agents_info[self.agent_id]["learning_rate"]
         batch_size = agents_info[self.agent_id]["batch_size"]
 
+        # --------------------------
+        # 데이터 로드
+        # --------------------------
         X, y, cols = load_dataset(self.ticker, self.agent_id, save_dir=self.data_dir)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
 
@@ -519,20 +585,45 @@ class BaseAgent:
         X_train, X_val = X[:split_idx], X[split_idx:]
         y_train, y_val = y[:split_idx], y[split_idx:]
 
+        # 🔹 타깃 스케일 조정 복원 - 상승/하락율을 100배로 스케일링
+        # 기존: 원본 상승/하락율 그대로 사용 (문제: 너무 작은 값으로 과적합)
+        # 수정: ±0.04 → ±4.0으로 스케일링하여 적절한 학습 범위 확보
+        y_train *= 100.0
+        y_val   *= 100.0
+        
         self.scaler.fit_scalers(X_train, y_train)
         self.scaler.save(self.ticker)
 
         X_train, y_train = map(torch.tensor, self.scaler.transform(X_train, y_train))
         X_train, y_train = X_train.float(), y_train.float()
 
-        model = self if hasattr(self, 'forward') else self.model
+        # --------------------------
+        # 모델 생성 및 초기화
+        # --------------------------
+        if getattr(self, "model", None) is None:
+            # BaseAgent에 _build_model()이 있다면 호출
+            if hasattr(self, "_build_model"):
+                self.model = self._build_model()
+                print(f"■ {self.agent_id} 모델 새로 생성됨.")
+            else:
+                raise RuntimeError(f"{self.agent_id}에 _build_model()이 정의되지 않음")
+
+        model = self.model
         model.train()
+
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        loss_fn = torch.nn.MSELoss()
+        # 기존: MSE Loss 사용
+        # loss_fn = torch.nn.MSELoss()
+        # 수정: Huber Loss 사용 - 이상치에 덜 민감하고 더 안정적인 학습
+        # delta=1.0으로 조정 (타겟 스케일링 후 적절한 값)
+        loss_fn = torch.nn.HuberLoss(delta=1.0)
         train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
 
+        # --------------------------
+        # 학습 루프
+        # --------------------------
         for epoch in range(epochs):
-            total_loss = 0
+            total_loss = 0.0
             for Xb, yb in train_loader:
                 y_pred = model(Xb)
                 loss = loss_fn(y_pred, yb)
@@ -540,17 +631,24 @@ class BaseAgent:
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
+
             if (epoch + 1) % 5 == 0:
                 print(f"  Epoch {epoch+1:03d} | Loss: {total_loss/len(train_loader):.6f}")
 
+        # --------------------------
+        # 모델 저장 및 연결
+        # --------------------------
         os.makedirs(self.model_dir, exist_ok=True)
         model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
-        torch.save(model.state_dict(), model_path)
-        print(f"✅ {self.agent_id} model saved.\n✅ pretraining finished.\n")
+        torch.save({"model_state_dict": model.state_dict()}, model_path)
 
-    # -----------------------------
+        # 메모리 연결 유지
+        self.model = model
+
+        print(f" {self.agent_id} 모델 학습 및 저장 완료: {model_path}")
+
+
     # OpenAI API 호출
-    # -----------------------------
     def _ask_with_fallback(self, msg_sys: dict, msg_user: dict, schema_obj: dict) -> dict:
         """모델 폴백 포함 OpenAI Responses API 호출"""
         payload_base = {
@@ -601,13 +699,12 @@ class BaseAgent:
                 # 기타 에러는 즉시 예외
                 r.raise_for_status()
             except Exception as e:
-                self._p(f"⚠️ 모델 {model} 실패: {e}")
+                self._p(f"■ 모델 {model} 실패: {e}")
                 last_err = str(e)
                 continue
         raise RuntimeError(f"모든 모델 실패. 마지막 오류: {last_err}")
-    # -----------------------------------------
-    # 🔹 추가: Monte Carlo Dropout 기반 불확실성 추정
-    # -----------------------------------------
+    
+    # 추가: Monte Carlo Dropout 기반 불확싱 추정
     def evaluate(self, ticker: str = None):
         """검증 데이터로 성능 평가"""
         if ticker is None:
@@ -659,6 +756,13 @@ class BaseAgent:
             'n_samples': len(predictions)
         }
 
+    def _msg(self, role: str, content: str) -> dict:
+        """OpenAI ChatCompletion용 메시지 구조 생성"""
+        if not isinstance(role, str) or not isinstance(content, str):
+            raise ValueError(f"_msg() 인자 오류: role={role}, content={type(content)}")
+        return {"role": role, "content": content}
+
+
 class DataScaler:
     """학습/추론용 정규화 유틸리티 (BaseAgent 내부용)"""
     def __init__(self, agent_id):
@@ -677,14 +781,14 @@ class DataScaler:
         Sx = ScalerMap[self.x_scaler]
         Sy = ScalerMap[self.y_scaler]
 
-        # ✅ 3D 입력 (samples, seq_len, features) → 2D로 변환
+        # 3D 입력 (samples, seq_len, features) → 2D로 변환
         n_samples, seq_len, n_feats = X_train.shape
         X_2d = X_train.reshape(-1, n_feats)
         self.x_scaler = Sx().fit(X_2d) if Sx else None
         self.y_scaler = Sy().fit(y_train.reshape(-1, 1)) if Sy else None
 
     def transform(self, X, y=None):
-        # ✅ 3D 입력 (samples, seq_len, features) → 2D로 변환
+        # 3D 입력 (samples, seq_len, features) → 2D로 변환
         if X.ndim == 3:
             n_samples, seq_len, n_feats = X.shape
             X_2d = X.reshape(-1, n_feats)
@@ -701,7 +805,8 @@ class DataScaler:
 
 
     def inverse_y(self, y_pred):
-        if self.y_scaler:
+        # 실제 스케일러 객체인지 확인
+        if self.y_scaler and self.y_scaler != "None" and hasattr(self.y_scaler, 'inverse_transform'):
             # numpy 배열로 변환
             if isinstance(y_pred, (list, tuple)):
                 y_pred = np.array(y_pred)
