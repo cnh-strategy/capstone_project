@@ -9,13 +9,17 @@ from collections import defaultdict
 import os, json, requests, yfinance as yf
 from datetime import datetime
 from dotenv import load_dotenv
-from debate_ver3.config.agents import agents_info, dir_info
-from debate_ver3.core.data_set import build_dataset, load_dataset
-import torch
+
 import numpy as np
+import torch
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 import joblib
+import pandas as pd  # ✅ (2) SentimentalAgent 스냅샷 주입에 필요
+
+from debate_ver3.config.agents import agents_info, dir_info
+from debate_ver3.core.data_set import build_dataset, load_dataset
+
 
 # -----------------------------
 # 데이터 구조 정의
@@ -25,7 +29,7 @@ class Target:
     """예측 목표값 + 불확실성 정보 포함
     - next_close: 다음 거래일 종가 예측치 (또는 수익률 기반 변환값)
     - uncertainty: Monte Carlo Dropout 기반 예측 표준편차(σ)
-    - confidence: 모델 신뢰도 β (정규화된 신뢰도; 선택적)
+    - confidence: 모델 신뢰도 (정규화된 신뢰도; 선택적)
     """
     next_close: float
     uncertainty: Optional[float] = None
@@ -55,6 +59,7 @@ class RoundLog:
 
 @dataclass
 class StockData:
+    # 최소 공통 필드 (SentimentalAgent 등은 searcher에서 동적 필드 추가)
     agent_id: str = ""
     ticker: str = ""
     X: Optional[np.ndarray] = None
@@ -66,6 +71,7 @@ class StockData:
     def __post_init__(self):
         if self.last_price is None:
             self.last_price = 100.0
+
 
 # ===============================================================
 # BaseAgent 클래스
@@ -141,11 +147,16 @@ class BaseAgent:
             "additionalProperties": False,
         }
 
+    # -----------------------------
+    # 데이터 수집/스냅샷
+    # -----------------------------
     def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
         """
         데이터 검색기
         - CSV가 없을 경우 build_dataset()으로 자동 생성
         - 마지막 window 시퀀스를 torch.tensor로 반환
+        - (2) SentimentalAgent 스냅샷 주입
+        - feature_cols / asof_date 메타 저장
         """
         if ticker is None:
             ticker = self.ticker
@@ -160,7 +171,7 @@ class BaseAgent:
         # CSV에서 데이터셋 로드
         X, y, feature_cols = load_dataset(ticker, agent_id=self.agent_id, save_dir=self.data_dir)
 
-        # StockData 인스턴스 생성해서 self.stockdata에 저장
+        # StockData 인스턴스 생성/기록
         self.stockdata = StockData()
         self.stockdata.agent_id = self.agent_id
         self.stockdata.ticker = ticker
@@ -172,19 +183,42 @@ class BaseAgent:
         X_latest = X[-1:]  # shape: (1, window_size, n_features)
         X_tensor = torch.tensor(X_latest, dtype=torch.float32)
 
-        # 실제 현재 가격 저장 (yfinance로 최신 Close 가격 가져오기)
+        # 🔹 SentimentalAgent 스냅샷(마지막 시점 값으로 키:값 매핑)
+        #    ctx에서 stockdata.SentimentalAgent['news_sentiment'] 형태로 접근 가능하게 한다.
         try:
-            data = yf.download(ticker, period="1d", interval="1d")
-            # 단일 원소 안전 추출 (FutureWarning 회피)
-            close_last = data["Close"].tail(1).iloc[0]
-            if hasattr(close_last, "item"):
-                close_last = close_last.item()
-            self.stockdata.last_price = float(close_last)
+            df_last = pd.DataFrame(X_latest[0], columns=feature_cols)  # (T, F)
+            last_row_dict = df_last.iloc[-1].to_dict()                 # {feature: value}
         except Exception:
-            self.stockdata.last_price = 100.0  # 기본값
+            last_row_dict = {}
+        setattr(self.stockdata, "SentimentalAgent", last_row_dict)
+
+        # 🔹 메타 정보 저장
+        setattr(self.stockdata, "feature_cols", feature_cols)
+        setattr(self.stockdata, "asof_date", str(pd.Timestamp.today().date()))
+
+        # 🔹 (3) yfinance 가드 포함: 최신 종가
+        try:
+            data = yf.download(ticker, period="1d", interval="1d", progress=False)
+            if data is not None and not data.empty:
+                close_last = data["Close"].iloc[-1]
+                # numpy 타입이면 .item()으로 파이썬 float로
+                if hasattr(close_last, "item"):
+                    close_last = close_last.item()
+                self.stockdata.last_price = float(close_last)
+            else:
+                # 빈 데이터면 기존 값 유지 또는 기본값
+                self.stockdata.last_price = self.stockdata.last_price or 100.0
+        except Exception:
+            self.stockdata.last_price = self.stockdata.last_price or 100.0
+
+        # 🔹 (4) 최신 입력 캐시
+        self._last_X = X_tensor
 
         return X_tensor
 
+    # -----------------------------
+    # 예측 (MC Dropout)
+    # -----------------------------
     def predict(self, X, n_samples: int = 30, current_price: float = None):
         """
         Monte Carlo Dropout 기반 예측 + 불확실성 계산 (공통)
@@ -201,7 +235,6 @@ class BaseAgent:
 
         # 2. 입력 텐서 변환
         if isinstance(X, np.ndarray):
-            # transform()은 (X_t, y_t) 형태로 반환 → X_t만 사용
             X_scaled, _ = self.scaler.transform(X)
             X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
         elif isinstance(X, torch.Tensor):
@@ -242,9 +275,6 @@ class BaseAgent:
         if hasattr(self.scaler, "y_scaler") and self.scaler.y_scaler is not None:
             mean_pred = self.scaler.inverse_y(mean_pred)
             std_pred = self.scaler.inverse_y(std_pred)
-        else:
-            # 스케일러가 없으면 원본 값 사용
-            pass
 
         # 7. 상승/하락율을 실제 가격으로 변환
         if current_price is None:
@@ -257,8 +287,8 @@ class BaseAgent:
             else current_price * (1 + return_rate)
         )
 
-        # confidence 계산 (간이)
-        confidence = 1 / (std_pred + 1e-8)
+        # 간단 confidence (σ의 역수)
+        confidence = 1.0 / (std_pred + 1e-8)
 
         return Target(
             next_close=float(predicted_price),
@@ -270,8 +300,14 @@ class BaseAgent:
     # 메인 워크플로 (Debate 호환 시그니처)
     # -----------------------------
     def reviewer_draft(self, ticker: str) -> Opinion:
-        # 1) 데이터 수집
-        X = self.searcher(ticker)
+        """
+        (4) 캐시 재사용: _last_X와 stockdata가 있으면 재다운로드 없이 사용
+        """
+        # 1) 데이터 확보
+        if getattr(self, "_last_X", None) is None or self.stockdata is None or self.stockdata.ticker != ticker:
+            X = self.searcher(ticker)
+        else:
+            X = self._last_X
 
         # 2) 예측값 생성
         target = self.predict(X)
@@ -360,6 +396,7 @@ class BaseAgent:
 
     @staticmethod
     def _msg(role: str, text: str) -> dict:
+        # OpenAI Responses API용 포맷
         return {"role": role, "content": [{"type": "input_text", "text": text}]}
 
     # -----------------------------
@@ -562,6 +599,7 @@ class BaseAgent:
             "direction_accuracy": direction_accuracy,
             "n_samples": len(predictions),
         }
+
 
 # ===============================================================
 # DataScaler: 학습/추론용 정규화 유틸리티 (BaseAgent 내부용)
