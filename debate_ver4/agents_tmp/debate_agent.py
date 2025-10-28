@@ -1,13 +1,9 @@
 from datetime import datetime
 
 from agents.macro_agent import MacroPredictor
-from debate_ver4.agents_tmp.base_agent import BaseAgent, StockData, Target, Opinion, Rebuttal
-from debate_ver4.agents_tmp.technical_agent import TechnicalAgent
-from debate_ver4.agents_tmp.sentimental_agent import SentimentalAgent
-from typing import Dict, List
-from collections import defaultdict
-from debate_ver4.core.data_set import build_dataset, load_dataset
-from make_macro_model.macro_funcs import macro_sercher
+from debate_ver4.agents_tmp.base_agent import BaseAgent
+from debate_ver4.core.data_set import build_dataset
+from agents.macro_classes.macro_funcs import macro_sercher
 
 
 class DebateAgent(BaseAgent):
