@@ -9,6 +9,7 @@ import os, json, requests
 from datetime import datetime
 from dotenv import load_dotenv
 
+from agents.dump import CAPSTONE_OPENAI_API
 from debate_ver3_tmp.agents.prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 from debate_ver3_tmp.config.agents import agents_info, dir_info
 from debate_ver3_tmp.core.data_set import build_dataset, load_dataset
@@ -63,7 +64,7 @@ class StockData:
     feature_cols: Optional[List[str]] = None
     last_price: Optional[float] = None
     technical: Optional[Dict] = None
-    
+
     def __post_init__(self):
         if self.last_price is None:
             self.last_price = 100.0
@@ -74,26 +75,26 @@ class StockData:
 class BaseAgent:
     """LLM 기반 Multi-Agent Debate 공통 클래스"""
 
-    OPENAI_URL = "https://api.openai.com/v1/responses"
+    OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
     def __init__(
-        self,
-        agent_id: str,
-        model: Optional[str] = None,
-        preferred_models: Optional[List[str]] = None,
-        temperature: float = 0.2,
-        verbose: bool = False,
-        need_training: bool = True,
-        data_dir: str = dir_info["data_dir"],
-        model_dir: str = dir_info["model_dir"],
-        ticker: str = "TSLA",
+            self,
+            agent_id: str,
+            model: Optional[str] = None,
+            preferred_models: Optional[List[str]] = None,
+            temperature: float = 0.2,
+            verbose: bool = False,
+            need_training: bool = True,
+            data_dir: str = dir_info["data_dir"],
+            model_dir: str = dir_info["model_dir"],
+            ticker: str = "TSLA",
 
     ):
 
         load_dotenv()
         self.agent_id = agent_id # 에이전트 식별자
         self.model = model # 모델 이름
-        self.temperature = temperature # Temperature 설정 
+        self.temperature = temperature # Temperature 설정
         self.verbose = verbose            # 디버깅 모드
         self.need_training = need_training # 모델 학습 필요 여부
         self.data_dir = data_dir
@@ -108,7 +109,7 @@ class BaseAgent:
             ]
 
         # API 키 로드
-        self.api_key = os.getenv("CAPSTONE_OPENAI_API")
+        self.api_key = CAPSTONE_OPENAI_API
         if not self.api_key:
             raise RuntimeError("환경변수 CAPSTONE_OPENAI_API가 설정되지 않았습니다.")
 
@@ -152,7 +153,7 @@ class BaseAgent:
 
         if ticker is None:
             ticker = self.ticker
-            
+
         dataset_path = os.path.join(self.data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
 
         # 데이터셋이 존재하지 않으면 생성
@@ -170,11 +171,11 @@ class BaseAgent:
         self.stockdata.X = X
         self.stockdata.y = y
         self.stockdata.feature_cols = feature_cols
-        
+
         # 가장 최근 window 데이터만 사용
         X_latest = X[-1:]  # shape: (1, window_size, n_features)
         X_tensor = torch.tensor(X_latest, dtype=torch.float32)
-        
+
         # 실제 현재 가격 저장 (yfinance로 최신 Close 가격 가져오기)
         import yfinance as yf
         try:
@@ -245,18 +246,18 @@ class BaseAgent:
         if current_price is None:
             # self.stockdata에서 실제 현재 가격 가져오기
             current_price = getattr(self.stockdata, 'last_price', 100.0)
-        
+
         # 기존: 절대 종가 예측
         # return Target(
         #     next_close=float(mean_pred[-1]),
         #     uncertainty=float(std_pred[-1]),
         #     confidence=float(confidence[-1])
         # )
-        
+
         # 새로운: 상승/하락율 예측
         return_rate = float(mean_pred[-1])
         predicted_price = self.scaler.convert_return_to_price(return_rate, current_price) if hasattr(self.scaler, 'convert_return_to_price') else current_price * (1 + return_rate)
-        
+
         # confidence 계산
         confidence = 1 / (std_pred + 1e-8)
 
@@ -360,15 +361,15 @@ class BaseAgent:
         return self.rebuttals[-1]
 
     def reviewer_revise(
-        self,
-        revised_target: Target,
-        old_opinion: Opinion,
-        rebuttals: list,
-        others: list,
-        X_input=None,
-        fine_tune: bool = True,
-        lr: float = 1e-4,
-        epochs: int = 3,
+            self,
+            revised_target: Target,
+            old_opinion: Opinion,
+            rebuttals: list,
+            others: list,
+            X_input=None,
+            fine_tune: bool = True,
+            lr: float = 1e-4,
+            epochs: int = 3,
     ):
         """
         Monte Carlo 기반 β-weighted revised_target을 받아
@@ -479,7 +480,7 @@ class BaseAgent:
 
     @staticmethod
     def _msg(role: str, text: str) -> dict:
-        return {"role": role, "content": [{"type": "input_text", "text": text}]}
+        return {"role": role, "content": [{"type": "text", "text": text}]}
 
     # -----------------------------
     # 구현 필요 함수 (추상)
@@ -488,17 +489,17 @@ class BaseAgent:
     def _build_messages_opinion(self, stock_data: StockData, target: Target) -> Tuple[str, str]:
         """LLM(system/user) 메시지 생성(구현 필요)"""
         raise NotImplementedError(f"{self.__class__.__name__} must implement _build_messages_opinion method")
-    
+
     def _build_messages_rebuttal(self, *args, **kwargs) -> Tuple[str, str]:
         """LLM(system/user) 메시지 생성(구현 필요)"""
         raise NotImplementedError(f"{self.__class__.__name__} must implement _build_messages_rebuttal method")
-    
+
     def load_model(self, model_path: Optional[str] = None):
         """저장된 모델 가중치 로드"""
 
         if model_path is None:
             model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
-        
+
         if not os.path.exists(model_path):
             print(f"⚠️ 모델 파일 없음: {model_path}")
             return False
@@ -552,59 +553,42 @@ class BaseAgent:
     # OpenAI API 호출
     # -----------------------------
     def _ask_with_fallback(self, msg_sys: dict, msg_user: dict, schema_obj: dict) -> dict:
-        """모델 폴백 포함 OpenAI Responses API 호출"""
-        payload_base = {
-            "input": [msg_sys, msg_user],
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "Response",
-                    "strict": True,
-                    "schema": schema_obj,
-                }
-            },
-            "temperature": self.temperature,
-        }
+        """Chat Completions API 호출 (fallback 지원)"""
         last_err = None
         for model in self.preferred_models:
-            payload = dict(payload_base, model=model)
+            payload = {
+                "model": model,
+                "messages": [msg_sys, msg_user],
+                "temperature": self.temperature,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "Response",
+                        "schema": schema_obj
+                    }
+                }
+            }
             try:
+                import requests
                 r = requests.post(self.OPENAI_URL, headers=self.headers, json=payload, timeout=120)
                 if r.ok:
                     data = r.json()
-                    # 1) output_text 우선 사용
-                    if isinstance(data.get("output_text"), str) and data["output_text"].strip():
-                        try:
-                            return json.loads(data["output_text"])
-                        except Exception:
-                            return {"reason": data["output_text"]}  # JSON 실패 시 원문 텍스트 보존
-                    # 2) output 배열에서 텍스트 모으기
-                    out = data.get("output")
-                    if isinstance(out, list) and out:
-                        texts = []
-                        for blk in out:
-                            for c in blk.get("content", []):
-                                if "text" in c:
-                                    texts.append(c["text"])
-                        joined = "\n".join(t for t in texts if t)
-                        if joined.strip():
-                            try:
-                                return json.loads(joined)
-                            except Exception:
-                                return {"reason": joined}
-                    # 비정상 응답
-                    return {}
-                # 400/404는 다음 모델로 폴백
-                if r.status_code in (400, 404):
+                    # 최신 Chat API의 응답 처리
+                    msg = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    if not msg:
+                        continue
+                    try:
+                        return json.loads(msg)
+                    except Exception:
+                        return {"reason": msg.strip()}
+                else:
                     last_err = (r.status_code, r.text)
                     continue
-                # 기타 에러는 즉시 예외
-                r.raise_for_status()
             except Exception as e:
-                self._p(f"⚠️ 모델 {model} 실패: {e}")
                 last_err = str(e)
                 continue
         raise RuntimeError(f"모든 모델 실패. 마지막 오류: {last_err}")
+
     # -----------------------------------------
     # 🔹 추가: Monte Carlo Dropout 기반 불확실성 추정
     # -----------------------------------------
@@ -612,45 +596,45 @@ class BaseAgent:
         """검증 데이터로 성능 평가"""
         if ticker is None:
             ticker = self.ticker
-            
+
         # 데이터 로드
         X, y, feature_cols = load_dataset(ticker, agent_id=self.agent_id, save_dir=self.data_dir)
-        
+
         # 시계열 분할 (80% 훈련, 20% 검증)
         split_idx = int(len(X) * 0.8)
         X_val = X[split_idx:]
         y_val = y[split_idx:]
-        
+
         # 스케일러 로드
         self.scaler.load(ticker)
-        
+
         # 검증 데이터 예측
         predictions = []
         actual_returns = []
-        
+
         for i in range(len(X_val)):
             X_input = X_val[i:i+1]
             X_tensor = torch.tensor(X_input, dtype=torch.float32)
-            
+
             # 예측
             with torch.no_grad():
                 pred_return = self(X_tensor).item()
                 predictions.append(pred_return)
                 actual_returns.append(y_val[i, 0])
-        
+
         predictions = np.array(predictions)
         actual_returns = np.array(actual_returns)
-        
+
         # 성능 지표 계산
         mae = np.mean(np.abs(predictions - actual_returns))
         rmse = np.sqrt(np.mean((predictions - actual_returns) ** 2))
         correlation = np.corrcoef(predictions, actual_returns)[0, 1]
-        
+
         # 방향 정확도
         pred_direction = np.sign(predictions)
         actual_direction = np.sign(actual_returns)
         direction_accuracy = np.mean(pred_direction == actual_direction) * 100
-        
+
         return {
             'mae': mae,
             'rmse': rmse,
@@ -707,54 +691,54 @@ class DataScaler:
                 y_pred = np.array(y_pred)
             return self.y_scaler.inverse_transform(y_pred.reshape(-1, 1)).flatten()
         return y_pred
-    
+
     def convert_return_to_price(self, return_rate, current_price):
         """상승/하락율을 실제 가격으로 변환"""
         return current_price * (1 + return_rate)
-    
+
     def evaluate(self, ticker: str = None):
         """검증 데이터로 성능 평가"""
         if ticker is None:
             ticker = self.ticker
-            
+
         # 데이터 로드
         X, y, feature_cols = load_dataset(ticker, agent_id=self.agent_id, save_dir=self.data_dir)
-        
+
         # 시계열 분할 (80% 훈련, 20% 검증)
         split_idx = int(len(X) * 0.8)
         X_val = X[split_idx:]
         y_val = y[split_idx:]
-        
+
         # 스케일러 로드
         self.scaler.load(ticker)
-        
+
         # 검증 데이터 예측
         predictions = []
         actual_returns = []
-        
+
         for i in range(len(X_val)):
             X_input = X_val[i:i+1]
             X_tensor = torch.tensor(X_input, dtype=torch.float32)
-            
+
             # 예측
             with torch.no_grad():
                 pred_return = self(X_tensor).item()
                 predictions.append(pred_return)
                 actual_returns.append(y_val[i, 0])
-        
+
         predictions = np.array(predictions)
         actual_returns = np.array(actual_returns)
-        
+
         # 성능 지표 계산
         mae = np.mean(np.abs(predictions - actual_returns))
         rmse = np.sqrt(np.mean((predictions - actual_returns) ** 2))
         correlation = np.corrcoef(predictions, actual_returns)[0, 1]
-        
+
         # 방향 정확도
         pred_direction = np.sign(predictions)
         actual_direction = np.sign(actual_returns)
         direction_accuracy = np.mean(pred_direction == actual_direction) * 100
-        
+
         return {
             'mae': mae,
             'rmse': rmse,

@@ -1,30 +1,128 @@
 import json
-import os
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
+import requests
 import shap
-import tensorflow as tf
-from shap.benchmark.experiments import total_done
-from tensorflow.keras.models import load_model
 from openai import OpenAI
-from datetime import datetime
-import joblib
 
-from agents.dump import CAPSTONE_OPENAI_API
-from agents.macro_agent import MacroPredictor
-from debate_ver3_tmp.agents.base_agent import Opinion, StockData, Rebuttal
-from macro_sub import MacroSentimentAgent
+from agents.dump_keys import CAPSTONE_OPENAI_API
 from typing import Dict, List, Optional, Literal, Tuple
 from collections import defaultdict
+
+# -----------------------------
+# 데이터 구조 정의
+# -----------------------------
+@dataclass
+class Target:
+    """예측 목표값 + 불확실성 정보 포함
+    - next_close: 다음 거래일 종가 예측치
+    - uncertainty: Monte Carlo Dropout 기반 예측 표준편차(σ)
+    - confidence: 모델 신뢰도 β (정규화된 신뢰도; 선택적)
+    """
+    next_close: float
+    uncertainty: Optional[float] = None
+    confidence: Optional[float] = None
+    feature_cols: Optional[List[str]] = None
+    importances: Optional[List[float]] = None
+
+@dataclass
+class Opinion:
+    agent_id: str
+    target: Target
+    reason: str
+
+@dataclass
+class Rebuttal:
+    from_agent_id: str
+    to_agent_id: str
+    stance: Literal["REBUT", "SUPPORT"]
+    message: str
+
+@dataclass
+class RoundLog:
+    round_no: int
+    opinions: List[Opinion]
+    rebuttals: List[Rebuttal]
+    summary: Dict[str, Target]
+
+@dataclass
+class StockData:
+    agent_id: str = ""
+    ticker: str = ""
+    X: Optional[np.ndarray] = None
+    y: Optional[np.ndarray] = None
+    feature_cols: Optional[List[str]] = None
+    last_price: Optional[float] = None
+    technical: Optional[Dict] = None
+
+    def __post_init__(self):
+        if self.last_price is None:
+            self.last_price = 100.0
 
 
 # ==============================================================
 # 1️⃣ LLM 기반 설명 모듈 (확장형)
 # ==============================================================
 class LLMExplainer:
-    def __init__(self, model_name="gpt-4o-mini"):
+    OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+
+    def __init__(self, model_name="gpt-4o-mini",
+                 model: Optional[str] = None,
+                 preferred_models: Optional[List[str]] = None,
+                 temperature: float = 0.2,
+                 verbose: bool = False,
+                 need_training: bool = True):
         self.client = OpenAI(api_key=CAPSTONE_OPENAI_API)
         self.model = model_name
+
+        self.agent_id = 'MacroSentiAgent'
+        self.temperature = temperature # Temperature 설정
+        self.verbose = verbose            # 디버깅 모드
+        self.need_training = need_training # 모델 학습 필요 여부
+        # 모델 폴백 우선순위
+        self.preferred_models = preferred_models or ["gpt-5-mini", "gpt-4.1-mini"]
+        if model:
+            self.preferred_models = [model] + [
+                m for m in self.preferred_models if m != model
+            ]
+
+        # API 키 로드
+        self.api_key = CAPSTONE_OPENAI_API
+        if not self.api_key:
+            raise RuntimeError("환경변수 CAPSTONE_OPENAI_API가 설정되지 않았습니다.")
+
+        # 공통 헤더
+        self.headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        # 상태값
+        self.stockdata: Optional[StockData] = None
+        self.opinions: List[Opinion] = []
+        self.rebuttals: Dict[int, List[Rebuttal]] = defaultdict(list)
+
+        # JSON Schema
+        self.schema_obj_opinion = {
+            "type": "object",
+            "properties": {
+                "next_close": {"type": "number"},
+                "reason": {"type": "string"},
+            },
+            "required": ["next_close", "reason"],
+            "additionalProperties": False,
+        }
+        self.schema_obj_rebuttal = {
+            "type": "object",
+            "properties": {
+                "stance": {"type": "string", "enum": ["REBUT", "SUPPORT"]},
+                "message": {"type": "string"},
+            },
+            "required": ["stance", "message"],
+            "additionalProperties": False,
+        }
 
 
     def generate_explanation(
@@ -102,6 +200,59 @@ class LLMExplainer:
         reason = parsed.get("reason") or "(사유 생성 실패: 미입력)"
 
         return reason
+
+
+
+    #[base_agent.py]
+    def _msg(self, role: str, content: str) -> dict:
+        """OpenAI ChatCompletion용 메시지 구조 생성"""
+        if not isinstance(role, str) or not isinstance(content, str):
+            raise ValueError(f"_msg() 인자 오류: role={role}, content={type(content)}")
+        return {"role": role, "content": content}
+
+
+    #[base_agent.py] OpenAI API 호출
+    def _ask_with_fallback(self, msg_sys: dict, msg_user: dict, schema_obj: dict) -> dict:
+        """Chat Completions API 호출 (fallback 지원)"""
+        last_err = None
+        for model in self.preferred_models:
+            payload = {
+                "model": model,
+                "messages": [msg_sys, msg_user],
+                "temperature": self.temperature,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "Response",
+                        "schema": schema_obj
+                    }
+                }
+            }
+            try:
+                import requests
+                r = requests.post(self.OPENAI_URL, headers=self.headers, json=payload, timeout=120)
+                if r.ok:
+                    data = r.json()
+                    # 최신 Chat API의 응답 처리
+                    msg = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    if not msg:
+                        continue
+                    try:
+                        return json.loads(msg)
+                    except Exception:
+                        return {"reason": msg.strip()}
+                else:
+                    last_err = (r.status_code, r.text)
+                    continue
+            except Exception as e:
+                last_err = str(e)
+                continue
+        raise RuntimeError(f"모든 모델 실패. 마지막 오류: {last_err}")
+
+    def _p(self, msg: str):
+        if self.verbose:
+            print(f"[{self.agent_id}] {msg}")
+
 
 
 
@@ -307,147 +458,3 @@ class AttributionAnalyzer:
             print(f"[⚠️ Interaction SHAP Error]: {e}")
 
         return base_result, temporal_df, causal_df, interaction_df
-
-
-# ==============================================================
-# 3️⃣ 메인 예측 에이전트 (통합형)
-# ==============================================================
-class FundamentalForecastAgent:
-    def __init__(self,
-                 agent_id='MacroAgent',
-                 ticker='AAPL'
-                 ):
-        self.model_path = "models/multi_output_lstm_model.h5"
-        self.scaler_x_path = "models/scaler_X.pkl"
-        self.scaler_y_path = "models/scaler_y.pkl"
-
-        self.model = load_model(self.model_path, compile=False)
-        self.scaler_X = joblib.load(self.scaler_x_path)
-        self.scaler_y = joblib.load(self.scaler_y_path)
-        self.agent_id = agent_id
-        self.ticker = ticker
-
-
-        # 상태값
-        self.stockdata: Optional[StockData] = None
-        self.opinions: List[Opinion] = []
-        self.rebuttals: Dict[int, List[Rebuttal]] = defaultdict(list)
-
-    def run(self):
-        print("1️⃣ Collecting macro & stock features...")
-        explanation=None
-
-        # 예측 일자 설정
-        # base_date = datetime.today()
-        base_date = datetime(2025, 10, 11)
-
-        macro_agent = MacroSentimentAgent(base_date)
-        macro_agent.fetch_data()
-        feature_df = macro_agent.add_features()
-        feature_df = feature_df.tail(45).reset_index(drop=True)
-
-
-        # -------------------------------------------------
-        # (1) feature 순서 재정렬 (self.scaler_X 기준)
-        # -------------------------------------------------
-        expected_features = list(self.scaler_X.feature_names_in_)
-        for col in expected_features:
-            if col not in feature_df.columns:
-                feature_df[col] = 0
-        feature_df = feature_df.reindex(columns=expected_features, fill_value=0)
-
-        feature_names = feature_df.columns.tolist()
-
-
-        # -------------------------------
-        # 2️⃣ 예측 수행 및 역변환
-        # -------------------------------
-        predictor = MacroPredictor(
-            agent_id=self.agent_id,
-            base_date=base_date,
-            window=40,
-            tickers=[self.ticker]
-        )
-        pred_prices, target, X_scaled = predictor.run_prediction()
-
-        # ✅ numpy 변환 추가
-        if isinstance(X_scaled, pd.DataFrame):
-            X_scaled = X_scaled.to_numpy()
-
-        # ✅ LSTM 입력은 3D여야 함 (1, 40, num_features)
-        if X_scaled.ndim == 2:
-            X_scaled = np.expand_dims(X_scaled, axis=0)
-
-
-        # -------------------------------
-        # 3️⃣ SHAP 계산
-        # -------------------------------
-        # --- (run() 안의 안전 처리) ---
-        X_scaled = X_scaled.astype(np.float32)
-        X_scaled = X_scaled[:, :, :300]
-        feature_names = feature_names[:300]
-
-        print("\n3️⃣ Calculating feature importance...")
-        analyzer = AttributionAnalyzer(self.model)
-        importance_dict, temporal_df, causal_df, interaction_df = analyzer.run_all_shap(X_scaled, feature_names)
-
-        temporal_summary = temporal_df.head().to_dict(orient="records") if temporal_df is not None else []
-        causal_summary = causal_df.to_dict(orient="records") if causal_df is not None else []
-        if isinstance(interaction_df, pd.DataFrame):
-            interaction_summary = interaction_df.iloc[:5, :5].round(3).to_dict()
-        else:
-            interaction_summary = {}
-
-
-
-# -------------------------------
-        # 4️⃣ llm 생성
-        # -------------------------------
-        print("\n4️⃣ Generating explanation using LLM...")
-
-        llm  = LLMExplainer()
-        feature_summary = feature_df.tail(5).describe().round(3).to_dict()
-        explanation = llm.generate_explanation(feature_summary, pred_prices, importance_dict,
-                                               temporal_summary, causal_summary, interaction_summary)
-
-        print(f"\n================= pred_prices:{pred_prices} =================")
-
-        print("\n================= LLM Explanation =================")
-        print(explanation)
-        print("===================================================")
-
-        total_json = {
-            'agent_id' : self.agent_id,
-            'target' : target,
-            'reason' : explanation
-        }
-
-        stock_data = {
-            'temporal_summary' : temporal_summary,
-            'causal_summary' : causal_summary,
-            'interaction_summary' : interaction_summary
-
-        }
-
-        context = json.dumps({
-            "agent_id": self.agent_id,
-            "predicted_next_close": round(target.next_close, 3),
-            "uncertainty_sigma": round(target.uncertainty or 0.0, 4),
-            "confidence_beta": round(target.confidence or 0.0, 4),
-            "latest_data": str(stock_data)
-        }, ensure_ascii=False, indent=2)
-
-        reason = explanation
-
-        # 4) Opinion 기록/반환 (항상 최신 값 append)
-        self.opinions.append(Opinion(agent_id=self.agent_id, target=target, reason=reason))
-
-        # return total_json, pred_prices, explanation, importance_dict, temporal_df, causal_df, interaction_df
-        return total_json, self.opinions[-1]
-
-if __name__ == "__main__":
-    agent = FundamentalForecastAgent(agent_id = 'MacroAgent', ticker='AAPL')
-    # total_json, predictions, llm_explanation, shap_info, temporal_df, causal_df, interaction_df = agent.run()
-    total_json = agent.run()
-
-    print("total_json:", total_json)

@@ -7,7 +7,7 @@ import os
 import yfinance as yf
 from sklearn.preprocessing import MinMaxScaler
 from debate_ver4.config.agents import agents_info, dir_info
-from make_macro_model.model2_lstm_all_4 import macro_dataset
+from make_macro_model.macro_funcs import macro_dataset
 
 
 # Raw Dataset 생성

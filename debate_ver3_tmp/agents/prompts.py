@@ -14,7 +14,7 @@ OPINION_PROMPTS = {
         ),
         "user": "아래 컨텍스트를 참고하여 next_close와 reason을 JSON으로만 반환해라.\n{context}"
     },
-    "MacroAgent": {
+    "MacroSentiAgent": {
         "system": (
             "너는 금융 시장을 분석하는 인공지능 애널리스트이며, "
             "LSTM 기반의 시계열 모델 예측 결과를 해석해야 한다. "
@@ -24,47 +24,7 @@ OPINION_PROMPTS = {
             "이유에는 현재가 대비 예상 %변화와 기술분석 관점의 촉발 신호를 포함하라. "
             "반환은 JSON(next_close:number, reason:string)만 허용한다."
         ),
-        "user": """
-                      ### 1. 모델 예측 결과
-                      {predictions}
-
-                      ### 2. 종목별 주요 변수 중요도 (Base SHAP)
-                          {importance_summary}
-
-                      ### 3. 시점별 변수 영향 변화 (Temporal SHAP)
-                      {temporal_summary}
-
-                      ### 4. 변수별 인과 효과 (Causal SHAP)
-                          {causal_summary}
-
-                      ### 5. 변수 간 상호작용 행렬 (Interaction SHAP)
-                      {interaction_summary}
-
-                      ---
-                      위 데이터를 바탕으로 아래 내용을 체계적으로 작성하세요:
-
-            (1) **Temporal 분석:**
-                  - 어떤 변수들이 최근 시점으로 갈수록 영향력이 커졌는가?
-                    - 영향이 약해진 변수는 무엇인가?
-                    - 시간 흐름에 따라 피처 영향이 달라진 이유를 금융적 관점에서 설명.
-                    
-                                                        (2) **Causal 분석:**
-                    - causal_effect가 양(+)이면 주가 상승 요인, 음(-)이면 하락 요인으로 해석.
-                                                                     - 각 종목별로 어떤 피처가 인과적으로 강한 영향을 미쳤는가?
-                    - 예: “금리 상승(+) → 달러 강세 → 기술주 약세” 형태로 인과 구조를 제시.
-                    
-                                                                (3) **Interaction 분석:**
-                    - 상관도가 높은 피처 쌍을 찾아 그 상호작용을 해석.
-                                               - 예: “유가와 금리 동반 상승 → 비용 압박 증가 → AAPL/MSFT 부정적 영향”.
-                    
-                    (4) **종합 결론:**
-                    - 세 가지 관점을 통합하여 각 종목(AAPL, MSFT, NVDA)의 예측 방향과 원인을 설명.
-                                                                       - 특정 종목이 타 종목 대비 어떤 변수에 더 민감했는지 논리적으로 요약.
-                    
-                                                                                                             ---
-                    추가 맥락:
-                    최근 종가: {getattr(stock_data, 'last_price', 'N/A')}
-                    예측 종가: {getattr(target, 'next_close', 'N/A')}
+        "user": """아래 컨텍스트를 참고하여 next_close와 reason을 JSON으로만 반환해라.\n{context}
         """
     },
     "fundamental": {

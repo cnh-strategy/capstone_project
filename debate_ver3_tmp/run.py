@@ -14,7 +14,7 @@ import statistics
 from debate_ver3_tmp.agents.base_agent import Opinion, Target
 from config.agents import agents_info
 from debate_ver3_tmp.agents.technical_agent import MacroAgent
-from make_macro_model.model2_lstm_all_4 import make_lstm_macro_model
+from make_macro_model.macro_funcs import make_lstm_macro_model
 
 
 # ---------------------------------------------------------

@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pandas as pd
 import joblib
@@ -5,7 +7,10 @@ from datetime import datetime
 from tensorflow.keras.models import load_model
 
 from agents.macro_sub import get_std_pred, MakeDatasetMacro
+from agents.macro_llm import AttributionAnalyzer, LLMExplainer, Opinion
 from debate_ver3_tmp.agents.base_agent import BaseAgent, Target
+from debate_ver3_tmp.agents.prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
+
 from debate_ver3_tmp.config.agents import dir_info
 
 model_dir: str = dir_info["model_dir"]
@@ -56,7 +61,8 @@ class MacroPredictor(BaseAgent):
     # -------------------------------------------------------------
     def fetch_macro_data(self):
         print("[INFO] MacroSentimentAgent 데이터 수집 중...")
-        macro_agent = MakeDatasetMacro(base_date=self.base_date, window=self.window, target_tickers=self.tickers)
+        macro_agent = MakeDatasetMacro(base_date=self.base_date,
+                                       window=self.window, target_tickers=self.tickers)
         macro_agent.fetch_data()
         macro_agent.add_features()
         df = macro_agent.data.reset_index()
@@ -94,12 +100,12 @@ class MacroPredictor(BaseAgent):
         X_seq = np.expand_dims(X_scaled.tail(self.window).values, axis=0)
         print("[OK] 스케일링 및 시퀀스 변환 완료")
         self.X_scaled = X_scaled
-        return X_seq
+        return X_seq, X_scaled
 
     # -------------------------------------------------------------
     # 4. 예측 수행 및 결과 변환
     # -------------------------------------------------------------
-    def predictor(self, X_seq):
+    def m_predictor(self, X_seq):
         print("[INFO] 예측 수행 중...")
 
         # 1. 모델 예측
@@ -135,7 +141,8 @@ class MacroPredictor(BaseAgent):
             print(f"{t}: 마지막 종가={last_price:.2f} → 예측 종가={next_price:.2f} (예상 수익률 {pred_ret*100:.2f}%)")
 
         # 4. Monte Carlo Dropout 불확실성
-        mean_pred, std_pred = get_std_pred(self.model, X_seq, n_samples=30, scaler_y=self.scaler_y)
+        mean_pred, std_pred, confidence, predicted_price = get_std_pred(
+                            self.model, X_seq, n_samples=30, scaler_y=self.scaler_y)
         confidence = 1 / (std_pred + 1e-8)
 
         # 5. 결과 병합
@@ -170,9 +177,9 @@ class MacroPredictor(BaseAgent):
     def run_prediction(self):
         self.load_assets()               # 모델, 스케일러 등 불러오기
         self.fetch_macro_data()          # macro_df 불러오기
-        X_seq = self.prepare_features()  # 입력 시퀀스 준비
+        X_seq, X_scaled = self.prepare_features()  # 입력 시퀀스 준비
 
-        pred_prices, target = self.predictor(X_seq)
+        pred_prices, target = self.m_predictor(X_seq)
 
         # ✅ np.float64 → float 변환
         pred_prices = {k: float(v) for k, v in pred_prices.items()}
@@ -180,14 +187,114 @@ class MacroPredictor(BaseAgent):
         return pred_prices, target, self.X_scaled
 
 
+    #macro_reviewer_draft 역할
+    def macro_reviewer_draft(self, X_scaled, pred_prices, target):
+        # 예측 일자 설정
+        base_date = datetime.today()
 
-# -------------------------------------------------------------
-# 실행 예시
-# -------------------------------------------------------------
-if __name__ == "__main__":
-    predictor = MacroPredictor(
-        base_date=datetime(2025, 10, 11),
-        window=40,
-        tickers=["AAPL"]  # ✅ 리스트 형태로 단일 티커 지정
-    )
-    pred_prices, target_json, _ = predictor.run_prediction()
+        macro_agent = MakeDatasetMacro(base_date)
+        macro_agent.fetch_data()
+        feature_df = macro_agent.add_features()
+        feature_df = feature_df.tail(45).reset_index(drop=True)
+
+
+        # -------------------------------------------------
+        # (1) feature 순서 재정렬 (self.scaler_X 기준)
+        # -------------------------------------------------
+        scaler_X = joblib.load(self.scaler_X_path)
+
+        expected_features = list(scaler_X.feature_names_in_)
+        for col in expected_features:
+            if col not in feature_df.columns:
+                feature_df[col] = 0
+        feature_df = feature_df.reindex(columns=expected_features, fill_value=0)
+
+        feature_names = feature_df.columns.tolist()
+
+        # ✅ numpy 변환 추가
+
+        if isinstance(X_scaled, pd.DataFrame):
+            X_scaled = X_scaled.to_numpy()
+
+        # ✅ LSTM 입력은 3D여야 함 (1, 40, num_features)
+        if X_scaled.ndim == 2:
+            X_scaled = np.expand_dims(X_scaled, axis=0)
+
+
+        # -------------------------------
+        # 3️⃣ SHAP 계산
+        # -------------------------------
+        # --- (run() 안의 안전 처리) ---
+        X_scaled = X_scaled.astype(np.float32)
+        X_scaled = X_scaled[:, :, :300]
+        feature_names = feature_names[:300]
+
+        print("\n3️⃣ Calculating feature importance...")
+        analyzer = AttributionAnalyzer(self.model)
+        importance_dict, temporal_df, causal_df, interaction_df = analyzer.run_all_shap(X_scaled, feature_names)
+
+        temporal_summary = temporal_df.head().to_dict(orient="records") if temporal_df is not None else []
+        causal_summary = causal_df.to_dict(orient="records") if causal_df is not None else []
+        if isinstance(interaction_df, pd.DataFrame):
+            interaction_summary = interaction_df.iloc[:5, :5].round(3).to_dict()
+        else:
+            interaction_summary = {}
+
+
+        # -------------------------------
+        # 4️⃣ llm 생성
+        # -------------------------------
+        print("\n4️⃣ Generating explanation using LLM...")
+
+        llm  = LLMExplainer()
+        feature_summary = feature_df.tail(5).describe().round(3).to_dict()
+        explanation = llm.generate_explanation(feature_summary, pred_prices, importance_dict,
+                                               temporal_summary, causal_summary, interaction_summary)
+
+        print(f"\n================= pred_prices:{pred_prices} =================")
+
+        print("\n================= LLM Explanation =================")
+        print(explanation)
+        print("===================================================")
+
+        total_json = {
+            'agent_id' : self.agent_id,
+            'target' : target,
+            'reason' : explanation
+        }
+
+        stock_data = {
+            'temporal_summary' : temporal_summary,
+            'causal_summary' : causal_summary,
+            'interaction_summary' : interaction_summary
+
+        }
+
+        context = json.dumps({
+            "agent_id": self.agent_id,
+            "predicted_next_close": round(target.next_close, 3),
+            "uncertainty_sigma": round(target.uncertainty or 0.0, 4),
+            "confidence_beta": round(target.confidence or 0.0, 4),
+            "latest_data": str(stock_data)
+        }, ensure_ascii=False, indent=2)
+
+        prompt_set = OPINION_PROMPTS.get(self.agent_id, OPINION_PROMPTS[self.agent_id])
+
+        sys_text = prompt_set["system"]
+        user_text = prompt_set["user"].format(context=context)
+
+        parsed = self._ask_with_fallback(
+            self._msg("system", sys_text),
+            self._msg("user", user_text),
+            {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}
+        )
+
+        reason = parsed.get("reason", "(사유 생성 실패)")
+
+        # reason = explanation
+
+        # 4) Opinion 기록/반환 (항상 최신 값 append)
+        self.opinions.append(Opinion(agent_id=self.agent_id, target=target, reason=reason))
+
+
+        return total_json, self.opinions[-1]

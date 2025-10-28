@@ -9,7 +9,6 @@ from sklearn.preprocessing import MinMaxScaler
 
 from agents.macro_sub import MakeDatasetMacro
 from debate_ver3_tmp.config.agents import agents_info, dir_info
-from make_macro_model.model2_lstm_all_4 import make_lstm_macro_model
 
 
 # --------------------------------------------

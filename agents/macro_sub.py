@@ -1,19 +1,41 @@
 import os
-import numpy as np
+
 import pandas as pd
-import torch
 import yfinance as yf
 from datetime import datetime, timedelta
 import warnings
 
-from debate_ver3_tmp.config.agents import dir_info
+from debate_ver4.config.agents import dir_info
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 model_dir: str = dir_info["model_dir"]
 
 class MakeDatasetMacro:
+    """
+        # 예측 일자 설정
+        base_date = datetime.today()
+
+        macro_agent = MakeDatasetMacro(base_date)
+        macro_agent.fetch_data()
+        feature_df = macro_agent.add_features()
+        feature_df = feature_df.tail(45).reset_index(drop=True)
+        print(f"[OK] 매크로 데이터 수집 완료: {self.macro_df.shape}")
+
+        # -------------------------------------------------
+        # (1) feature 순서 재정렬 (self.scaler_X 기준)
+        # -------------------------------------------------
+        expected_features = list(self.scaler_X.feature_names_in_)
+        for col in expected_features:
+            if col not in feature_df.columns:
+                feature_df[col] = 0
+        feature_df = feature_df.reindex(columns=expected_features, fill_value=0)
+
+        feature_names = feature_df.columns.tolist()
+
+    """
     def __init__(self, base_date: datetime, window: int = 40, target_tickers=None):
+        self.macro_df = None
         self.macro_tickers = {
             "SPY": "SPY", "QQQ": "QQQ", "^GSPC": "^GSPC", "^DJI": "^DJI", "^IXIC": "^IXIC",
             "^TNX": "^TNX", "^IRX": "^IRX", "^FVX": "^FVX",
@@ -130,7 +152,7 @@ class MakeDatasetMacro:
         df.reset_index(inplace=True)
         self.data = df
         print(f"[MacroSentimentAgent] Feature engineering complete. Final shape: {df.shape}")
-        return df
+        return self.data
 
     # -------------------------------------------------------------
     # 3. 저장
@@ -151,20 +173,20 @@ class MakeDatasetMacro:
 # -------------------------------------------------------------
 def get_std_pred(model, X_seq, n_samples=30, scaler_y=None, current_price=None, stockdata=None):
     """
-    Monte Carlo Dropout 기반 불확실성 예측 (확장 버전)
+    Monte Carlo Dropout 기반 불확실성 예측 (TensorFlow / Keras 전용)
     --------------------------------------------------
     기능:
+    - Dropout을 training=True로 활성화하여 Monte Carlo 추론 수행
     - n회 반복 예측으로 평균(mean) / 표준편차(std) 계산
-    - torch.no_grad() 안정 처리
     - σ 기반 confidence 계산
     - scaler_y 역변환 지원
     - 현재가 반영한 예측 종가(predicted_price) 계산
     --------------------------------------------------
     Args:
-        model : PyTorch 모델
-        X_seq : 입력 시퀀스 (Tensor)
+        model : tf.keras.Model 또는 Sequential
+        X_seq : 입력 시퀀스 (numpy.ndarray)
         n_samples : Monte Carlo 반복 횟수
-        scaler_y : 출력 스케일러 (MinMax 또는 StandardScaler)
+        scaler_y : 출력 스케일러 (MinMaxScaler 또는 StandardScaler)
         current_price : 현재 종가 (float, optional)
         stockdata : StockData 객체 (last_price 가져올 수 있음)
     Returns:
@@ -173,28 +195,31 @@ def get_std_pred(model, X_seq, n_samples=30, scaler_y=None, current_price=None, 
         confidence (float)     : σ 기반 신뢰도 (0~1)
         predicted_price (float): 현재가 × (1 + 예측 수익률)
     """
+    import numpy as np
+    import tensorflow as tf
+
     preds = []
 
     # -------------------------------------------------
     # (1) 모델 예측 (Monte Carlo Dropout)
     # -------------------------------------------------
-    model.eval()  # 안정 모드
-    with torch.no_grad():
-        for _ in range(n_samples):
-            # training=True 설정으로 dropout 유지
-            y_pred = model(X_seq, training=True)
-            preds.append(y_pred.cpu().numpy().flatten())
+    for _ in range(n_samples):
+        # training=True 로 dropout 활성화
+        y_pred = model(X_seq, training=True)
+        if isinstance(y_pred, tf.Tensor):
+            y_pred = y_pred.numpy().flatten()
+        preds.append(y_pred)
 
-    preds = np.stack(preds)  # (samples, output_dim)
+    preds = np.stack(preds)  # (n_samples, output_dim)
     mean_pred = preds.mean(axis=0)
-    std_pred = np.abs(preds.std(axis=0))  # 항상 양수
+    std_pred = np.abs(preds.std(axis=0))
 
     # -------------------------------------------------
     # (2) σ 기반 confidence 계산
     # -------------------------------------------------
     sigma = float(std_pred[-1]) if std_pred.ndim > 0 else float(std_pred)
     sigma = max(sigma, 1e-6)
-    confidence = 1 / (1 + np.log1p(sigma))  # σ가 작을수록 1에 가까움
+    confidence = 1 / (1 + np.log1p(sigma))  # σ 작을수록 1에 가까움
 
     # -------------------------------------------------
     # (3) 스케일러 역변환
@@ -222,4 +247,5 @@ def get_std_pred(model, X_seq, n_samples=30, scaler_y=None, current_price=None, 
     # (5) 결과 반환
     # -------------------------------------------------
     return mean_pred, std_pred, confidence, predicted_price
+
 
