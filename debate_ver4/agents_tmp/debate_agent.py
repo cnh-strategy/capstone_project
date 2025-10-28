@@ -7,7 +7,7 @@ from debate_ver4.agents_tmp.sentimental_agent import SentimentalAgent
 from typing import Dict, List
 from collections import defaultdict
 from debate_ver4.core.data_set import build_dataset, load_dataset
-from make_macro_model.macro_funcs import macro_sercher, make_macro_model
+from make_macro_model.macro_funcs import macro_sercher
 
 
 class DebateAgent(BaseAgent):

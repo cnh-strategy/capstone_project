@@ -6,12 +6,12 @@ import joblib
 from datetime import datetime
 from tensorflow.keras.models import load_model
 
-from agents.macro_sub import get_std_pred, MakeDatasetMacro
-from agents.macro_llm import AttributionAnalyzer, LLMExplainer, Opinion
-from debate_ver3_tmp.agents.base_agent import BaseAgent, Target
-from debate_ver3_tmp.agents.prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
+from agents.macro_classes.macro_sub import get_std_pred, MakeDatasetMacro
+from agents.macro_classes.macro_llm import AttributionAnalyzer, LLMExplainer, Opinion
+from debate_ver4.agents_tmp.base_agent import BaseAgent, Target
+from debate_ver4.prompts import OPINION_PROMPTS
 
-from debate_ver3_tmp.config.agents import dir_info
+from debate_ver4.config.agents import dir_info
 
 model_dir: str = dir_info["model_dir"]
 data_dir: str = dir_info["data_dir"]
@@ -169,22 +169,6 @@ class MacroPredictor(BaseAgent):
 
 
         return pred_prices, target
-
-
-    # -------------------------------------------------------------
-    # 5. 전체 실행 파이프라인
-    # -------------------------------------------------------------
-    def run_prediction(self):
-        self.load_assets()               # 모델, 스케일러 등 불러오기
-        self.fetch_macro_data()          # macro_df 불러오기
-        X_seq, X_scaled = self.prepare_features()  # 입력 시퀀스 준비
-
-        pred_prices, target = self.m_predictor(X_seq)
-
-        # ✅ np.float64 → float 변환
-        pred_prices = {k: float(v) for k, v in pred_prices.items()}
-
-        return pred_prices, target, self.X_scaled
 
 
     #macro_reviewer_draft 역할

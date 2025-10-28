@@ -4,12 +4,14 @@ import requests
 import yfinance as yf
 from dotenv import load_dotenv
 
+from agents.dump_keys import CAPSTONE_OPENAI_API
+
 # .env 파일 로드 (환경변수 로드)
 load_dotenv()
 
 # 환경 변수에서 API Key 및 기타 기본 설정 불러오기
-OPENAI_API_KEY = os.getenv("CAPSTONE_OPENAI_API")
-OPENAI_URL = "https://api.openai.com/v1/responses"
+OPENAI_API_KEY = CAPSTONE_OPENAI_API
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 UA = "Mozilla/5.0"  # User-Agent 헤더
 
 # 베이스 에이전트 클래스 정의
@@ -25,7 +27,7 @@ class BaseAgent:
         use_price_snapshot: bool = True               # yfinance로 price_period 기간 가격 스탭샷(최고가, 최저가) 가져 
     ):
         # API 키 로드 및 유효성 검사
-        OPENAI_API_KEY = os.getenv("CAPSTONE_OPENAI_API")
+        OPENAI_API_KEY = CAPSTONE_OPENAI_API
         if not OPENAI_API_KEY:
             raise RuntimeError("환경변수 OPENAI_API_KEY가 필요합니다.")
 

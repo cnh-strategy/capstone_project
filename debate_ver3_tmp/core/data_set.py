@@ -5,9 +5,8 @@ import pandas as pd
 import numpy as np
 import os
 import yfinance as yf
-from sklearn.preprocessing import MinMaxScaler
 
-from agents.macro_sub import MakeDatasetMacro
+from agents.macro_classes.macro_sub import MakeDatasetMacro
 from debate_ver3_tmp.config.agents import agents_info, dir_info
 
 

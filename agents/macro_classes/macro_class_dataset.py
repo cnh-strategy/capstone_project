@@ -1,17 +1,14 @@
 import os
-
 import joblib
-import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from sklearn.metrics import mean_absolute_error
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.optimizers import Adam
 import yfinance as yf
 import pandas as pd
-from nasdaq_100 import nasdaq100_eng
+
+from agents.macro_classes.nasdaq_100 import nasdaq100_eng
 
 # 종목 리스트 (딕셔너리 값 = 티커)
 symbols = list(nasdaq100_eng.values())

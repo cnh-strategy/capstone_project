@@ -1,5 +1,4 @@
 import os
-
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
@@ -7,33 +6,16 @@ import warnings
 
 from debate_ver4.config.agents import dir_info
 
+'''
+예측을 위해 최신 매크로 데이터 수집하는 클래스
+몬테 카를로 생성 함수도 존재함
+'''
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 model_dir: str = dir_info["model_dir"]
 
 class MakeDatasetMacro:
-    """
-        # 예측 일자 설정
-        base_date = datetime.today()
-
-        macro_agent = MakeDatasetMacro(base_date)
-        macro_agent.fetch_data()
-        feature_df = macro_agent.add_features()
-        feature_df = feature_df.tail(45).reset_index(drop=True)
-        print(f"[OK] 매크로 데이터 수집 완료: {self.macro_df.shape}")
-
-        # -------------------------------------------------
-        # (1) feature 순서 재정렬 (self.scaler_X 기준)
-        # -------------------------------------------------
-        expected_features = list(self.scaler_X.feature_names_in_)
-        for col in expected_features:
-            if col not in feature_df.columns:
-                feature_df[col] = 0
-        feature_df = feature_df.reindex(columns=expected_features, fill_value=0)
-
-        feature_names = feature_df.columns.tolist()
-
-    """
     def __init__(self, base_date: datetime, window: int = 40, target_tickers=None):
         self.macro_df = None
         self.macro_tickers = {
@@ -154,17 +136,6 @@ class MakeDatasetMacro:
         print(f"[MacroSentimentAgent] Feature engineering complete. Final shape: {df.shape}")
         return self.data
 
-    # -------------------------------------------------------------
-    # 3. 저장
-    # -------------------------------------------------------------
-    def save_csv(self, output_dir="data"):
-        os.makedirs(output_dir, exist_ok=True)
-        path = os.path.join(output_dir, "macro_sentiment.csv")
-        # 날짜 타입 일관화
-        self.data["Date"] = pd.to_datetime(self.data["Date"])
-        # 인덱스 제거
-        self.data.to_csv(path, index=False)
-        print(f"[MacroSentimentAgent] Saved {path}")
 
 
 
