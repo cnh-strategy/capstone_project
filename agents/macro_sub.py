@@ -138,8 +138,12 @@ class MakeDatasetMacro:
     def save_csv(self, output_dir="data"):
         os.makedirs(output_dir, exist_ok=True)
         path = os.path.join(output_dir, "macro_sentiment.csv")
+        # 날짜 타입 일관화
+        self.data["Date"] = pd.to_datetime(self.data["Date"])
+        # 인덱스 제거
         self.data.to_csv(path, index=False)
         print(f"[MacroSentimentAgent] Saved {path}")
+
 
 
 # -------------------------------------------------------------

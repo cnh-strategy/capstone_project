@@ -20,10 +20,12 @@ def macro_dataset(ticker_name):
     X_train, X_test, y_train, y_test, X_seq, y_seq, feature_cols = macro_agent.make_dataset_seq(ticker_name)
     print(f"macro: 최종 학습 데이터셋 생성> {ticker_name}")
 
+    macro_agent.make_lstm_macro_model(ticker_name, X_train, y_train)
+    print(f"macro: 모델 생성> {ticker_name}")
 
 
-def macro_sercher(ticker_name):
-    macro_agent = MacroSentimentAgentDataset()
+
+def macro_sercher(macro_agent, ticker_name):
     X_train, X_test, y_train, y_test, X_seq, y_seq, feature_cols = macro_agent.make_dataset_seq(ticker_name)
     X_tensor, stockdata = macro_agent.macro_searcher_add_funs(X_seq, feature_cols)
     print(f"■ macro_sercher StockData 생성 완료 ({ticker_name})")

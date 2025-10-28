@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import joblib
 import pandas as pd
 import numpy as np
+from keras.src.saving import load_model
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.optimizers import Adam
@@ -21,23 +22,27 @@ from agents.dump import CAPSTONE_OPENAI_API
 from agents.macro_shap_llm import LLMExplainer, AttributionAnalyzer
 from agents.macro_sub import get_std_pred
 from debate_ver4.prompts import REBUTTAL_PROMPTS
-from debate_ver4.config.agents import dir_info, agents_info
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 # ============================================================
 # 공통 설정
 # ============================================================
-OUTPUT_DIR = "./data"
+PROJECT_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..")
+)
+OUTPUT_DIR = os.path.join(PROJECT_ROOT, "data", "processed")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-START_DATE = "2020-01-01"
-END_DATE = '2024-12-31'
 
-save_dir=dir_info["data_dir"]
+
+dir_info = {
+    "data_dir": os.path.join(PROJECT_ROOT, "data", "processed"),
+    "model_dir": os.path.join(PROJECT_ROOT, "models"),
+}
+save_dir = dir_info["data_dir"]
 model_dir: str = dir_info["model_dir"]
 data_dir: str = dir_info["data_dir"]
-
 
 
 @dataclass
@@ -102,6 +107,21 @@ class MacroSentimentAgentDataset:
                  ticker = None,
                  **kwargs
                  ):
+        self.merged_df = None
+        self.price_df = None
+        self.y_test = None
+        self.X_test = None
+        self.y_seq = None
+        self.X_seq = None
+        self.y_train = None
+        self.X_train = None
+        self.y_scaled = None
+        self.y_all = None
+        self.X_all = None
+        self.feature_cols = None
+        self.price_cols = None
+        self.macro_cols = None
+        self.macro_full = None
         self.temperature = None
         self.target = None
         self.opinions = None
@@ -118,6 +138,9 @@ class MacroSentimentAgentDataset:
         self.agent_id = 'MacroSentiAgent'
         self.ticker_name = ticker
 
+        self.model_path = f"{model_dir}/{ticker}_{agent_id}.h5"
+        self.scaler_X_path = f"{model_dir}/scaler_X.pkl"
+        self.scaler_y_path = f"{model_dir}/scaler_y.pkl"
 
         self.tickers = [self.ticker_name] or ["AAPL", "MSFT", "NVDA"]
         # self.target_tickers = target_tickers or ["AAPL", "MSFT", "NVDA"]
@@ -128,6 +151,9 @@ class MacroSentimentAgentDataset:
         self.macro_df = None
         self.pred_df = None
         self.X_scaled = None
+
+        self.start_date = "2020-01-01"
+        self.end_date = '2024-12-31'
 
         self.window_size = 40
         # 모델 폴백 우선순위
@@ -149,154 +175,354 @@ class MacroSentimentAgentDataset:
         self.rebuttals: Dict[int, List[Rebuttal]] = defaultdict(list)
 
     def fetch_data(self):
-        """다중 티커 데이터 다운로드"""
-        df = yf.download(
+        """매크로 및 개별 종목 데이터 수집"""
+        print(f"[INFO] Collecting macro features ({len(self.macro_tickers)} tickers)...")
+
+        # --------------------------------------------
+        # ① 매크로 자산 데이터 수집
+        # --------------------------------------------
+        df_macro = yf.download(
             tickers=list(self.macro_tickers.values()),
-            start=START_DATE,
-            end=END_DATE,
+            start=self.start_date,
+            end=self.end_date,
             interval="1d",
             group_by="ticker",
             auto_adjust=False
         )
 
-        # ✅ pandas 버전/구조 관계없이 일관된 포맷으로 변환
-        # MultiIndex 구조일 경우 (티커별로 OHLCV 존재)
-        if isinstance(df.columns, pd.MultiIndex):
-            # 구조를 (날짜, 티커, 값) 형태로 변환
-            df = df.stack(level=0)
-            df.index.names = ["Date", "Ticker"]
-            df.sort_index(inplace=True)
 
-            # 컬럼 이름 평탄화
-            df.columns = [col for col in df.columns]
-            df = df.unstack(level="Ticker")
-            df.columns = ["_".join(col).strip() for col in df.columns.values]
+        # MultiIndex → 단일 컬럼명 통일
+        if isinstance(df_macro.columns, pd.MultiIndex):
+            # yfinance 컬럼 구조가 (Ticker, Price) 또는 (Price, Ticker)인 경우 자동 처리
+            if df_macro.columns.names == ["Ticker", "Price"]:
+                df_macro.columns = [f"{t}_{col}" for t, col in df_macro.columns]
+            else:
+                df_macro.columns = [f"{col}_{t}" for col, t in df_macro.columns]
+
+            # ✅ flatten 이후 순서 보정 (Adj Close_SPY → SPY_Adj Close)
+            df_macro.columns = [
+                "_".join(reversed(c.split("_"))) if c.split("_")[0] in ["Adj", "Close", "Open", "High", "Low", "Volume"] else c
+                for c in df_macro.columns
+            ]
         else:
-            # 단일 인덱스 구조인 경우 그대로 사용
-            df.index.name = "Date"
+            df_macro.columns = [f"macro_{col}" for col in df_macro.columns]
 
-        self.data = df
-        print(f"[MacroSentimentAgent] Data shape: {df.shape}, Columns: {len(df.columns)}")
-        return df
+        df_macro.reset_index(inplace=True)
+        df_macro["Date"] = pd.to_datetime(df_macro["Date"])
+        print(f"[INFO] Macro columns after flatten: {df_macro.columns[:10].tolist()}")
+        print(f"[MacroSentimentAgent] Macro data loaded: {df_macro.shape}")
+
+        # --------------------------------------------
+        # ② 개별 종목 데이터 수집
+        # --------------------------------------------
+        stock_dfs = []
+        tickers = [self.ticker_name] if isinstance(self.ticker_name, str) else (self.ticker_name or ["NVDA"])
+        for t in tickers:
+            print(f"[INFO] Downloading {t} ...")
+            try:
+                df_t = yf.download(t, start=self.start_date, end=self.end_date, interval="1d", group_by="ticker")
+
+                # ✅ MultiIndex → 단일 인덱스로 변환
+                if isinstance(df_t.columns, pd.MultiIndex):
+                    df_t.columns = [f"{t}_{col}" for t, col in df_t.columns]
+                    print(f"[INFO] {t} columns after flatten:", df_t.columns.tolist())
+
+                df_t = df_t.rename(columns={
+                    f"{t}_Open": f"{t}_Open",
+                    f"{t}_High": f"{t}_High",
+                    f"{t}_Low": f"{t}_Low",
+                    f"{t}_Close": f"{t}_Close",
+                    f"{t}_Volume": f"{t}_Volume"
+                })
+
+                df_t.reset_index(inplace=True)
+
+                # ✅ 파생 컬럼 생성
+                df_t[f"{t}_ret1"] = df_t[f"{t}_Close"].pct_change()
+                df_t[f"{t}_ma5"] = df_t[f"{t}_Close"].rolling(5).mean()
+                df_t[f"{t}_ma10"] = df_t[f"{t}_Close"].rolling(10).mean()
+
+                stock_dfs.append(df_t)
+            except Exception as e:
+                print(f"[WARN] {t} download failed: {e}")
+
+        # --------------------------------------------
+        # ③ 병합 (outer join으로 공백일 포함)
+        # --------------------------------------------
+        merged_df = df_macro
+        for df_t in stock_dfs:
+            # ✅ 혹시라도 MultiIndex가 남아있으면 평탄화
+            if isinstance(df_t.columns, pd.MultiIndex):
+                df_t.columns = ["_".join([str(c) for c in col if c]) for col in df_t.columns]
+            merged_df = pd.merge(merged_df, df_t, on="Date", how="outer")
+
+
+        # --------------------------------------------
+        # ④ 결측치 및 정리
+        # --------------------------------------------
+        merged_df = merged_df.sort_values("Date")
+        merged_df = merged_df.fillna(method="ffill").fillna(method="bfill")
+        merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]  # 중복 제거
+        merged_df.reset_index(drop=True, inplace=True)
+
+        self.data = merged_df
+        print(f"[MacroSentimentAgent] Combined data shape: {merged_df.shape}")
+        return merged_df
+
 
     def add_features(self):
-        """수익률, 금리차, 위험심리 등 계산"""
-        df = self.data.copy()
+        """매크로 데이터 기반 피처 엔지니어링"""
+        try:
+            if self.data is None:
+                raise ValueError("[ERROR] add_features() 호출 전 fetch_data()를 실행해야 합니다.")
 
-        # 각 자산의 1일 수익률
-        for ticker in self.macro_tickers.values():
-            if (ticker, "Close") in df.columns:
-                df[(ticker, "ret_1d")] = df[(ticker, "Close")].pct_change()
+            df = self.data.copy()
+            df.index.name = "Date"
 
-        # 금리 스프레드 (10년 - 3개월)
-        if ("^TNX", "Close") in df.columns and ("^IRX", "Close") in df.columns:
-            df[("macro", "Yield_spread")] = df[("^TNX", "Close")] - df[("^IRX", "Close")]
+            # ✅ 이미 Date 컬럼이 있으면 reset_index()를 생략
+            if "Date" not in df.columns:
+                df.reset_index(inplace=True)
+            else:
+                df = df.copy()  # 그대로 유지
 
-        # 시장 위험심리 (SPY - DXY - VIX)
-        if ("SPY", "ret_1d") in df.columns and ("DX-Y.NYB", "ret_1d") in df.columns and ("^VIX", "ret_1d") in df.columns:
-            df[("macro", "Risk_Sentiment")] = (
-                    df[("SPY", "ret_1d")] - df[("DX-Y.NYB", "ret_1d")] - df[("^VIX", "ret_1d")]
-            )
+            # --------------------------------------------
+            # (1) 매크로 피처 생성
+            # --------------------------------------------
+            for ticker in self.macro_tickers.values():
+                col_name = f"{ticker}_Close"
+                if col_name in df.columns:
+                    df[f"{ticker}_ret_1d"] = df[col_name].pct_change()
 
-        self.data = df
-        return df
+            # 금리 스프레드
+            if "^TNX_Close" in df.columns and "^IRX_Close" in df.columns:
+                df["Yield_spread"] = df["^TNX_Close"] - df["^IRX_Close"]
+
+            # 위험심리 지표
+            if (
+                    "SPY_ret_1d" in df.columns
+                    and "DX-Y.NYB_ret_1d" in df.columns
+                    and "^VIX_ret_1d" in df.columns
+            ):
+                df["Risk_Sentiment"] = (
+                        df["SPY_ret_1d"] - df["DX-Y.NYB_ret_1d"] - df["^VIX_ret_1d"]
+                )
+
+            # --------------------------------------------
+            # (2) 결측치 처리
+            # --------------------------------------------
+            df = df.fillna(method="ffill").fillna(method="bfill")
+
+            # --------------------------------------------
+            # (3) 피처 순서 정렬 (스케일러 기준 정렬 제거)
+            # --------------------------------------------
+            print("[INFO] feature order sync skipped (manual override)")
+            df = df.reindex(sorted(df.columns), axis=1)
+
+            # --------------------------------------------
+            # (4) reset_index() 중복 제거 — 기존 코드 수정
+            # --------------------------------------------
+            # 기존 코드에서는 여기서 또 reset_index()를 실행했지만,
+            # 이미 Date 컬럼이 있을 경우 중복 오류가 발생하므로 조건부로 수행
+            if "Date" not in df.columns:
+                df.reset_index(inplace=True)
+
+            # --------------------------------------------
+            # (5) 마무리
+            # --------------------------------------------
+            self.data = df
+            self.macro_df = df.copy()   # ✅ macro_predictor에서도 동일 데이터 참조
+            print(f"[MacroSentimentAgent] Feature engineering complete. Final shape: {df.shape}")
+            return df
+
+        except Exception as e:
+            print(f"[add_features]Error: {e}")
+
 
     def save_csv(self):
-        path = os.path.join(OUTPUT_DIR, "macro_data/macro_sentiment.csv")
+        path = os.path.join(OUTPUT_DIR, "macro_sentiment.csv")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         self.data.to_csv(path, index=True)
         print(f"[MacroSentimentAgent] Saved {path}")
 
 
+    # -------------------------------------------------------------
+    # 1. 티커별 종가 저장
+    # -------------------------------------------------------------
     def close_price_fetch(self, ticker_name):
-        # 여러 종목의 일별 종가 불러오기 (2020-01-01 ~ 2024-12-31)
+        """티커별 일별 종가 저장 (NVDA_Close 중복, MultiIndex 문제 완벽 방지)"""
+        print(f"[INFO] Fetching close prices for {ticker_name} ...")
+
         df_prices = yf.download(
-            ticker_name,
+            tickers=ticker_name,
             start="2020-01-01",
-            end="2025-01-03"
-        )["Close"]
+            end="2025-01-03",
+            group_by="ticker",
+            auto_adjust=False
+        )
 
-        # CSV 저장
-        df_prices.to_csv(f"data/macro_data/daily_closePrice_{ticker_name}.csv")
+        # (1) MultiIndex 구조 처리
+        if isinstance(df_prices.columns, pd.MultiIndex):
+            df_prices.columns = ["_".join(col).strip() for col in df_prices.columns.values]
+            close_cols = [c for c in df_prices.columns if "Close" in c]
+            if close_cols:
+                df_prices = df_prices[close_cols]
+                df_prices.columns = [f"{ticker_name}_Close" for _ in close_cols]
+            else:
+                raise KeyError(f"[ERROR] MultiIndex 구조에서 Close 컬럼을 찾을 수 없습니다: {df_prices.columns.tolist()}")
 
-        print("저장 완료:", df_prices.shape, "rows")
+        # (2) 단일 컬럼 구조
+        elif isinstance(df_prices, pd.DataFrame) and "Close" in df_prices.columns:
+            df_prices = df_prices[["Close"]].rename(columns={"Close": f"{ticker_name}_Close"})
 
-    # 주가와 매크로 데이터를 병합 + 최종 데이터셋 저장
+        # (3) Series 반환
+        elif isinstance(df_prices, pd.Series):
+            df_prices = df_prices.to_frame(name=f"{ticker_name}_Close")
+
+        else:
+            raise KeyError(f"[ERROR] Close 컬럼을 찾을 수 없습니다: {df_prices.columns.tolist()}")
+
+        # 날짜 컬럼 확보
+        if "Date" not in df_prices.columns:
+            df_prices.reset_index(inplace=True)
+            if "index" in df_prices.columns:
+                df_prices.rename(columns={"index": "Date"}, inplace=True)
+
+        # 중복 컬럼 정리
+        df_prices = df_prices.loc[:, ~df_prices.columns.duplicated()]
+        if "Date.1" in df_prices.columns:
+            df_prices = df_prices.drop(columns=["Date.1"])
+
+        # 저장
+        path = os.path.join(OUTPUT_DIR, f"daily_closePrice_{ticker_name}.csv")
+        if os.path.exists(path):
+            os.remove(path)
+
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        df_prices.to_csv(path, index=False)
+
+        print(f"✅ 저장 완료: {df_prices.shape} rows >> {path}")
+        return df_prices
+
+    # -------------------------------------------------------------
+    # 2. 매크로 + 주가 병합 데이터셋 생성
+    # -------------------------------------------------------------
     def make_dataset_seq(self, ticker_name):
         self.ticker_name = ticker_name
-        # -------------------------------------------------------------
-        # 1. 데이터 불러오기
-        # -------------------------------------------------------------
-        macro_df = pd.read_csv(f"data/macro_data/macro_sentiment.csv")
-        price_df = pd.read_csv(f"data/macro_data/daily_closePrice_{ticker_name}.csv")
+        print(f"[INFO] make_dataset_seq() 시작 — {ticker_name}")
 
-        macro_df['Date'] = pd.to_datetime(macro_df['Date'])
-        price_df['Date'] = pd.to_datetime(price_df['Date'])
+        macro_path = os.path.join(OUTPUT_DIR, "macro_sentiment.csv")
+        price_path = os.path.join(OUTPUT_DIR, f"daily_closePrice_{ticker_name}.csv")
+
+        # 파일 존재 검증
+        if not os.path.exists(macro_path):
+            raise FileNotFoundError(f"[ERROR] macro_sentiment.csv가 없습니다 → {macro_path}")
+        if not os.path.exists(price_path):
+            raise FileNotFoundError(f"[ERROR] {price_path} 파일이 없습니다. close_price_fetch('{ticker_name}') 실행 필요.")
+
+        # 파일 로드
+        self.macro_df = pd.read_csv(macro_path)
+        self.price_df = pd.read_csv(price_path)
+
+        # 중복 및 결측 처리
+        self.price_df = self.price_df.loc[:, ~self.price_df.columns.duplicated()]
+        for col in self.price_df.columns:
+            if col.endswith(".1"):
+                base_col = col.split(".")[0]
+                if base_col not in self.price_df.columns:
+                    self.price_df.rename(columns={col: base_col}, inplace=True)
+
+        # 날짜 정리
+        self.macro_df["Date"] = pd.to_datetime(self.macro_df["Date"])
+        self.price_df["Date"] = pd.to_datetime(self.price_df["Date"])
 
         # -------------------------------------------------------------
-        # 2. 매크로 피처 확장 (원본 + 변화율)
+        # 매크로 피처 확장
         # -------------------------------------------------------------
-        macro_features = [c for c in macro_df.columns if c != 'Date']
-        macro_ret = macro_df[macro_features].pct_change()
+        numeric_df = self.macro_df.select_dtypes(include=[np.number])
+        macro_features = [c for c in numeric_df.columns if c != "Date"]
+        macro_ret = numeric_df[macro_features].pct_change()
         macro_ret.columns = [f"{c}_ret" for c in macro_ret.columns]
-        macro_full = pd.concat([macro_df, macro_ret], axis=1)
-        macro_full = macro_full.replace([np.inf, -np.inf], np.nan).dropna(subset=['Date']).fillna(0)
+
+        self.macro_full = pd.concat([self.macro_df, macro_ret], axis=1)
+        self.macro_full = self.macro_full.replace([np.inf, -np.inf], np.nan).dropna(subset=["Date"]).fillna(0)
 
         # -------------------------------------------------------------
-        # 3. 주가 기반 피처 생성 (각 종목별)
+        # 주가 기반 피처 생성
         # -------------------------------------------------------------
-        target_ticker_list = ['AAPL', 'MSFT', 'NVDA']   # ← 이름을 맞춤
+        close_col = [c for c in self.price_df.columns if "Close" in c and ticker_name in c]
+        if not close_col:
+            close_col = [c for c in self.price_df.columns if "Close" in c]
+        if not close_col:
+            raise KeyError(f"[ERROR] {ticker_name} 종가 컬럼을 찾을 수 없습니다: {self.price_df.columns.tolist()}")
+        close_col = close_col[0]
 
-        if ticker_name in price_df.columns:
-            price_df[f"{ticker_name}_ret1"] = price_df[ticker_name].pct_change()
-            price_df[f"{ticker_name}_ma5"] = price_df[ticker_name].rolling(5).mean()
-            price_df[f"{ticker_name}_ma10"] = price_df[ticker_name].rolling(10).mean()
-        else:
-            print(f"[WARN] '{ticker_name}' column not found in price_df.columns: {price_df.columns.tolist()}")
-
-        price_df = price_df.fillna(method='bfill')
+        self.price_df[f"{ticker_name}_ret1"] = self.price_df[close_col].pct_change()
+        self.price_df[f"{ticker_name}_ma5"] = self.price_df[close_col].rolling(5).mean()
+        self.price_df[f"{ticker_name}_ma10"] = self.price_df[close_col].rolling(10).mean()
+        self.price_df = self.price_df.fillna(method="bfill")
 
         # -------------------------------------------------------------
-        # 4. 날짜 기준 병합
+        # 병합 수행
         # -------------------------------------------------------------
-        merged_df = pd.merge(price_df, macro_full, on='Date', how='inner').sort_values('Date').reset_index(drop=True)
+        print("[INFO] 병합 전 Date 일치화 중...")
+        self.macro_df["Date"] = pd.to_datetime(self.macro_df["Date"])
+        self.price_df["Date"] = pd.to_datetime(self.price_df["Date"])
+
+        merged_df = pd.merge(self.macro_df, self.price_df, on="Date", how="inner")
+        merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]  # 중복 제거
+        if "Date.1" in merged_df.columns:
+            merged_df.drop(columns=["Date.1"], inplace=True)
+        if merged_df.empty:
+            raise ValueError("[ERROR] macro_df와 price_df 간 공통 Date가 없습니다.")
+
+        # ✅ NVDA_Close_x/y 문제 해결
+        rename_map = {}
+        for c in merged_df.columns:
+            if c.endswith("_Close_x") or c.endswith("_Close_y"):
+                rename_map[c] = c.replace("_Close_x", "_Close").replace("_Close_y", "_Close")
+        merged_df.rename(columns=rename_map, inplace=True)
+
+        self.merged_df = merged_df
+
         print(f"[INFO] 병합 후 데이터 shape: {merged_df.shape}")
+        print(f"[DEBUG] NVDA 관련 컬럼: {[c for c in merged_df.columns if 'NVDA' in c]}")
 
         # -------------------------------------------------------------
-        # 5. Feature 선택
+        # Feature 구성
         # -------------------------------------------------------------
-        macro_cols = [c for c in macro_full.columns if c != 'Date']
-        price_cols = [c for c in merged_df.columns if any(t in c for t in target_ticker_list) and ('_ret' in c or '_ma' in c)]
-        feature_cols = macro_cols + price_cols
+        target_ticker_list = ["AAPL", "MSFT", "NVDA"]
+        self.macro_cols = [c for c in self.macro_full.columns if c != "Date"]
+        self.price_cols = [c for c in merged_df.columns if any(t in c for t in target_ticker_list) and ("_ret" in c or "_ma" in c)]
+        self.feature_cols = self.macro_cols + self.price_cols
 
-        X_all = merged_df[feature_cols]
-
-        # -------------------------------------------------------------
-        # 6. 입력 스케일링
-        # -------------------------------------------------------------
-        scaler_X = StandardScaler()
-        X_scaled = scaler_X.fit_transform(X_all)
-        X_scaled = pd.DataFrame(X_scaled, columns=feature_cols)
+        self.X_all = merged_df[self.feature_cols]
 
         # -------------------------------------------------------------
-        # 7. 타깃 (현재 ticker_name만 예측)
+        # 입력 스케일링
         # -------------------------------------------------------------
-        if ticker_name in merged_df.columns:
-            merged_df[f"{ticker_name}_target"] = merged_df[ticker_name].pct_change().shift(-1)
-            y_all = merged_df[[f"{ticker_name}_target"]].dropna().reset_index(drop=True)
-        else:
-            print(f"[WARN] '{ticker_name}' not found in merged_df.columns: {merged_df.columns.tolist()}")
-            return  # 혹은 raise Exception("Ticker not found in merged_df")
-
-        X_scaled = X_scaled.iloc[:len(y_all)]
+        self.scaler_X = StandardScaler()
+        self.X_scaled = pd.DataFrame(self.scaler_X.fit_transform(self.X_all), columns=self.feature_cols)
 
         # -------------------------------------------------------------
-        # 8. 출력 스케일링
+        # 타깃
         # -------------------------------------------------------------
-        scaler_y = MinMaxScaler(feature_range=(-1, 1))
-        y_scaled = scaler_y.fit_transform(y_all)
+        close_target = [c for c in merged_df.columns if f"{ticker_name}_Close" in c]
+        if not close_target:
+            raise KeyError(f"[ERROR] 타깃 종가 컬럼({ticker_name}_Close)이 없습니다: {merged_df.columns.tolist()}")
+        close_target = close_target[0]
+
+        merged_df[f"{ticker_name}_target"] = merged_df[close_target].pct_change().shift(-1)
+        self.y_all = merged_df[[f"{ticker_name}_target"]].dropna().reset_index(drop=True)
+        self.X_scaled = self.X_scaled.iloc[: len(self.y_all)]
 
         # -------------------------------------------------------------
-        # 9. 시퀀스 생성 함수
+        # 출력 스케일링
+        # -------------------------------------------------------------
+        self.scaler_y = MinMaxScaler(feature_range=(-1, 1))
+        self.y_scaled = self.scaler_y.fit_transform(self.y_all)
+
+        # -------------------------------------------------------------
+        # 시퀀스 생성
         # -------------------------------------------------------------
         def create_sequences(X, y, window=40):
             Xs, ys = [], []
@@ -305,26 +531,23 @@ class MacroSentimentAgentDataset:
                 ys.append(y[i + window])
             return np.array(Xs), np.array(ys)
 
-        # -------------------------------------------------------------
-        # 10. 시퀀스 변환
-        # -------------------------------------------------------------
-        X_seq, y_seq = create_sequences(X_scaled, y_scaled, window=40)
-        split_idx = int(len(X_seq) * 0.8)
-
-        X_train, X_test = X_seq[:split_idx], X_seq[split_idx:]
-        y_train, y_test = y_seq[:split_idx], y_seq[split_idx:]
-
+        self.X_seq, self.y_seq = create_sequences(self.X_scaled, self.y_scaled, window=40)
+        split_idx = int(len(self.X_seq) * 0.8)
+        self.X_train, self.X_test = self.X_seq[:split_idx], self.X_seq[split_idx:]
+        self.y_train, self.y_test = self.y_seq[:split_idx], self.y_seq[split_idx:]
 
         # -------------------------------------------------------------
-        # 11. 최종 데이터 셋 저장
+        # 데이터셋 저장
         # -------------------------------------------------------------
-        csv_path = os.path.join(save_dir, f"{ticker_name}_{self.agent_id}_dataset.csv")
+        csv_path = os.path.join(OUTPUT_DIR, f"{ticker_name}_{self.__class__.__name__}_dataset.csv")
+        os.makedirs(os.path.dirname(csv_path), exist_ok=True)
         merged_df.to_csv(csv_path, index=False)
+        print(f"[OK] 병합 완료 및 저장 → {csv_path}")
 
-        return X_train, X_test, y_train, y_test, X_seq, y_seq
+        return self.X_train, self.X_test, self.y_train, self.y_test, self.X_seq, self.y_seq, self.feature_cols
 
 
-    #StockData 및 X_tensor 생성 기능 (base_agent의 searcher 대응)
+
     def macro_searcher_add_funs(self, X_seq, feature_cols, agent_id=None):
         """
         searcher()의 마지막 단계와 동일한 기능:
@@ -383,41 +606,86 @@ class MacroSentimentAgentDataset:
 
 
     # 모델 생성
-    def make_lstm_macro_model(self, ticker_name, agent_id, X_train, y_train, scaler_X, scaler_y):
+    # -------------------------------------------------------------
+    # 모델 생성 및 학습
+    # -------------------------------------------------------------
+    def make_lstm_macro_model(self, ticker_name, X_train, y_train):
+        print(f'[make_lstm_macro_model] 시작: {ticker_name}')
+
         # -------------------------------------------------------------
-        # 11. 단일 아웃풋 LSTM 모델 정의
+        # 1. 스케일러 생성 및 스케일링
+        # -------------------------------------------------------------
+        print("[INFO] 스케일링 시작")
+        self.scaler_X = StandardScaler().fit(X_train.reshape(-1, X_train.shape[-1]))
+        self.scaler_y = StandardScaler().fit(y_train.reshape(-1, 1))
+
+        X_scaled = self.scaler_X.transform(X_train.reshape(-1, X_train.shape[-1]))
+        X_scaled = X_scaled.reshape(X_train.shape)
+        y_scaled = self.scaler_y.transform(y_train.reshape(-1, 1))
+
+        print(f"[INFO] X_scaled shape: {X_scaled.shape}, y_scaled shape: {y_scaled.shape}")
+
+        # -------------------------------------------------------------
+        # 2. LSTM 모델 정의
         # -------------------------------------------------------------
         self.model = Sequential([
-            LSTM(128, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
+            LSTM(128, return_sequences=True, input_shape=(X_scaled.shape[1], X_scaled.shape[2])),
             Dropout(0.3),
             LSTM(64, return_sequences=True),
             Dropout(0.3),
             LSTM(32, return_sequences=False),
             Dropout(0.2),
             Dense(32, activation='relu'),
-            Dense(1)  # 단일 종목 예측
+            Dense(1)
         ])
 
         optimizer = Adam(learning_rate=0.0005)
         self.model.compile(optimizer=optimizer, loss='mae')
 
         # -------------------------------------------------------------
-        # 12. 학습
+        # 3. 학습
         # -------------------------------------------------------------
+        print("[INFO] 모델 학습 시작...")
         history = self.model.fit(
-            X_train, y_train,
+            X_scaled, y_scaled,
             validation_split=0.1,
             epochs=60,
             batch_size=16,
             verbose=1
         )
 
+        # -------------------------------------------------------------
+        # 4. 모델 및 스케일러 저장
+        # -------------------------------------------------------------
+        model_path = os.path.join(model_dir, f"{ticker_name}_{self.agent_id}.h5")
+        scaler_X_path = os.path.join(model_dir, "scaler_X.pkl")
+        scaler_y_path = os.path.join(model_dir, "scaler_y.pkl")
 
-        # 전체 모델 저장
-        self.model.save(f"{model_dir}/{ticker_name}_{agent_id}.h5")
-        joblib.dump(scaler_X, f"{model_dir}/scaler_X.pkl")
-        joblib.dump(scaler_y, f"{model_dir}/scaler_y.pkl")
-        print(f"✅ {agent_id} model saved.\n✅ pretraining finished.\n")
+        os.makedirs(model_dir, exist_ok=True)
+        self.model.save(model_path)
+        joblib.dump(self.scaler_X, scaler_X_path)
+        joblib.dump(self.scaler_y, scaler_y_path)
+
+        print(f"✅ 모델 및 스케일러 저장 완료:")
+        print(f"   - Model: {model_path}")
+        print(f"   - Scaler X: {scaler_X_path}")
+        print(f"   - Scaler y: {scaler_y_path}")
+        print(f"✅ pretraining finished.\n")
+
+        return self.model
+
+
+
+
+    # -------------------------------------------------------------
+    # 1. 모델 및 스케일러 로드
+    # -------------------------------------------------------------
+    def load_assets(self):
+        print("[INFO] 모델 및 스케일러 로드 중...")
+        self.model = load_model(self.model_path, compile=False)
+        self.scaler_X = joblib.load(self.scaler_X_path)
+        self.scaler_y = joblib.load(self.scaler_y_path)
+        print("[OK] 모델 및 스케일러 로드 완료")
 
 
     #predict
@@ -425,16 +693,21 @@ class MacroSentimentAgentDataset:
         print("[INFO] 예측 수행 중...")
 
         # 1. 모델 예측
+        self.load_assets()
         pred_scaled = self.model.predict(X_seq)
         pred_inv = self.scaler_y.inverse_transform(pred_scaled)
 
         # 2. 종가 추출
         last_prices = {}
         for t in self.tickers:
-            close_candidates = [c for c in self.macro_df.columns
-                                if c.startswith(t) and not c.endswith("_ma5") and "ret" not in c]
+            close_candidates = [
+                c for c in self.macro_df.columns
+                if "Close" in c and (c.startswith(t) or c.endswith(t))
+            ]
             if not close_candidates:
-                raise ValueError(f"{t}의 종가 컬럼을 찾을 수 없습니다.")
+                raise ValueError(f"[ERROR] {t}의 종가 컬럼을 찾을 수 없습니다. "
+                                 f"현재 컬럼들: {self.macro_df.columns.tolist()}"
+                                 )
             last_prices[t] = self.macro_df[close_candidates[0]].iloc[-1]
 
         # 3. 예측 종가 및 수익률 계산

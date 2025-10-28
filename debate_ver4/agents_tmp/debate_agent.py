@@ -1,6 +1,5 @@
 from debate_ver4.agents_tmp.base_agent import BaseAgent, StockData, Target, Opinion, Rebuttal
 from debate_ver4.agents_tmp.technical_agent import TechnicalAgent
-from debate_ver4.agents_tmp.fundamental_agent import FundamentalAgent
 from debate_ver4.agents_tmp.sentimental_agent import SentimentalAgent
 from typing import Dict, List
 from collections import defaultdict
@@ -30,19 +29,21 @@ class DebateAgent(BaseAgent):
         for agent_id, agent in self.agents.items():
             # 데이터 로드
             if agent_id == 'MacroSentiAgent':
-                X = macro_sercher(ticker)
+                print(f"{agent_id}의 데이터 로드.. macro_sercher")
+                X = macro_sercher(agent, ticker)
             else:
                 X = agent.searcher(ticker)      # base_agent에 존재 - 리턴: X_tensor
 
             # 예측 수행
             if agent_id == 'MacroSentiAgent':
-                _, target = macro_predictor(X)
+                print(f"{agent_id}의 예측")
+                _, target = agent.macro_predictor(X)
             else:
                 target = agent.predict(X)      # base_agent에 존재 - 리턴: target
 
             # Opinion 생성 (LLM Reason 포함)
             if agent_id == 'MacroSentiAgent':
-                _, opinion = macro_reviewer_draft()
+                _, opinion = agent.macro_reviewer_draft()
             else:
                 opinion = agent.reviewer_draft(agent.stockdata, target)     # base_agent에 존재 - 리턴: 최신 오피니언
             opinions[agent_id] = opinion
@@ -119,10 +120,12 @@ class DebateAgent(BaseAgent):
 
         return round_revises
 
+    def run_dataset(self):      #테스트 후 삭제필요
+        build_dataset(self.ticker)
 
     def run(self):
         build_dataset(self.ticker)      #매크로는 MacroSentimentAgentDataset 활용 (함수:macro_dataset)
-        self.get_opinion(0) 
+        self.get_opinion(0, self.ticker)
 
         for round in range(1, self.rounds + 1):
             self.get_rebuttal(round)
