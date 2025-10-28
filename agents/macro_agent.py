@@ -1,4 +1,5 @@
 import json
+from dataclasses import asdict
 
 import numpy as np
 import pandas as pd
@@ -8,7 +9,7 @@ from tensorflow.keras.models import load_model
 
 from agents.macro_classes.macro_sub import get_std_pred, MakeDatasetMacro
 from agents.macro_classes.macro_llm import AttributionAnalyzer, LLMExplainer, Opinion
-from debate_ver4.agents_tmp.base_agent import BaseAgent, Target
+from debate_ver4.agents_tmp.base_agent import BaseAgent, Target, StockData
 from debate_ver4.prompts import OPINION_PROMPTS
 
 from debate_ver4.config.agents import dir_info
@@ -29,6 +30,7 @@ class MacroPredictor(BaseAgent):
                  ticker=None
                  ,agent_id='MacroAgent',
                  **kwargs):
+        self.window_size = None
         self.agent_id = agent_id
         BaseAgent.__init__(self, self.agent_id, **kwargs)
         self.model_path = f"{model_dir}/{ticker}_{agent_id}.h5"
@@ -39,6 +41,7 @@ class MacroPredictor(BaseAgent):
         self.tickers = [ticker] or ["AAPL", "MSFT", "NVDA"]
         # self.target_tickers = target_tickers or ["AAPL", "MSFT", "NVDA"]
 
+        self.ticker = ticker
         self.model = None
         self.scaler_X = None
         self.scaler_y = None
@@ -247,12 +250,32 @@ class MacroPredictor(BaseAgent):
             'reason' : explanation
         }
 
-        stock_data = {
-            'temporal_summary' : temporal_summary,
-            'causal_summary' : causal_summary,
-            'interaction_summary' : interaction_summary
+        stock_data = StockData(
+            agent_id=self.agent_id,
+            ticker=self.ticker,
+            last_price=0,
+            technical={
+                'feature_importance': {
+                    'feature_summary': feature_summary,
+                    'importance_dict': importance_dict,
+                    'temporal_summary': temporal_summary,
+                    'causal_summary': causal_summary,
+                    'interaction_summary': interaction_summary
+                },
+                'our_prediction': pred_prices,
+                'uncertainty': round(target.uncertainty or 0.0, 4),
+                'confidence': round(target.confidence or 0.0, 4)
+            }
+        )
 
-        }
+        # 1) 메시지 생성 (→ 여기서 ctx가 만들어짐)
+        sys_text, user_text = self._build_messages_opinion(stock_data, target)
+        msg_sys = self._msg("system", sys_text)
+        msg_user = self._msg("user",   user_text)
+
+        parsed = self._ask_with_fallback(msg_sys, msg_user, self.schema_obj_opinion)
+        prompt_set = OPINION_PROMPTS.get(self.agent_id, OPINION_PROMPTS[self.agent_id])
+
 
         context = json.dumps({
             "agent_id": self.agent_id,
@@ -262,10 +285,10 @@ class MacroPredictor(BaseAgent):
             "latest_data": str(stock_data)
         }, ensure_ascii=False, indent=2)
 
-        prompt_set = OPINION_PROMPTS.get(self.agent_id, OPINION_PROMPTS[self.agent_id])
-
         sys_text = prompt_set["system"]
         user_text = prompt_set["user"].format(context=context)
+        print(f"\n sys_text:{sys_text} \n")
+        print(f" user_text:{user_text} \n")
 
         parsed = self._ask_with_fallback(
             self._msg("system", sys_text),
@@ -282,3 +305,55 @@ class MacroPredictor(BaseAgent):
 
 
         return total_json, self.opinions[-1]
+
+
+    # LLM Reasoning 메시지
+    def _build_messages_opinion(self, stock_data, target):
+        """ LLM 프롬프트 메시지 구성 """
+        print(f"build messages opinion - {self.agent_id}")
+
+        #
+        agent_data = getattr(stock_data, "technical", None)
+        if not agent_data or not isinstance(agent_data, dict):
+            raise ValueError(f"{self.agent_id} 데이터 구조 오류: 'technical' dict형 데이터가 필요함")
+
+        # ✅ dataclass를 dict로 변환
+        stock_data_dict = asdict(stock_data)
+        feature_imp = getattr(stock_data, "feature_importance", {})
+
+        # ✅ context 구성
+        ctx = {
+            "agent_id": self.agent_id,
+            "ticker": stock_data_dict.get("ticker", "Unknown"),
+            "currency": stock_data_dict.get("currency", "USD"),
+            "last_price": stock_data_dict.get("last_price", None),
+            "our_prediction": float(target.next_close),
+            "uncertainty": float(target.uncertainty),
+            "confidence": float(target.confidence),
+
+            "feature_importance": {
+                "feature_summary": feature_imp.get("feature_summary", []),
+                "importance_dict": feature_imp.get("importance_dict", []),
+                "temporal_summary": feature_imp.get("temporal_summary", []),
+                "causal_summary": feature_imp.get("causal_summary", []),
+                "interaction_summary": feature_imp.get("interaction_summary", {}),
+            },
+        }
+
+        print(f"\n ctx:{ctx} \n")
+
+        # 각 컬럼별 최근 시계열 그대로 포함
+        # (최근 7~14일 정도면 LLM이 이해 가능한 범위)
+        for col, values in agent_data.items():
+            if isinstance(values, (list, tuple)):
+                ctx[col] = values[self.window_size:]  # 최근 14일치 전체 시계열
+            else:
+                ctx[col] = [values]
+
+        # 프롬프트 구성
+        system_text = OPINION_PROMPTS[self.agent_id]["system"]
+        user_text = OPINION_PROMPTS[self.agent_id]["user"].format(
+            context=json.dumps(ctx, ensure_ascii=False)
+        )
+
+        return system_text, user_text
