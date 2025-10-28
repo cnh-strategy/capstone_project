@@ -69,3 +69,8 @@ venv.bak/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+
+# 아연추가
+__pycache__/
+*.pyc
