@@ -23,6 +23,8 @@ class TechnicalAgent(BaseAgent, nn.Module):
         batch_size=agents_info["TechnicalAgent"]["batch_size"],
         **kwargs
     ):
+        # super().__init__(agent_id)  # ✅ 부모 초기화 필수
+
         BaseAgent.__init__(self, agent_id, **kwargs)
         nn.Module.__init__(self)
 
@@ -100,8 +102,19 @@ class TechnicalAgent(BaseAgent, nn.Module):
     def _build_messages_opinion(self, stock_data, target):
         """FundamentalAgent용 LLM 프롬프트 메시지 구성 (시계열 포함 버전)"""
 
-        agent_data = getattr(stock_data, self.agent_id, None)
-        if not agent_data or not isinstance(agent_data, dict):
+        # StockData 객체 또는 dict 형태 모두 대응
+        agent_data = None
+        if hasattr(stock_data, "X") and hasattr(stock_data, "feature_cols"):
+            # StockData 형태
+            agent_data = {
+                "features": stock_data.feature_cols,
+                "recent_data": stock_data.X[-5:].tolist() if hasattr(stock_data, "X") else []
+            }
+        elif hasattr(stock_data, self.agent_id):
+            # dict 형태
+            agent_data = getattr(stock_data, self.agent_id)
+
+        if not isinstance(agent_data, dict):
             raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
 
         # 기본 컨텍스트

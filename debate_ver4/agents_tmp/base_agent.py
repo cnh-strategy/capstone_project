@@ -122,7 +122,7 @@ class BaseAgent:
         # 상태값
         self.stockdata: Optional[StockData] = None
         self.opinions: List[Opinion] = []
-        self.rebuttals: Dict[int, List[Rebuttal]] = defaultdict(list)
+        self.rebuttals: List[Rebuttal] = []
 
         # JSON Schema
         self.schema_obj_opinion = {
@@ -163,6 +163,12 @@ class BaseAgent:
 
         # CSV에서 데이터셋 로드
         X, y, feature_cols = load_dataset(ticker, agent_id=self.agent_id, save_dir=self.data_dir)
+
+        # 🔹 window_size 자동 설정
+        if X.ndim == 3:
+            self.window_size = X.shape[1]
+        else:
+            self.window_size = 1  # fallback
 
         # StockData 인스턴스 생성해서 self.stockdata에 저장 (Load_csv_dataset 결과 반영)
         self.stockdata = StockData()
@@ -318,7 +324,7 @@ class BaseAgent:
         # 최신 오피니언 반환
         return self.opinions[-1]
 
-    def reviewer_rebut(self, my_opinion: Opinion, other_opinion: Opinion) -> Rebuttal:
+    def reviewer_rebut(self, my_opinion: Opinion, other_opinion: Opinion, round) -> Rebuttal:
         """LLM을 통해 상대 의견에 대한 반박/지지 생성"""
         prompt_set = REBUTTAL_PROMPTS.get(self.agent_id)
 
@@ -651,24 +657,43 @@ class DataScaler:
         self.x_scaler = agents_info[self.agent_id]["x_scaler"]
         self.y_scaler = agents_info[self.agent_id]["y_scaler"]
 
-    def fit_scalers(self, X_train, y_train):
+        # 🔹 문자열로 설정된 경우 실제 Scaler 객체로 변환
         ScalerMap = {
             "StandardScaler": StandardScaler,
             "MinMaxScaler": MinMaxScaler,
             "RobustScaler": RobustScaler,
             "None": None,
+            None: None,
         }
-        Sx = ScalerMap[self.x_scaler]
-        Sy = ScalerMap[self.y_scaler]
+        if isinstance(self.x_scaler, str):
+            self.x_scaler = ScalerMap.get(self.x_scaler, None)
+        if isinstance(self.y_scaler, str):
+            self.y_scaler = ScalerMap.get(self.y_scaler, None)
 
-        # ✅ 3D 입력 (samples, seq_len, features) → 2D로 변환
-        n_samples, seq_len, n_feats = X_train.shape
-        X_2d = X_train.reshape(-1, n_feats)
-        self.x_scaler = Sx().fit(X_2d) if Sx else None
-        self.y_scaler = Sy().fit(y_train.reshape(-1, 1)) if Sy else None
+        # 🔹 실제 객체로 초기화 (fit_scalers 전에 접근 방지)
+        self.x_scaler = self.x_scaler() if callable(self.x_scaler) else None
+        self.y_scaler = self.y_scaler() if callable(self.y_scaler) else None
+
+    def fit_scalers(self, X_train, y_train):
+        """훈련 데이터로 X/Y 스케일러를 학습"""
+        if X_train.ndim == 3:
+            n_samples, seq_len, n_feats = X_train.shape
+            X_2d = X_train.reshape(-1, n_feats)
+        else:
+            X_2d = X_train
+
+        # 🔹 X 스케일링
+        if self.x_scaler:
+            self.x_scaler.fit(X_2d)
+
+        # 🔹 y 스케일링
+        if y_train is not None and self.y_scaler:
+            y_train = np.array(y_train).reshape(-1, 1)
+            self.y_scaler.fit(y_train)
+
 
     def transform(self, X, y=None):
-        # ✅ 3D 입력 (samples, seq_len, features) → 2D로 변환
+        """입력 데이터 변환"""
         if X.ndim == 3:
             n_samples, seq_len, n_feats = X.shape
             X_2d = X.reshape(-1, n_feats)
@@ -685,12 +710,19 @@ class DataScaler:
 
 
     def inverse_y(self, y_pred):
-        if self.y_scaler:
-            # numpy 배열로 변환
-            if isinstance(y_pred, (list, tuple)):
-                y_pred = np.array(y_pred)
-            return self.y_scaler.inverse_transform(y_pred.reshape(-1, 1)).flatten()
-        return y_pred
+        """예측값 역정규화 (안전하게)"""
+        import numpy as np
+        if not hasattr(self, "y_scaler") or self.y_scaler is None:
+            print("[경고] y_scaler가 설정되지 않아 복원을 생략합니다.")
+            return y_pred
+        if isinstance(self.y_scaler, str) or not hasattr(self.y_scaler, "inverse_transform"):
+            print(f"[경고] y_scaler가 비정상 상태({type(self.y_scaler)}). 복원 없이 반환.")
+            return y_pred
+
+        if isinstance(y_pred, (list, tuple)):
+            y_pred = np.array(y_pred)
+        return self.y_scaler.inverse_transform(y_pred.reshape(-1, 1)).flatten()
+
 
     def convert_return_to_price(self, return_rate, current_price):
         """상승/하락율을 실제 가격으로 변환"""

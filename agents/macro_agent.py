@@ -28,17 +28,19 @@ class MacroPredictor(BaseAgent):
                  base_date=datetime.today(),
                  window=40,
                  ticker=None
-                 ,agent_id='MacroAgent',
+                 ,agent_id='MacroSentiAgent',
                  **kwargs):
+        # super().__init__(agent_id)  # ✅ 부모 초기화 필수
+
         self.window_size = None
         self.agent_id = agent_id
         BaseAgent.__init__(self, self.agent_id, **kwargs)
-        self.model_path = f"{model_dir}/{ticker}_{agent_id}.h5"
-        self.scaler_X_path = f"{model_dir}/scaler_X.pkl"
-        self.scaler_y_path = f"{model_dir}/scaler_y.pkl"
+        self.model_path = f"agents/{model_dir}/{ticker}_{agent_id}.keras"
+        self.scaler_X_path = f"agents/{model_dir}/scaler_X.pkl"
+        self.scaler_y_path = f"agents/{model_dir}/scaler_y.pkl"
         self.base_date = base_date
         self.window = window
-        self.tickers = [ticker] or ["AAPL", "MSFT", "NVDA"]
+        self.tickers = [ticker] #or ["AAPL", "MSFT", "NVDA", "TSLA"]
         # self.target_tickers = target_tickers or ["AAPL", "MSFT", "NVDA"]
 
         self.ticker = ticker
@@ -54,6 +56,7 @@ class MacroPredictor(BaseAgent):
     # -------------------------------------------------------------
     def load_assets(self):
         print("[INFO] 모델 및 스케일러 로드 중...")
+        print(f"model_path: {self.model_path}")
         self.model = load_model(self.model_path, compile=False)
         self.scaler_X = joblib.load(self.scaler_X_path)
         self.scaler_y = joblib.load(self.scaler_y_path)
@@ -179,7 +182,8 @@ class MacroPredictor(BaseAgent):
         # 예측 일자 설정
         base_date = datetime.today()
 
-        macro_agent = MakeDatasetMacro(base_date)
+        macro_agent = MakeDatasetMacro(base_date=self.base_date,
+                                       window=self.window, target_tickers=self.tickers)
         macro_agent.fetch_data()
         feature_df = macro_agent.add_features()
         feature_df = feature_df.tail(45).reset_index(drop=True)
@@ -282,7 +286,14 @@ class MacroPredictor(BaseAgent):
             "predicted_next_close": round(target.next_close, 3),
             "uncertainty_sigma": round(target.uncertainty or 0.0, 4),
             "confidence_beta": round(target.confidence or 0.0, 4),
-            "latest_data": str(stock_data)
+            "latest_data": str(stock_data),
+            "feature_importance": {
+                'feature_summary': feature_summary,
+                'importance_dict': importance_dict,
+                'temporal_summary': temporal_summary,
+                'causal_summary': causal_summary,
+                'interaction_summary': interaction_summary
+            },
         }, ensure_ascii=False, indent=2)
 
         sys_text = prompt_set["system"]

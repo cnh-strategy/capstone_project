@@ -1,6 +1,8 @@
 import os
 import joblib
 import numpy as np
+from keras import Input
+from keras.src.saving.saving_api import save_model
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
@@ -60,7 +62,7 @@ class MacroAData:
 
         self.agent_id = 'MacroSentiAgent'
         self.ticker=ticker
-        self.model_path = f"{model_dir}/{self.ticker}_{self.agent_id}.h5"
+        self.model_path = f"{model_dir}/{self.ticker}_{self.agent_id}.keras"
         self.scaler_X_path = f"{model_dir}/scaler_X.pkl"
         self.scaler_y_path = f"{model_dir}/scaler_y.pkl"
 
@@ -115,6 +117,8 @@ class MacroAData:
             )
 
         self.data = df
+        print(f"[TRACE A] add_features() for self.data:{self.data}")
+        print(f"[TRACE A] add_features() for {self.ticker} columns:", df.columns.tolist()[:15])
         return df
 
     def save_csv(self):
@@ -231,7 +235,8 @@ class MacroAData:
         # 11. 멀티아웃풋 LSTM 모델 정의
         # -------------------------------------------------------------
         model = Sequential([
-            LSTM(128, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
+            Input(shape=(X_train.shape[1], X_train.shape[2])),  # 입력 정의
+            LSTM(128, return_sequences=True),
             Dropout(0.3),
             LSTM(64, return_sequences=True),
             Dropout(0.3),
@@ -264,6 +269,6 @@ class MacroAData:
 
 
         # 전체 모델 저장
-        model.save(f"{self.model_path}")
+        save_model(model, f"{self.model_path}")
         joblib.dump(scaler_X, f"{self.scaler_X_path}")
         joblib.dump(scaler_y, f"{self.scaler_y_path}")

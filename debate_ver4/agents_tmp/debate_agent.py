@@ -2,6 +2,8 @@ from datetime import datetime
 
 from agents.macro_agent import MacroPredictor
 from debate_ver4.agents_tmp.base_agent import BaseAgent
+from debate_ver4.agents_tmp.sentimental_agent import SentimentalAgent
+from debate_ver4.agents_tmp.technical_agent import TechnicalAgent
 from debate_ver4.core.data_set import build_dataset
 from agents.macro_classes.macro_funcs import macro_sercher
 
@@ -9,11 +11,11 @@ from agents.macro_classes.macro_funcs import macro_sercher
 class DebateAgent(BaseAgent):
     def __init__(self, rounds: int = 3, ticker: str = None):
         self.agents = {
-            # "TechnicalAgent": TechnicalAgent("TechnicalAgent", ticker=ticker),
+            "TechnicalAgent": TechnicalAgent("TechnicalAgent", ticker=ticker),
             "MacroSentiAgent": MacroPredictor(agent_id="MacroSentiAgent", ticker=ticker,
                                               base_date=datetime.today(),
                                               window=40),
-            # "SentimentalAgent": SentimentalAgent("SentimentalAgent", ticker=ticker),
+            "SentimentalAgent": SentimentalAgent("SentimentalAgent", ticker=ticker),
         }
         self.rounds = rounds
         self.opinions = {}
@@ -70,10 +72,12 @@ class DebateAgent(BaseAgent):
                 if other_agent_id == agent_id:
                     continue
 
-                if agent_id == 'MacroSentiAgent':
-                    rebuttal = macro_reviewer_rebut(my_opinion, other_opinion, round)
-                else:
-                    rebuttal = agent.reviewer_rebut(my_opinion, other_opinion, round)
+                rebuttal = agent.reviewer_rebut(my_opinion, other_opinion, round)
+                #
+                # if agent_id == 'MacroSentiAgent':
+                #     rebuttal = macro_reviewer_rebut(my_opinion, other_opinion, round)
+                # else:
+                #     rebuttal = agent.reviewer_rebut(my_opinion, other_opinion, round)
 
                 round_rebuttals.append(rebuttal)
 
@@ -99,20 +103,28 @@ class DebateAgent(BaseAgent):
             ]
             stock_data = getattr(agent, "stockdata", None)
 
-            if agent_id == 'MacroSentiAgent':
-                revise = macro_reviewer_revise(
-                my_opinion,
-                other_opinions,
-                rebuttals,
-                stock_data
+            revise = agent.reviewer_revise(
+                revised_target=my_opinion.target,
+                old_opinion=my_opinion,
+                rebuttals=rebuttals,
+                others=other_opinions,
+                X_input=getattr(stock_data, "X", None),
             )
-            else:
-                revise = agent.reviewer_revise(
-                    my_opinion,
-                    other_opinions,
-                    rebuttals,
-                    stock_data
-                )
+
+            # if agent_id == 'MacroSentiAgent':
+            #     revise = macro_reviewer_revise(
+            #     my_opinion,
+            #     other_opinions,
+            #     rebuttals,
+            #     stock_data
+            # )
+            # else:
+            #     revise = agent.reviewer_revise(
+            #         my_opinion,
+            #         other_opinions,
+            #         rebuttals,
+            #         stock_data
+            #     )
 
             # revise 결과 opinion 갱신
             round_revises[agent_id] = revise

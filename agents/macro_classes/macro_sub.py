@@ -26,7 +26,7 @@ class MakeDatasetMacro:
             "EURUSD=X": "EURUSD=X", "USDJPY=X": "USDJPY=X",
             "GC=F": "GC=F", "CL=F": "CL=F", "HG=F": "HG=F"
         }
-        self.target_tickers = target_tickers or ["AAPL", "MSFT", "NVDA"]
+        self.target_tickers = target_tickers #or ["AAPL", "MSFT", "NVDA"]
         self.base_date = base_date
         self.start_date = base_date - timedelta(days=window + 20)
         self.end_date = base_date
