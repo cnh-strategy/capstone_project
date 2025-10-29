@@ -63,8 +63,8 @@ class MacroAData:
         self.agent_id = 'MacroSentiAgent'
         self.ticker=ticker
         self.model_path = f"{model_dir}/{self.ticker}_{self.agent_id}.keras"
-        self.scaler_X_path = f"{model_dir}/scaler_X.pkl"
-        self.scaler_y_path = f"{model_dir}/scaler_y.pkl"
+        self.scaler_X_path = f"{model_dir}/{self.ticker}_scaler_X.pkl"
+        self.scaler_y_path = f"{model_dir}/{self.ticker}_scaler_y.pkl"
 
     def fetch_data(self):
         """다중 티커 데이터 다운로드"""
@@ -122,7 +122,7 @@ class MacroAData:
         return df
 
     def save_csv(self):
-        path = os.path.join(OUTPUT_DIR, "macro_sentiment.csv")
+        path = os.path.join(OUTPUT_DIR, f"{self.ticker}_macro_sentiment.csv")
         self.data.to_csv(path, index=True)
         print(f"[MacroSentimentAgent] Saved {path}")
 
@@ -148,7 +148,7 @@ class MacroAData:
         # 1. 데이터 불러오기
         # -------------------------------------------------------------
         PRICE_CSV_PATH = os.path.join(OUTPUT_DIR, "daily_closePrice.csv")
-        MACRO_CSV_PATH = os.path.join(OUTPUT_DIR, "macro_sentiment.csv")
+        MACRO_CSV_PATH = os.path.join(OUTPUT_DIR, f"{self.ticker}_macro_sentiment.csv")
 
         macro_df = pd.read_csv(MACRO_CSV_PATH)
         price_df = pd.read_csv(PRICE_CSV_PATH)
@@ -168,11 +168,11 @@ class MacroAData:
         # -------------------------------------------------------------
         # 3. 주가 기반 피처 생성 (각 종목별)
         # -------------------------------------------------------------
-        target_tickers = ['AAPL', 'MSFT', 'NVDA']
-        for ticker in target_tickers:
-            price_df[f"{ticker}_ret1"] = price_df[ticker].pct_change()
-            price_df[f"{ticker}_ma5"] = price_df[ticker].rolling(5).mean()
-            price_df[f"{ticker}_ma10"] = price_df[ticker].rolling(10).mean()
+        # target_tickers = ['AAPL', 'MSFT', 'NVDA']
+        for ticer in [self.ticker]:
+            price_df[f"{ticer}_ret1"] = price_df[ticer].pct_change()
+            price_df[f"{ticer}_ma5"] = price_df[ticer].rolling(5).mean()
+            price_df[f"{ticer}_ma10"] = price_df[ticer].rolling(10).mean()
         price_df = price_df.fillna(method='bfill')
 
         # -------------------------------------------------------------
@@ -185,7 +185,7 @@ class MacroAData:
         # 5. Feature 선택
         # -------------------------------------------------------------
         macro_cols = [c for c in macro_full.columns if c != 'Date']
-        price_cols = [c for c in self.merged_df.columns if any(t in c for t in target_tickers) and ('_ret' in c or '_ma' in c)]
+        price_cols = [c for c in self.merged_df.columns if any(t in c for t in [self.ticker]) and ('_ret' in c or '_ma' in c)]
         feature_cols = macro_cols + price_cols
 
         X_all = self.merged_df[feature_cols]
@@ -200,10 +200,10 @@ class MacroAData:
         # -------------------------------------------------------------
         # 7. 타깃 (3종목 동시 예측)
         # -------------------------------------------------------------
-        for t in target_tickers:
+        for t in [self.ticker]:
             self.merged_df[f"{t}_target"] = self.merged_df[t].pct_change().shift(-1)
 
-        y_all = self.merged_df[[f"{t}_target" for t in target_tickers]].dropna().reset_index(drop=True)
+        y_all = self.merged_df[[f"{t}_target" for t in [self.ticker]]].dropna().reset_index(drop=True)
         X_scaled = X_scaled.iloc[:len(y_all)]
 
         # -------------------------------------------------------------
@@ -243,7 +243,7 @@ class MacroAData:
             LSTM(32, return_sequences=False),
             Dropout(0.2),
             Dense(32, activation='relu'),
-            Dense(len(target_tickers))  # 3개 종목 동시 예측
+            Dense(len([self.ticker]))
         ])
 
         optimizer = Adam(learning_rate=0.0005)

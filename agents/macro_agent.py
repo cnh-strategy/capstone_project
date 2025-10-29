@@ -36,8 +36,8 @@ class MacroPredictor(BaseAgent):
         self.agent_id = agent_id
         BaseAgent.__init__(self, self.agent_id, **kwargs)
         self.model_path = f"agents/{model_dir}/{ticker}_{agent_id}.keras"
-        self.scaler_X_path = f"agents/{model_dir}/scaler_X.pkl"
-        self.scaler_y_path = f"agents/{model_dir}/scaler_y.pkl"
+        self.scaler_X_path = f"agents/{model_dir}/{ticker}_scaler_X.pkl"
+        self.scaler_y_path = f"agents/{model_dir}/{ticker}_scaler_y.pkl"
         self.base_date = base_date
         self.window = window
         self.tickers = [ticker] #or ["AAPL", "MSFT", "NVDA", "TSLA"]
