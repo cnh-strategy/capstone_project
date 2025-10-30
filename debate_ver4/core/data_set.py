@@ -82,8 +82,8 @@ def build_dataset(ticker: str = "TSLA", save_dir=dir_info["data_dir"]):
     # Agent별 데이터셋을 CSV로 저장
     for agent_id, _ in agents_info.items():
 
-        # MacroAgent 경우
-        if agent_id == 'MacroAgent':
+        # MacroSentiAgent 경우
+        if agent_id == 'MacroSentiAgent':
             macro_dataset(ticker)
             print(f"✅ {ticker} {agent_id} dataset saved to CSV")
 
