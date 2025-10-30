@@ -86,47 +86,47 @@ def build_dataset(ticker: str = "TSLA", save_dir=dir_info["data_dir"]):
         if agent_id == 'MacroSentiAgent':
             macro_dataset(ticker)
             print(f"✅ {ticker} {agent_id} dataset saved to CSV")
+        else:
+            # 사용 가능 한 피처만 선택
+            col = agents_info[agent_id]["data_cols"]
+            X = df[col]
 
-        # 사용 가능한 피처만 선택
-        col = agents_info[agent_id]["data_cols"]
-        X = df[col]
-        
-        # 타겟을 상승/하락율로 변경 (기존 종가 예측은 주석 처리)
-        # y = df["Close"].values.reshape(-1, 1)  # 기존: 절대 종가 예측
-        # 기존: NaN을 0으로 처리 (문제 원인 - 노이즈 증가)
-        # y = df["Close"].pct_change().shift(-1).fillna(0).values.reshape(-1, 1)
-        # 수정: NaN 값을 제거하여 더 깨끗한 데이터 사용
-        returns = df["Close"].pct_change().shift(-1)
-        valid_mask = ~returns.isna()
-        y = returns[valid_mask].values.reshape(-1, 1)
-        
-        # X 데이터도 동일한 마스크 적용
-        X = X[valid_mask]
+            # 타겟을 상승/하락율로 변경 (기존 종가 예측은 주석 처리)
+            # y = df["Close"].values.reshape(-1, 1)  # 기존: 절대 종가 예측
+            # 기존: NaN을 0으로 처리 (문제 원인 - 노이즈 증가)
+            # y = df["Close"].pct_change().shift(-1).fillna(0).values.reshape(-1, 1)
+            # 수정: NaN 값을 제거하여 더 깨끗한 데이터 사용
+            returns = df["Close"].pct_change().shift(-1)
+            valid_mask = ~returns.isna()
+            y = returns[valid_mask].values.reshape(-1, 1)
 
-        X_seq, y_seq = create_sequences(X, y, window_size=agents_info[agent_id]["window_size"])
-        samples, time_steps, features = X_seq.shape
-        print(f"[{agent_id}] X_seq: {X_seq.shape}, y_seq: {y_seq.shape}")
+            # X 데이터도 동일한 마스크 적용
+            X = X[valid_mask]
 
-        # 시퀀스 데이터를 평면화
-        flattened_data = []
-        for sample_idx in range(samples):
-            for time_idx in range(time_steps):
-                row = {
-                    'sample_id': sample_idx,
-                    'time_step': time_idx,
-                    'target': y_seq[sample_idx, 0] if time_idx == time_steps - 1 else np.nan,  # 해당 샘플의 타겟값 (예측 대상)
-                }
-                # 각 피처 추가
-                for feat_idx, feat_name in enumerate(col):
-                    row[feat_name] = X_seq[sample_idx, time_idx, feat_idx]
-                flattened_data.append(row)
-        
-        # DataFrame으로 변환하고 CSV 저장
-        agent_df = pd.DataFrame(flattened_data)
-        csv_path = os.path.join(save_dir, f"{ticker}_{agent_id}_dataset.csv")
-        agent_df.to_csv(csv_path, index=False)
-      
-        print(f"✅ {ticker} {agent_id} dataset saved to CSV ({len(X_seq)} samples, {len(col)} features)")
+            X_seq, y_seq = create_sequences(X, y, window_size=agents_info[agent_id]["window_size"])
+            samples, time_steps, features = X_seq.shape
+            print(f"[{agent_id}] X_seq: {X_seq.shape}, y_seq: {y_seq.shape}")
+
+            # 시퀀스 데이터를 평면화
+            flattened_data = []
+            for sample_idx in range(samples):
+                for time_idx in range(time_steps):
+                    row = {
+                        'sample_id': sample_idx,
+                        'time_step': time_idx,
+                        'target': y_seq[sample_idx, 0] if time_idx == time_steps - 1 else np.nan,  # 해당 샘플의 타겟값 (예측 대상)
+                    }
+                    # 각 피처 추가
+                    for feat_idx, feat_name in enumerate(col):
+                        row[feat_name] = X_seq[sample_idx, time_idx, feat_idx]
+                    flattened_data.append(row)
+
+            # DataFrame으로 변환하고 CSV 저장
+            agent_df = pd.DataFrame(flattened_data)
+            csv_path = os.path.join(save_dir, f"{ticker}_{agent_id}_dataset.csv")
+            agent_df.to_csv(csv_path, index=False)
+
+            print(f"✅ {ticker} {agent_id} dataset saved to CSV ({len(X_seq)} samples, {len(col)} features)")
 
 # --------------------------------------------
 # CSV 데이터 로드 함수들
