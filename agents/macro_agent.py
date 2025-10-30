@@ -283,7 +283,7 @@ class MacroPredictor(BaseAgent):
 
         context = json.dumps({
             "agent_id": self.agent_id,
-            "predicted_next_close": round(target.next_close, 3),
+            "next_close": round(target.next_close, 3),
             "uncertainty_sigma": round(target.uncertainty or 0.0, 4),
             "confidence_beta": round(target.confidence or 0.0, 4),
             "latest_data": str(stock_data),
@@ -338,7 +338,7 @@ class MacroPredictor(BaseAgent):
             "ticker": stock_data_dict.get("ticker", "Unknown"),
             "currency": stock_data_dict.get("currency", "USD"),
             "last_price": stock_data_dict.get("last_price", None),
-            "our_prediction": float(target.next_close),
+            "our_prediction": float(target.next_close),     #our_prediction = next_close
             "uncertainty": float(target.uncertainty),
             "confidence": float(target.confidence),
 
@@ -366,5 +366,6 @@ class MacroPredictor(BaseAgent):
         user_text = OPINION_PROMPTS[self.agent_id]["user"].format(
             context=json.dumps(ctx, ensure_ascii=False)
         )
+        # user_text = OPINION_PROMPTS[self.agent_id]["user"].format(**ctx)
 
         return system_text, user_text
