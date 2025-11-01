@@ -1,0 +1,31 @@
+{
+  "opinion": "보합~소폭 상승. 추세/감성 개선이나 변동성 유의.",
+  "evidence": {
+    "drivers": [
+      "(no-strong-driver)"
+    ],
+    "contradictions": [],
+    "data_notes": []
+  },
+  "uncertainty": {
+    "level": "medium",
+    "pi80": null
+  },
+  "attempts": [
+    {
+      "step": "초안",
+      "why": "trend/sentiment↑",
+      "edit": "volume_spike 반영"
+    },
+    {
+      "step": "검토",
+      "why": "volatility↑",
+      "edit": "확신도↓"
+    },
+    {
+      "step": "최종",
+      "why": "지표 균형",
+      "edit": "보합~상승 범위"
+    }
+  ]
+}

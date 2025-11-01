@@ -1,0 +1,11 @@
+[CONTEXT]
+{"agent_id": "SentimentalAgentV3", "ticker": "TSLA", "snapshot": {"asof_date": "2025-11-01", "last_price": 456.56, "currency": null, "window_size": 40, "feature_cols_preview": ["returns", "sentiment_mean", "sentiment_vol", "Close", "Volume", "Open", "High", "Low"]}, "prediction": {"pred_close": 431.7331, "pred_return": -0.0544, "uncertainty": {"std": 18.5639, "ci95": null, "pi80": null}, "confidence": 0.054, "calibrated_prob_up": 0.0, "mc_mean_next_close": null, "mc_std": null}, "price_features": {"lag_ret_1": 0.018, "lag_ret_5": 0.0083, "lag_ret_20": 0.0023, "rolling_vol_20": 0.0309, "trend_7d": 0.0315, "atr_14": 19.2414, "breakout_20": true, "zscore_close_20": 1.9217, "drawdown_20": 0.0}, "volume_features": {"vol_zscore_20": -0.9092, "turnover_rate": 0.7646, "volume_spike": false}, "news_features": {"today": 0.84, "trend_7d": 0.177, "vol_7d": 0.419, "shock_z": 2.753, "news_count_1d": 0, "news_count_7d": 0, "headline_top_keywords": [], "keyword_polarity": {}}, "regime_features": {"market_regime": null, "sector_momentum": null, "vix_bucket": null}, "explainability": null, "explain_helpers": null}
+
+[TASK]
+아래 스키마(JSON)로만 답하라:
+{"opinion": "상승/하락/보합 + 한 줄 근거", "evidence": {"drivers": ["ctx의 실제 키명을 포함한 근거(최대3)"], "contradictions": ["모순/리스크(최대2)"], "data_notes": ["플래그/제약(있으면)"]}, "uncertainty": {"level": "low|medium|high", "pi80": [0, 0]}, "attempts": [{"step": "초안", "why": "핵심 지표", "edit": "보완점"}, {"step": "검토", "why": "리스크 반영", "edit": "확신도 조정"}, {"step": "최종", "why": "균형 판단", "edit": "결론 확정"}]}
+
+[CONSTRAINTS]
+- drivers/contradictions에는 ctx의 실제 키명을 1개 이상 포함
+- surprise_proxy=true면 과잉반응 가능성 문구 포함
+- 장황한 chain 금지, 시도/수정은 요약만

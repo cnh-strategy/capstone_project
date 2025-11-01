@@ -1,6 +1,6 @@
 ﻿# debate_ver3/agents/base_agent.py
 # ===============================================================
-# BaseAgent: LLM 기반 공통 인터페이스
+# BaseAgent: LLM 기반 공통 인터페이스  (NaN/Inf Ultra-Safe v2025-10-31C)
 # ===============================================================
 from __future__ import annotations
 from dataclasses import dataclass
@@ -15,7 +15,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 import joblib
-import pandas as pd  # ✅ (2) SentimentalAgent 스냅샷 주입에 필요
+import pandas as pd  # ✅ SentimentalAgent 스냅샷/파생치 주입에 필요
 
 from debate_ver3.config.agents import agents_info, dir_info
 from debate_ver3.core.data_set import build_dataset, load_dataset
@@ -26,22 +26,28 @@ from debate_ver3.core.data_set import build_dataset, load_dataset
 # -----------------------------
 @dataclass
 class Target:
-    """예측 목표값 + 불확실성 정보 포함
-    - next_close: 다음 거래일 종가 예측치 (또는 수익률 기반 변환값)
-    - uncertainty: Monte Carlo Dropout 기반 예측 표준편차(σ)
-    - confidence: 모델 신뢰도 (정규화된 신뢰도; 선택적)
+    """예측 목표 + 불확실성
+    - next_close: 다음 거래일 종가 (항상 '가격' 단위)
+    - uncertainty: 표준편차 σ (가격 단위)
+    - confidence: 간이 신뢰도 (1/σ)
+    - pred_return: 예측 수익률 r (옵션)
+    - calibrated_prob_up: 상승확률 근사 (옵션)
     """
     next_close: float
     uncertainty: Optional[float] = None
     confidence: Optional[float] = None
     feature_cols: Optional[List[str]] = None
     importances: Optional[List[float]] = None
+    pred_return: Optional[float] = None
+    calibrated_prob_up: Optional[float] = None
+
 
 @dataclass
 class Opinion:
     agent_id: str
     target: Target
     reason: str
+
 
 @dataclass
 class Rebuttal:
@@ -50,12 +56,14 @@ class Rebuttal:
     stance: Literal["REBUT", "SUPPORT"]
     message: str
 
+
 @dataclass
 class RoundLog:
     round_no: int
     opinions: List[Opinion]
     rebuttals: List[Rebuttal]
     summary: Dict[str, Target]
+
 
 @dataclass
 class StockData:
@@ -94,11 +102,11 @@ class BaseAgent:
         ticker: str = "TSLA",
     ):
         load_dotenv()
-        self.agent_id = agent_id        # 에이전트 식별자
-        self.model = model              # (LLM) 모델 이름
-        self.temperature = temperature  # Temperature 설정
-        self.verbose = verbose          # 디버깅 모드
-        self.need_training = need_training  # 모델 학습 필요 여부
+        self.agent_id = agent_id
+        self.model = model
+        self.temperature = temperature
+        self.verbose = verbose
+        self.need_training = need_training
         self.data_dir = data_dir
         self.model_dir = model_dir
         self.ticker = ticker
@@ -111,7 +119,7 @@ class BaseAgent:
         if model:
             self.preferred_models = [model] + [m for m in self.preferred_models if m != model]
 
-        # API 키 로드
+        # API 키
         self.api_key = os.getenv("CAPSTONE_OPENAI_API")
         if not self.api_key:
             raise RuntimeError("환경변수 CAPSTONE_OPENAI_API가 설정되지 않았습니다.")
@@ -148,30 +156,84 @@ class BaseAgent:
         }
 
     # -----------------------------
+    # 내부 유틸: NaN/inf 안전 처리
+    # -----------------------------
+    @staticmethod
+    def _to_none_if_nan(v):
+        try:
+            if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
+                return None
+            if isinstance(v, (np.floating,)):
+                vf = float(v)
+                if np.isnan(vf) or np.isinf(vf):
+                    return None
+                return vf
+            return v
+        except Exception:
+            return None
+
+    @staticmethod
+    def _nan_to_num_array(a, nan=0.0):
+        return np.nan_to_num(a, nan=nan, posinf=nan, neginf=nan)
+
+    @staticmethod
+    def _finite(x, fb):
+        try:
+            xf = float(x)
+            return fb if (np.isnan(xf) or np.isinf(xf)) else xf
+        except Exception:
+            return fb
+
+    def _debug_check_model_nans(self):
+        """가중치 NaN/Inf 점검(디버그용)"""
+        try:
+            model = getattr(self, "model", None)
+            if isinstance(model, nn.Module) and (model is not self):
+                pass  # 그대로 사용
+            elif hasattr(self, "net") and isinstance(self.net, nn.Module):
+                model = self.net
+            else:
+                model = self
+
+            bad = []
+            for name, p in model.named_parameters():
+                if torch.isnan(p).any() or torch.isinf(p).any():
+                    bad.append(name)
+            if bad and self.verbose:
+                print("⚠️ Model has NaN/Inf in params:", bad)
+        except Exception:
+            pass
+
+    # -----------------------------
     # 데이터 수집/스냅샷
     # -----------------------------
     def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
         """
-        데이터 검색기
-        - CSV가 없을 경우 build_dataset()으로 자동 생성
-        - 마지막 window 시퀀스를 torch.tensor로 반환
-        - (2) SentimentalAgent 스냅샷 주입
+        - CSV 없으면 build_dataset()으로 생성
+        - 마지막 window를 torch.Tensor로 반환
+        - SentimentalAgent 스냅샷(마지막 시점 값) + 파생치(trend/vol/shock) 계산
         - feature_cols / asof_date 메타 저장
+        - ✅ NaN/Inf 원천 차단
         """
         if ticker is None:
             ticker = self.ticker
 
         dataset_path = os.path.join(self.data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
 
-        # 데이터셋이 존재하지 않으면 생성
+        # 데이터셋 생성
         if not os.path.exists(dataset_path) or rebuild:
             print(f"⚙️ {ticker} {self.agent_id} dataset not found. Building new dataset...")
             build_dataset(ticker=ticker, save_dir=self.data_dir)
 
-        # CSV에서 데이터셋 로드
+        # 로드
         X, y, feature_cols = load_dataset(ticker, agent_id=self.agent_id, save_dir=self.data_dir)
 
-        # StockData 인스턴스 생성/기록
+        # ✅ 원천 차단 (전 구간)
+        X = self._nan_to_num_array(X, nan=0.0)
+        if y is not None:
+            y = self._nan_to_num_array(y, nan=0.0)
+
+        # StockData
         self.stockdata = StockData()
         self.stockdata.agent_id = self.agent_id
         self.stockdata.ticker = ticker
@@ -179,39 +241,103 @@ class BaseAgent:
         self.stockdata.y = y
         self.stockdata.feature_cols = feature_cols
 
-        # 가장 최근 window 데이터만 사용
-        X_latest = X[-1:]  # shape: (1, window_size, n_features)
+        # 마지막 윈도우 → 다시 한 번 강제 정리
+        X_latest = X[-1:]  # (1, T, F)
+        X_latest = self._nan_to_num_array(X_latest, nan=0.0)
         X_tensor = torch.tensor(X_latest, dtype=torch.float32)
 
-        # 🔹 SentimentalAgent 스냅샷(마지막 시점 값으로 키:값 매핑)
-        #    ctx에서 stockdata.SentimentalAgent['news_sentiment'] 형태로 접근 가능하게 한다.
+        if self.verbose:
+            n_nans = int(np.isnan(X_latest).sum())
+            n_infs = int(np.isinf(X_latest).sum())
+            print(f"[searcher] X_latest NaN/Inf: ({n_nans}, {n_infs})")
+
+        # --- 스냅샷(마지막 시점의 feature: value) ---
         try:
-            df_last = pd.DataFrame(X_latest[0], columns=feature_cols)  # (T, F)
-            last_row_dict = df_last.iloc[-1].to_dict()                 # {feature: value}
+            df_last = pd.DataFrame(X_latest[0], columns=feature_cols)
+            df_last = (
+                df_last
+                .replace([np.inf, -np.inf], np.nan)
+                .ffill()            # ✅ fillna(method="ffill") → ffill()
+                .fillna(0.0)
+            )
+
+            last_row_dict = {
+                k: self._to_none_if_nan(float(v)) if isinstance(v, (int, float, np.floating)) else v
+                for k, v in df_last.iloc[-1].to_dict().items()
+            }
         except Exception:
             last_row_dict = {}
-        setattr(self.stockdata, "SentimentalAgent", last_row_dict)
 
-        # 🔹 메타 정보 저장
+        # --- sentiment 파생치(fallback) 계산 ---
+        try:
+            senti_idx = None
+            for cand in ["news_sentiment", "sentiment_mean"]:
+                if cand in feature_cols:
+                    senti_idx = feature_cols.index(cand)
+                    break
+
+            if senti_idx is not None and X_latest.shape[1] >= 1:
+                s = X_latest[0, :, senti_idx].astype(float)  # 이미 nan→0
+                # today
+                if last_row_dict.get("news_sentiment") is None and "sentiment_mean" in last_row_dict:
+                    last_row_dict["news_sentiment"] = last_row_dict["sentiment_mean"]
+                # 7일 변동성
+                if last_row_dict.get("sentiment_volatility_7d") is None and s.size >= 7:
+                    last_row_dict["sentiment_volatility_7d"] = float(np.std(s[-7:], ddof=1))
+                # 7일 추세
+                if last_row_dict.get("sentiment_trend_7d") is None and s.size >= 7:
+                    x = np.arange(7, dtype=float)
+                    y7 = s[-7:].astype(float)
+                    last_row_dict["sentiment_trend_7d"] = float(np.polyfit(x, y7, 1)[0])
+                # 30일 쇼크 z-score
+                if last_row_dict.get("sentiment_shock_score") is None:
+                    w = s[-30:] if s.size >= 30 else s
+                    if w.size >= 2:
+                        mu = float(np.mean(w)); sd = float(np.std(w, ddof=1)) + 1e-6
+                        last_row_dict["sentiment_shock_score"] = float((s[-1] - mu) / sd)
+
+            # 별칭 강제 매핑
+            def _alias(dst, *srcs):
+                if last_row_dict.get(dst) is None:
+                    for s in srcs:
+                        if s in last_row_dict and last_row_dict[s] is not None:
+                            last_row_dict[dst] = last_row_dict[s]; break
+
+            _alias("news_sentiment", "sentiment_mean", "finbert_t")
+            _alias("sentiment_trend_7d", "sentiment_trend", "finbert_tr30")
+            _alias("sentiment_volatility_7d", "sentiment_vol")
+            _alias("sentiment_shock_score", "news_shock")
+
+            last_row_dict.setdefault("news_count_1d", 0)
+            last_row_dict.setdefault("news_count_7d", 0)
+
+            # 최종 한 번 더 정리
+            for k, v in list(last_row_dict.items()):
+                if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
+                    last_row_dict[k] = None
+        except Exception as e:
+            if self.verbose:
+                print("[searcher] sentiment fallback calc skipped:", repr(e))
+
+        # 최종 스냅샷 주입
+        setattr(self.stockdata, "SentimentalAgent", last_row_dict)
         setattr(self.stockdata, "feature_cols", feature_cols)
         setattr(self.stockdata, "asof_date", str(pd.Timestamp.today().date()))
 
-        # 🔹 (3) yfinance 가드 포함: 최신 종가
+        # 최신 종가(yfinance)
         try:
-            data = yf.download(ticker, period="1d", interval="1d", progress=False)
+            data = yf.download(ticker, period="1d", interval="1d", progress=False, auto_adjust=True)
             if data is not None and not data.empty:
                 close_last = data["Close"].iloc[-1]
-                # numpy 타입이면 .item()으로 파이썬 float로
                 if hasattr(close_last, "item"):
                     close_last = close_last.item()
                 self.stockdata.last_price = float(close_last)
             else:
-                # 빈 데이터면 기존 값 유지 또는 기본값
                 self.stockdata.last_price = self.stockdata.last_price or 100.0
         except Exception:
             self.stockdata.last_price = self.stockdata.last_price or 100.0
 
-        # 🔹 (4) 최신 입력 캐시
+        # 캐시
         self._last_X = X_tensor
 
         return X_tensor
@@ -221,105 +347,187 @@ class BaseAgent:
     # -----------------------------
     def predict(self, X, n_samples: int = 30, current_price: float = None):
         """
-        Monte Carlo Dropout 기반 예측 + 불확실성 계산 (공통)
-        모든 Agent에서 사용 가능
+        Monte Carlo Dropout 기반 예측 + 불확실성
+        - output_type ∈ {'return','log_return','price'}
+        - 항상 '가격' 단위 next_close/uncertainty 반환
+        - pred_return, calibrated_prob_up 채움
+        - ✅ NaN/Inf 방어 로직(다단계 + 반환 직전 강제-유효화) 포함
         """
-        # (옵션) 저장된 가중치가 있으면 한번 로드 시도 (없으면 그냥 진행)
+        # (옵션) 가중치 로드 + NaN 파라미터 점검
         try:
             self.load_model()
         except Exception:
             pass
+        self._debug_check_model_nans()
 
-        # 1. 스케일러 로드
+        # 설정
+        cfg = agents_info.get(self.agent_id, {})
+        output_type   = str(cfg.get("output_type", "return"))   # 'return' | 'log_return' | 'price'
+        return_index  = int(cfg.get("return_index", -1))        # 다차원 출력 시 인덱스
+        has_prob_head = bool(cfg.get("has_prob_head", False))   # 별도 확률헤드
+
+        # 스케일러
         self.scaler.load(self.ticker)
+        if self.scaler.x_scaler is None and self.verbose:
+            self._p("⚠️ X scaler not loaded. Using raw features.")
+        if self.scaler.y_scaler is None and self.verbose:
+            self._p("ℹ️ Y scaler not loaded (inverse_y disabled).")
 
-        # 2. 입력 텐서 변환
+        # 입력 텐서 (강제 정리 → 스케일링 → 강제 정리)
         if isinstance(X, np.ndarray):
-            X_scaled, _ = self.scaler.transform(X)
+            X_np = self._nan_to_num_array(X, nan=0.0)
+            X_scaled, _ = self.scaler.transform(X_np)
+            X_scaled = self._nan_to_num_array(X_scaled, nan=0.0)
             X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
         elif isinstance(X, torch.Tensor):
-            X_tensor = X.float()
+            X_np = X.detach().cpu().numpy()
+            X_np = self._nan_to_num_array(X_np, nan=0.0)
+            X_scaled, _ = self.scaler.transform(X_np)
+            X_scaled = self._nan_to_num_array(X_scaled, nan=0.0)
+            X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
         else:
             raise TypeError(f"Unsupported input type: {type(X)}")
 
-        # 3. 모델 선택 (self.model 또는 self)
-        model = getattr(self, "model", None)
-        if model is None:
-            model = self  # 자식이 nn.Module 상속 시
-
+        # 모델
+        model = getattr(self, "model", None) or self
         if not hasattr(model, "parameters"):
-            raise AttributeError(f"{model} has no parameters()")
-
-        # 4. 디바이스 설정
+            # 문자열 LLM 모델명이 self.model에 있을 수 있으므로 방지
+            model = self
+        # 디바이스
         try:
             device = next(model.parameters()).device
         except StopIteration:
             device = torch.device("cpu")
-
         X_tensor = X_tensor.to(device)
 
-        # 5. Dropout 활성화 (Monte Carlo Dropout)
+        # MC Dropout
         model.train()
-
         preds = []
         with torch.no_grad():
             for _ in range(n_samples):
-                y_pred = model(X_tensor).cpu().numpy().flatten()
-                preds.append(y_pred)
+                y = model(X_tensor)  # (B, D) or (B, 1)
+                y = y.detach().cpu().numpy()
+                y = self._nan_to_num_array(y, nan=0.0)
+                preds.append(y)
+        preds = np.stack(preds, axis=0)  # (K, B, D)
 
-        preds = np.stack(preds)
-        mean_pred = preds.mean(axis=0)
-        std_pred = preds.std(axis=0)
+        # 배치=1 가정
+        pred_arr = preds[:, 0, :] if preds.ndim == 3 else preds[:, 0:1]  # (K, D)
+        if pred_arr.ndim == 2 and pred_arr.shape[1] > 1:
+            pred_main = pred_arr[:, return_index]                         # (K,)
+        else:
+            pred_main = pred_arr.reshape(-1)                              # (K,)
 
-        # 6. 정규화 복원 (상승/하락율 복원)
+        # 평균/표준편차 (모델 출력 단위, NaN 방지)
+        mean_pred = float(np.nanmean(pred_main)) if pred_main.size > 0 else 0.0
+        std_pred  = float(np.nanstd(pred_main, ddof=1) if pred_main.size > 1 else 0.0)
+        if not np.isfinite(mean_pred): mean_pred = 0.0
+        if not np.isfinite(std_pred):  std_pred  = 0.0
+
+        # y 스케일 역변환(필요시) → 역변환 후도 재가드
         if hasattr(self.scaler, "y_scaler") and self.scaler.y_scaler is not None:
-            mean_pred = self.scaler.inverse_y(mean_pred)
-            std_pred = self.scaler.inverse_y(std_pred)
+            mean_pred = float(self.scaler.inverse_y([mean_pred])[0])
+            std_pred  = float(self.scaler.inverse_y([std_pred])[0])
+            if not np.isfinite(mean_pred): mean_pred = 0.0
+            if not np.isfinite(std_pred):  std_pred  = 0.0
 
-        # 7. 상승/하락율을 실제 가격으로 변환
-        if current_price is None:
-            current_price = getattr(self.stockdata, "last_price", 100.0)
+        # 현재가
+        try:
+            if current_price is None:
+                current_price = float(getattr(self.stockdata, "last_price", 100.0) or 100.0)
+        except Exception:
+            current_price = 100.0
+        if not np.isfinite(current_price) or current_price <= 0:
+            current_price = 100.0
 
-        return_rate = float(mean_pred[-1])
-        predicted_price = (
-            self.scaler.convert_return_to_price(return_rate, current_price)
-            if hasattr(self.scaler, "convert_return_to_price")
-            else current_price * (1 + return_rate)
-        )
+        # 출력 타입별 가격/σ 계산
+        pred_return_for_record = None
+        if output_type == "price":
+            predicted_price = mean_pred
+            sigma_price = std_pred
+        elif output_type == "log_return":
+            r = np.expm1(mean_pred)                  # r = e^y - 1
+            if not np.isfinite(r): r = 0.0
+            predicted_price = current_price * (1.0 + float(r))
+            sigma_price = current_price * float(np.expm1(max(std_pred, 0.0)))
+            pred_return_for_record = float(r)
+        else:
+            r = mean_pred
+            if not np.isfinite(r): r = 0.0
+            predicted_price = current_price * (1.0 + float(r))
+            sigma_price = current_price * float(max(std_pred, 0.0))
+            pred_return_for_record = float(r)
 
-        # 간단 confidence (σ의 역수)
-        confidence = 1.0 / (std_pred + 1e-8)
+        # --- 단위 가드: 실수로 r를 price로 오인한 경우 자동 보정 ---
+        try:
+            if (predicted_price is not None) and (current_price is not None):
+                if predicted_price < 1.0 and current_price > 10.0:
+                    predicted_price = current_price * (1.0 + float(mean_pred))
+                    sigma_price = current_price * float(std_pred)
+        except Exception:
+            pass
+
+        # === 🔐 반환 직전 "강제-유효화"(핵심) ===
+        predicted_price = self._finite(predicted_price, float(current_price))
+        sigma_price     = abs(self._finite(sigma_price, 0.0))
+        confidence      = 1.0 / (abs(sigma_price) + 1e-8)
+        confidence      = self._finite(confidence, 0.0)
+
+        # 상승확률 근사
+        calibrated_prob_up = None
+        if has_prob_head:
+            pass
+        else:
+            if output_type == "price":
+                approx_r_samples = (pred_main - current_price) / max(current_price, 1e-8)
+            elif output_type == "log_return":
+                approx_r_samples = np.expm1(pred_main)
+            else:
+                approx_r_samples = pred_main
+            approx_r_samples = self._nan_to_num_array(approx_r_samples, nan=0.0)
+            calibrated_prob_up = float((approx_r_samples > 0).mean()) if approx_r_samples.size > 0 else None
+        if calibrated_prob_up is None or not (0.0 <= calibrated_prob_up <= 1.0):
+            calibrated_prob_up = 0.5
+
+
+        # 항상 pred_return 채우기 (price 출력인 경우 환산)
+        if pred_return_for_record is None and current_price:
+            pred_return_for_record = float(predicted_price / current_price - 1.0)
+        pred_return_for_record = self._finite(pred_return_for_record, 0.0)
+
+        if self.verbose:
+            print(f"[predict] mean_pred={mean_pred:.6f}, std_pred={std_pred:.6f}")
+            print(f"[predict] price={predicted_price:.6f}, sigma={sigma_price:.6f}, conf={confidence:.6f}, prob_up={calibrated_prob_up}")
 
         return Target(
-            next_close=float(predicted_price),
-            uncertainty=float(std_pred[-1]),
-            confidence=float(confidence[-1]),
+            next_close=predicted_price,
+            uncertainty=sigma_price,
+            confidence=confidence,
+            feature_cols=getattr(self.stockdata, "feature_cols", None),
+            importances=None,
+            pred_return=pred_return_for_record,
+            calibrated_prob_up=calibrated_prob_up,
         )
 
     # -----------------------------
     # 메인 워크플로 (Debate 호환 시그니처)
     # -----------------------------
     def reviewer_draft(self, ticker: str) -> Opinion:
-        """
-        (4) 캐시 재사용: _last_X와 stockdata가 있으면 재다운로드 없이 사용
-        """
-        # 1) 데이터 확보
+        """캐시 재사용: _last_X/stockdata 있으면 재다운로드 없이 사용"""
         if getattr(self, "_last_X", None) is None or self.stockdata is None or self.stockdata.ticker != ticker:
             X = self.searcher(ticker)
         else:
             X = self._last_X
 
-        # 2) 예측값 생성
         target = self.predict(X)
 
-        # 3) LLM 호출(reason 생성)
         sys_text, user_text = self._build_messages_opinion(self.stockdata, target)
 
         schema_reason_only = {
             "type": "object",
             "properties": {"reason": {"type": "string"}},
             "required": ["reason"],
-            "additionalProperties": False,  # ✅ 필수
+            "additionalProperties": False,
         }
 
         try:
@@ -329,7 +537,6 @@ class BaseAgent:
                 schema_reason_only,
             )
         except Exception:
-            # API 실패 시에도 토론이 계속 돌도록 안전 폴백
             parsed = {
                 "reason": f"(LLM 실패로 기본 사유 사용) 예측가={target.next_close:.2f}, σ={target.uncertainty:.4f}"
             }
@@ -346,9 +553,7 @@ class BaseAgent:
         others_latest: Dict[str, Opinion],
         stock_data: Optional[StockData],
     ) -> List[Rebuttal]:
-        """LLM을 통해 상대 의견에 대한 반박/지지 생성 (기본: 침묵)"""
-        # 필요 시 자식에서 _build_messages_rebuttal 구현 후 여기서 호출
-        # 기본 구현은 토론을 방해하지 않도록 '반환 없음'
+        """기본: 반박/지지 생성 안 함(침묵)"""
         return []
 
     def reviewer_revise(
@@ -358,11 +563,7 @@ class BaseAgent:
         received_rebuttals: List[Rebuttal],
         stock_data: Optional[StockData],
     ) -> Opinion:
-        """
-        기본 수정 로직:
-        - 반박 수가 많으면 불확실성 소폭 증가, 지지가 많으면 감소
-        - 수치를 크게 바꾸지 않고 형식만 맞춰서 최신 Opinion으로 append
-        """
+        """간단 수정(반박↑, 지지↓)"""
         t = my_lastest.target
         delta = 1.0
         for r in received_rebuttals:
@@ -379,9 +580,10 @@ class BaseAgent:
             confidence=min(1.0, (t.confidence or 0.0) / delta if delta > 0 else (t.confidence or 0.0)),
             feature_cols=t.feature_cols,
             importances=t.importances,
+            pred_return=getattr(t, "pred_return", None),
+            calibrated_prob_up=getattr(t, "calibrated_prob_up", None),
         )
 
-        # 간단한 수정 사유 (LLM 없이 기본값)
         revised_reason = my_lastest.reason or "(이전 의견 없음)"
         op = Opinion(agent_id=self.agent_id, target=revised, reason=revised_reason)
         self.opinions.append(op)
@@ -403,26 +605,22 @@ class BaseAgent:
     # 구현 필요 함수 (추상)
     # -----------------------------
     def _build_messages_opinion(self, stock_data: StockData, target: Target) -> Tuple[str, str]:
-        """LLM(system/user) 메시지 생성(구현 필요)"""
         raise NotImplementedError(f"{self.__class__.__name__} must implement _build_messages_opinion method")
 
     def _build_messages_rebuttal(self, *args, **kwargs) -> Tuple[str, str]:
-        """LLM(system/user) 메시지 생성(구현 필요)"""
         raise NotImplementedError(f"{self.__class__.__name__} must implement _build_messages_rebuttal method")
 
     # -----------------------------
     # 모델 저장/로딩
     # -----------------------------
     def load_model(self, model_path: Optional[str] = None):
-        """저장된 모델 가중치 로드"""
+        """저장된 모델 가중치 로드 (state_dict 호환)"""
         if model_path is None:
             model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
 
         if not os.path.exists(model_path):
-            # 모델이 없으면 조용히 패스
             return False
 
-        # self는 nn.Module이 아닐 수 있으므로 self.model 우선
         try:
             if hasattr(self, "model") and hasattr(self.model, "load_state_dict"):
                 state = torch.load(model_path, map_location=torch.device("cpu"))
@@ -444,6 +642,7 @@ class BaseAgent:
             return False
 
     def pretrain(self):
+        """간단 사전학습 루틴(MSE)"""
         epochs = agents_info[self.agent_id]["epochs"]
         lr = agents_info[self.agent_id]["learning_rate"]
         batch_size = agents_info[self.agent_id]["batch_size"]
@@ -481,7 +680,6 @@ class BaseAgent:
 
         os.makedirs(self.model_dir, exist_ok=True)
         model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
-        # 통일: state_dict만 저장
         torch.save(model.state_dict(), model_path)
         print(f"✅ {self.agent_id} model saved.\n✅ pretraining finished.\n")
 
@@ -490,7 +688,6 @@ class BaseAgent:
     # -----------------------------
     def _ask_with_fallback(self, msg_sys: dict, msg_user: dict, schema_obj: dict) -> dict:
         """모델 폴백 포함 OpenAI Responses API 호출"""
-        # ✅ 스키마 방어: 루트에 additionalProperties: False 강제 주입
         if isinstance(schema_obj, dict) and "additionalProperties" not in schema_obj:
             schema_obj = dict(schema_obj)
             schema_obj["additionalProperties"] = False
@@ -514,13 +711,13 @@ class BaseAgent:
                 r = requests.post(self.OPENAI_URL, headers=self.headers, json=payload, timeout=120)
                 if r.ok:
                     data = r.json()
-                    # 1) output_text 우선 사용
+                    # 1) output_text
                     if isinstance(data.get("output_text"), str) and data["output_text"].strip():
                         try:
                             return json.loads(data["output_text"])
                         except Exception:
-                            return {"reason": data["output_text"]}  # JSON 실패 시 원문 텍스트 보존
-                    # 2) output 배열에서 텍스트 모으기
+                            return {"reason": data["output_text"]}
+                    # 2) output 배열
                     out = data.get("output")
                     if isinstance(out, list) and out:
                         texts = []
@@ -534,13 +731,10 @@ class BaseAgent:
                                 return json.loads(joined)
                             except Exception:
                                 return {"reason": joined}
-                    # 비정상 응답
                     return {}
-                # 400/404는 다음 모델로 폴백
                 if r.status_code in (400, 404):
                     last_err = (r.status_code, r.text)
                     continue
-                # 기타 에러는 즉시 예외
                 r.raise_for_status()
             except Exception as e:
                 self._p(f"⚠️ 모델 {model} 실패: {e}")
@@ -549,32 +743,29 @@ class BaseAgent:
         raise RuntimeError(f"모든 모델 실패. 마지막 오류: {last_err}")
 
     # -----------------------------------------
-    # 🔹 추가: 간단한 성능 평가 (참고용)
+    # 🔹 간단 성능 평가 (참고용)
     # -----------------------------------------
     def evaluate(self, ticker: str = None):
-        """검증 데이터로 성능 평가"""
+        """검증 데이터로 성능 평가 (참고: price vs return 혼합일 수 있어 방향 정확도 위주 해석 권장)"""
         if ticker is None:
             ticker = self.ticker
 
-        # 데이터 로드
         X, y, feature_cols = load_dataset(ticker, agent_id=self.agent_id, save_dir=self.data_dir)
 
-        # 시계열 분할 (80% 훈련, 20% 검증)
         split_idx = int(len(X) * 0.8)
         X_val = X[split_idx:]
         y_val = y[split_idx:]
 
-        # 스케일러 로드
         self.scaler.load(ticker)
 
-        # 검증 데이터 예측
         predictions = []
         actual_returns = []
 
         for i in range(len(X_val)):
             X_input = X_val[i:i + 1]
+            # NaN 방지
+            X_input = self._nan_to_num_array(X_input, nan=0.0)
             X_tensor = torch.tensor(X_input, dtype=torch.float32)
-
             with torch.no_grad():
                 pred_target = self.predict(X_tensor)
                 predictions.append(pred_target.next_close)
@@ -583,11 +774,9 @@ class BaseAgent:
         predictions = np.array(predictions)
         actual_returns = np.array(actual_returns)
 
-        # 성능 지표 계산 (참고: price vs return 혼합이므로 방향 정확도 위주 해석 권장)
         mae = np.mean(np.abs(predictions - actual_returns))
         rmse = np.sqrt(np.mean((predictions - actual_returns) ** 2))
         correlation = np.corrcoef(predictions, actual_returns)[0, 1]
-
         pred_direction = np.sign(predictions)
         actual_direction = np.sign(actual_returns)
         direction_accuracy = np.mean(pred_direction == actual_direction) * 100
@@ -602,7 +791,7 @@ class BaseAgent:
 
 
 # ===============================================================
-# DataScaler: 학습/추론용 정규화 유틸리티 (BaseAgent 내부용)
+# DataScaler: 학습/추론용 정규화 유틸리티
 # ===============================================================
 class DataScaler:
     """학습/추론용 정규화 유틸리티 (BaseAgent 내부용)"""
@@ -626,14 +815,14 @@ class DataScaler:
         Sx = ScalerMap[self.x_scaler_name]
         Sy = ScalerMap[self.y_scaler_name]
 
-        # ✅ 3D 입력 (samples, seq_len, features) → 2D로 변환
+        # 3D 입력 (samples, seq_len, features) → 2D로 변환 후 피팅
         n_samples, seq_len, n_feats = X_train.shape
         X_2d = X_train.reshape(-1, n_feats)
         self.x_scaler = Sx().fit(X_2d) if Sx else None
         self.y_scaler = Sy().fit(y_train.reshape(-1, 1)) if Sy else None
 
     def transform(self, X, y=None):
-        # ✅ 3D 입력 (samples, seq_len, features) → 2D로 변환
+        # 3D 입력 → 2D로 변환 후 스케일링, 원형 복원
         if X.ndim == 3:
             n_samples, seq_len, n_feats = X.shape
             X_2d = X.reshape(-1, n_feats)
@@ -652,7 +841,10 @@ class DataScaler:
         if self.y_scaler:
             if isinstance(y_pred, (list, tuple)):
                 y_pred = np.array(y_pred)
-            return self.y_scaler.inverse_transform(y_pred.reshape(-1, 1)).flatten()
+            out = self.y_scaler.inverse_transform(y_pred.reshape(-1, 1)).flatten()
+            # 역변환 후에도 NaN/Inf 방지
+            out = np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+            return out
         return y_pred
 
     def convert_return_to_price(self, return_rate, current_price):

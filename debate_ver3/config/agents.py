@@ -54,7 +54,10 @@ agents_info = {
         "period": "2y",
         "interval": "1d",
         "x_scaler": "StandardScaler",
-        "y_scaler": "StandardScaler"
+        "y_scaler": "StandardScaler",
+        "output_type": "price",        # 'price' | 'return' | 'log_return'
+        "return_index": -1,            # 다차원 출력일 때 사용할 인덱스
+        "has_prob_head": False,        # 확률 헤드가 있을 때 True
     }
 }
 
@@ -62,4 +65,12 @@ dir_info = {
     "data_dir": "data/processed",
     "model_dir": "models",
     "scaler_dir": "models/scalers"
+}
+
+agents_info["SentimentalAgentV3"] = {
+    **agents_info["SentimentalAgent"],
+    "id": "SentimentalAgentV3",   # 선택: 로깅용 ID 분리
+    # "model_path": "models/{ticker}_SentimentalAgent.pt",  # 필요시 그대로/변경
+    # "x_scaler":   "...",
+    # "y_scaler":   "...",
 }

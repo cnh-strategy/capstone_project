@@ -1,0 +1,26 @@
+{
+  "drivers": [
+    {
+      "key": "price_features.zscore_close_20",
+      "value": 1.9217,
+      "reason": "평균대비 이탈 확대"
+    },
+    {
+      "key": "price_features.trend_7d",
+      "value": 0.0315,
+      "reason": "최근 1주 추세 유효"
+    },
+    {
+      "key": "news_features.trend_7d",
+      "value": 0.177,
+      "reason": "뉴스 감성의 뚜렷한 방향성"
+    }
+  ],
+  "counter": [
+    {
+      "key": "price_features.rolling_vol_20",
+      "value": 0.0309,
+      "risk": "변동성 확대 리스크"
+    }
+  ]
+}
