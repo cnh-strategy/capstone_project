@@ -1,7 +1,4 @@
-from datetime import datetime
-
 from agents.base_agent import BaseAgent, StockData, Target, Opinion, Rebuttal
-from agents.macro_agent import MacroPredictor
 from agents.technical_agent import TechnicalAgent
 from agents.fundamental_agent import FundamentalAgent
 from agents.sentimental_agent import SentimentalAgent
@@ -13,9 +10,7 @@ class DebateAgent(BaseAgent):
     def __init__(self, rounds: int = 3, ticker: str = None):
         self.agents = {
             "TechnicalAgent": TechnicalAgent("TechnicalAgent", ticker=ticker),
-            "MacroSentiAgent": MacroPredictor(agent_id="MacroSentiAgent", ticker=ticker,
-                                              base_date=datetime.today(),
-                                              window=40),
+            "FundamentalAgent": FundamentalAgent("FundamentalAgent", ticker=ticker),
             "SentimentalAgent": SentimentalAgent("SentimentalAgent", ticker=ticker),
         }
         self.rounds = rounds
@@ -29,29 +24,15 @@ class DebateAgent(BaseAgent):
             self.opinions = {}
 
         opinions = {}
-        X_scaled = None
-        pred_prices = None
-
         for agent_id, agent in self.agents.items():
             # 데이터 로드
-            if agent_id == 'MacroSentiAgent':
-                print(f"{agent_id}의 데이터 로드.. macro_sercher")
-                X, X_scaled = macro_sercher(agent, ticker)
-            else:
-                X = agent.searcher(ticker)      # base_agent에 존재 - 리턴: X_tensor
+            X = agent.searcher(ticker)
 
             # 예측 수행
-            if agent_id == 'MacroSentiAgent':
-                print(f"{agent_id}의 예측")
-                pred_prices, target = agent.m_predictor(X)      #macro_4_predictor(self, macro_sub, X_seq) 로 묶어둠
-            else:
-                target = agent.predict(X)      # base_agent에 존재 - 리턴: target
+            target = agent.predict(X)
 
             # Opinion 생성 (LLM Reason 포함)
-            if agent_id == 'MacroSentiAgent':
-                _, opinion = agent.macro_reviewer_draft(X_scaled, pred_prices, target)           #llm_starter(X_scaled, pred_prices, target)
-            else:
-                opinion = agent.reviewer_draft(agent.stockdata, target)     # base_agent에 존재 - 리턴: 최신 오피니언
+            opinion = agent.reviewer_draft(agent.stockdata, target)
             opinions[agent_id] = opinion
 
         self.opinions[round] = opinions
@@ -59,7 +40,7 @@ class DebateAgent(BaseAgent):
         return opinions
 
 
-    def get_rebuttal(self, round: int):
+    def get_rebuttal(self, round: int) -> Dict[str, List[Rebuttal]]:
         """모든 agent 간 상호 rebuttal 수행"""
         round_rebuttals = list()
 
@@ -98,27 +79,11 @@ class DebateAgent(BaseAgent):
             stock_data = getattr(agent, "stockdata", None)
 
             revise = agent.reviewer_revise(
-                revised_target=my_opinion.target,
-                old_opinion=my_opinion,
-                rebuttals=rebuttals,
-                others=other_opinions,
-                X_input=getattr(stock_data, "X", None),
+                my_opinion,
+                other_opinions,
+                rebuttals,
+                stock_data
             )
-
-            # if agent_id == 'MacroSentiAgent':
-            #     revise = macro_reviewer_revise(
-            #     my_opinion,
-            #     other_opinions,
-            #     rebuttals,
-            #     stock_data
-            # )
-            # else:
-            #     revise = agent.reviewer_revise(
-            #         my_opinion,
-            #         other_opinions,
-            #         rebuttals,
-            #         stock_data
-            #     )
 
             # revise 결과 opinion 갱신
             round_revises[agent_id] = revise
@@ -129,12 +94,10 @@ class DebateAgent(BaseAgent):
 
         return round_revises
 
-    def run_dataset(self):      #[메크로 테스트용]테스트 후 삭제필요
-        build_dataset(self.ticker)
 
     def run(self):
-        build_dataset(self.ticker)      #매크로는 MacroSentimentAgentDataset 활용 (함수:macro_dataset)
-        self.get_opinion(0, self.ticker)
+        build_dataset(self.ticker)
+        self.get_opinion(0)
 
         for round in range(1, self.rounds + 1):
             self.get_rebuttal(round)
@@ -142,7 +105,6 @@ class DebateAgent(BaseAgent):
             print(f" Round {round} 토론 완료")
 
         print(self.get_ensemble())  # 최종 결과 출력
-
 
     def get_ensemble(self):
         """토론 결과를 바탕으로 ensemble 정보 생성"""
@@ -179,4 +141,3 @@ class DebateAgent(BaseAgent):
             "currency": currency,
             "last_price": current_price,
         }
-
