@@ -84,7 +84,7 @@ agents_info = {
             "Close", "Volume", "Open", "High", "Low"
         ],
         # 시퀀스/학습 관련
-        "window_size": 14,
+        "window_size": 40,
         "epochs": 50,
         "learning_rate": 5e-4,      # 0.0005
         "batch_size": 32,
