@@ -64,8 +64,8 @@ class MacroAData:
         self.agent_id = 'MacroSentiAgent'
         self.ticker=ticker
         self.model_path = f"{model_dir}/{self.ticker}_{self.agent_id}.keras"
-        self.scaler_X_path = f"{model_dir}/{self.ticker}_scaler_X.pkl"
-        self.scaler_y_path = f"{model_dir}/{self.ticker}_scaler_y.pkl"
+        self.scaler_X_path = f"{model_dir}/scalers/{self.ticker}_{self.agent_id}_xscaler.pkl"
+        self.scaler_y_path = f"{model_dir}/scalers/{self.ticker}_{self.agent_id}_yscaler.pkl"
 
     def fetch_data(self):
         """다중 티커 데이터 다운로드"""
@@ -123,7 +123,7 @@ class MacroAData:
         return df
 
     def save_csv(self):
-        path = os.path.join(OUTPUT_DIR, f"{self.ticker}_macro_sentiment.csv")
+        path = os.path.join(OUTPUT_DIR, f"{self.ticker}_{self.agent_id}.csv")
         self.data.to_csv(path, index=True)
         print(f"[MacroSentimentAgent] Saved {path}")
 
@@ -149,7 +149,7 @@ class MacroAData:
         # 1. 데이터 불러오기
         # -------------------------------------------------------------
         PRICE_CSV_PATH = os.path.join(OUTPUT_DIR, "daily_closePrice.csv")
-        MACRO_CSV_PATH = os.path.join(OUTPUT_DIR, f"{self.ticker}_macro_sentiment.csv")
+        MACRO_CSV_PATH = os.path.join(OUTPUT_DIR, f"{self.ticker}_{self.agent_id}.csv")
 
         macro_df = pd.read_csv(MACRO_CSV_PATH)
         price_df = pd.read_csv(PRICE_CSV_PATH)

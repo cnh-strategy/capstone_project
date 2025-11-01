@@ -30,6 +30,7 @@ class MakeDatasetMacro:
         self.base_date = base_date
         self.start_date = base_date - timedelta(days=window + 20)
         self.end_date = base_date
+        self.agent_id='MacroSentiAgent'
         self.data = None
 
     # -------------------------------------------------------------
@@ -124,7 +125,7 @@ class MakeDatasetMacro:
         # (3) 스케일러 순서 맞추기
         try:
             from joblib import load
-            scaler_X = load(f"{model_dir}/scaler_X.pkl")
+            scaler_X = load(f"{model_dir}/scalers/{self.target_tickers}_{self.agent_id}_xscaler.pkl")
             feature_order = list(scaler_X.feature_names_in_)
             df = df.reindex(columns=feature_order, fill_value=0)
         except Exception as e:
