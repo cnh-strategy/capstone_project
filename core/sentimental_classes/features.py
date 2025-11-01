@@ -1,3 +1,10 @@
+# core\sentimental_classes\features.py
+
+import numpy as np
+import pandas as pd
+from typing import List, Tuple, Dict
+
+
 FEATURE_COLUMNS = [
     "sentiment_mean",  # 최근 감성 평균
     "sentiment_vol",   # 감성 변동성
