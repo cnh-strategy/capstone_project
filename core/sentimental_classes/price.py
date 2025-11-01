@@ -1,8 +1,18 @@
-# core\sentimental_classes\price.py
+# core/sentimental_classes/price.py
+from __future__ import annotations
 
+import numpy as np
+import pandas as pd
 from typing import TYPE_CHECKING
+
+# 타입체크 때만 import (런타임엔 실행되지 않음)
 if TYPE_CHECKING:
-    from debate_ver3.agents.base_agent import StockData
+    from agents.base_agent import StockData
+
+
+def _ensure_ctx_features_from_window(self, stock_data: "StockData"):
+    if TYPE_CHECKING:
+        from debate_ver3.agents.base_agent import StockData
 
 def _ensure_ctx_features_from_window(self, stock_data: StockData):
     X_last = getattr(self, "_last_X", None)
