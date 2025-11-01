@@ -1,263 +1,81 @@
-import torch
-import torch.nn as nn
-import yfinance as yf
-import pandas as pd
-import os
-from agents.base_agent import BaseAgent, StockData, Target, Opinion, Rebuttal
-from config.agents import agents_info, dir_info
-import json
-from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
-from typing import List, Optional
-
-
-class SentimentalAgent(BaseAgent, nn.Module):
-    """Sentimental Agent: BaseAgent + Transformer 기반 감성 분석"""
-    def __init__(self, 
-        agent_id="SentimentalAgent", 
-        input_dim=agents_info["SentimentalAgent"]["input_dim"],
-        d_model=agents_info["SentimentalAgent"]["d_model"],
-        nhead=agents_info["SentimentalAgent"]["nhead"],
-        num_layers=agents_info["SentimentalAgent"]["num_layers"],
-        dropout=agents_info["SentimentalAgent"]["dropout"],
-        data_dir=dir_info["data_dir"],
-        window_size=agents_info["SentimentalAgent"]["window_size"],
-        epochs=agents_info["SentimentalAgent"]["epochs"],
-        learning_rate=agents_info["SentimentalAgent"]["learning_rate"],
-        batch_size=agents_info["SentimentalAgent"]["batch_size"],
-        **kwargs
-    ):
-        # 기본 초기화
-        BaseAgent.__init__(self, agent_id, **kwargs)
-        nn.Module.__init__(self)
-
-        self.dropout_rate = float(dropout)  # 🔹 float형 dropout 값 저장
-        self.input_dim = input_dim
-        self.d_model = d_model
-        self.nhead = nhead
-        self.num_layers = num_layers
-
-        # 입력 프로젝션
-        self.input_projection = nn.Linear(input_dim, d_model)
-        
-        # Transformer 인코더 정의 (float형 dropout 사용)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dropout=self.dropout_rate,  # float값 전달
-            batch_first=True
+def build_or_load_model(self, input_dim: int) -> nn.Module:
+    if self.model is None:
+        self.model = _SentimentalNet(
+            input_dim=input_dim,
+            hidden_dim=self.cfg.hidden_dim,
+            dropout=self.cfg.dropout
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        
-        # 출력 레이어 및 학습 세팅
-        self.dropout = nn.Dropout(self.dropout_rate)  # nn.Dropout 객체는 따로
-        self.fc = nn.Linear(d_model, 1)
-        
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)
-        self.loss_fn = nn.MSELoss()
-        self.last_pred = None
- 
-
-    def _build_model(self):
-        """SentimentalAgent 기본 Transformer 모델 자동 생성"""
-        import torch.nn as nn
-
-        input_dim = getattr(self, "input_dim", 8)
-        d_model = getattr(self, "d_model", 64)
-        nhead = getattr(self, "nhead", 4)
-        num_layers = getattr(self, "num_layers", 2)
-        dropout_rate = getattr(self, "dropout_rate", 0.1)
-
-        class TransformerNet(nn.Module):
-            def __init__(self, input_dim, d_model, nhead, num_layers, dropout_rate):
-                super().__init__()
-                self.input_projection = nn.Linear(input_dim, d_model)
-                encoder_layer = nn.TransformerEncoderLayer(
-                    d_model=d_model,
-                    nhead=nhead,
-                    dim_feedforward=d_model * 2,
-                    dropout=dropout_rate,
-                    activation='gelu',
-                    batch_first=True
-                )
-                self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-                self.dropout = nn.Dropout(dropout_rate)
-                self.fc = nn.Sequential(
-                    nn.Linear(d_model, 1),
-                    nn.Tanh()   # 🔹출력값을 -1~1로 제한
-                )
-
-            def forward(self, x):
-                x = self.input_projection(x)
-                x = self.transformer(x)     # TransformerEncoder는 Tensor 반환
-                x = x[:, -1, :]             # 마지막 시점 hidden 사용
-                x = self.dropout(x)
-                return self.fc(x)
-
-        model = TransformerNet(input_dim, d_model, nhead, num_layers, dropout_rate)
-        print(f" SentimentalAgent Transformer 생성 완료 "
-            f"(d_model={d_model}, nhead={nhead}, layers={num_layers})")
-        return model
-
-    def forward(self, x):
-        """Forward pass for the model"""
-        # x shape: (batch, time, features)
-        x = self.input_projection(x)
-        x = self.transformer(x)
-        # Use the last time step output
-        last_output = x[:, -1, :]
-        last_output = self.dropout(last_output)
-        output = self.fc(last_output)
-        return output
-        
-
-   # LLM Reasoning 메시지
-    def _build_messages_opinion(self, stock_data, target):
-        """FundamentalAgent용 LLM 프롬프트 메시지 구성 (시계열 포함 버전)"""
-
-        agent_data = getattr(stock_data, self.agent_id, None)
-        if not agent_data or not isinstance(agent_data, dict):
-            raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
-
-        # 기본 컨텍스트
-        ctx = {
-            "ticker": getattr(stock_data, "ticker", "Unknown"),
-            "currency": getattr(stock_data, "currency", "USD"),
-            "last_price": getattr(stock_data, "last_price", None),
-            "our_prediction": float(target.next_close),
-            "uncertainty": float(target.uncertainty),
-            "confidence": float(target.confidence),
-            "recent_days": len(next(iter(agent_data.values()))) if agent_data else 0,
-        }
-
-        # 각 컬럼별 최근 시계열 그대로 포함
-        # (최근 7~14일 정도면 LLM이 이해 가능한 범위)
-        for col, values in agent_data.items():
-            if isinstance(values, (list, tuple)):
-                ctx[col] = values[self.window_size:]  # 최근 14일치 전체 시계열
-            else:
-                ctx[col] = [values]
-
-        # 프롬프트 구성
-        system_text = OPINION_PROMPTS[self.agent_id]["system"]
-        user_text = OPINION_PROMPTS[self.agent_id]["user"].format(
-            context=json.dumps(ctx, ensure_ascii=False)
-        )
-
-        return system_text, user_text
+        self.model.to(self.device)
+        # 필요 시 self.load_weights(...) 호출 가능
+    return self.model
 
 
+# -------------------------------------
+# 3) 예측 수행
+# -------------------------------------
+def predict_next(self, X_last: np.ndarray) -> Dict[str, Any]:
+    self.model.eval()
+    with torch.no_grad():
+        x = torch.tensor(X_last[None, ...], dtype=torch.float32, device=self.device)
+        pred_r = self.model(x).item()  # 다음날 수익률
 
-    def _build_messages_rebuttal(self,
-                                my_opinion: Opinion,
-                                target_opinion: Opinion,
-                                stock_data: StockData) -> tuple[str, str]:
+        # 가격 변환 (BaseAgent 제공 가정)
+        last_close = float(self.last_close())
+        pred_close = last_close * (1.0 + pred_r)
 
-        t = stock_data.ticker or "UNKNOWN"
-        ccy = (stock_data.currency or "USD").upper()
-        agent_data = getattr(stock_data, self.agent_id, None)
-        if not agent_data or not isinstance(agent_data, dict):
-            raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
+        # 간단한 불확실성(표준편차) 추정: 드롭아웃 MC 또는 과거 오차 기반 등 실제 구현에 맞게 대체
+        uncertainty = float(abs(pred_r))  # placeholder
+        confidence = float(np.clip(1.0 - abs(pred_r), 0.0, 1.0))
 
-        ctx = {
-            "ticker": t,
-            "currency": ccy,
-            "data_summary": getattr(stock_data, self.agent_id, {}).get("feature_cols", []),
-            "me": {
-                "agent_id": self.agent_id,
-                "next_close": float(my_opinion.target.next_close),
-                "reason": str(my_opinion.reason)[:2000],
-                "uncertainty": float(my_opinion.target.uncertainty),
-                "confidence": float(my_opinion.target.confidence),
-            },
-            "other": {
-                "agent_id": target_opinion.agent_id,
-                "next_close": float(target_opinion.target.next_close),
-                "reason": str(target_opinion.reason)[:2000],
-                "uncertainty": float(target_opinion.target.uncertainty),
-                "confidence": float(target_opinion.target.confidence),
-            }
-        }
-        # 각 컬럼별 최근 시계열 그대로 포함
-        # (최근 7~14일 정도면 LLM이 이해 가능한 범위)
-        for col, values in agent_data.items():
-            if isinstance(values, (list, tuple)):
-                ctx[col] = values[self.window_size:]  # 최근 14일치 전체 시계열
-            else:
-                ctx[col] = [values]
+    return {
+        "pred_return": pred_r,
+        "pred_close": pred_close,
+        "uncertainty": uncertainty,
+        "confidence": confidence,
+    }
 
-        system_text = REBUTTAL_PROMPTS[self.agent_id]["system"]
-        user_text   = REBUTTAL_PROMPTS[self.agent_id]["user"].format(
-            context=json.dumps(ctx, ensure_ascii=False)
-        )
-        return system_text, user_text
 
-    def _build_messages_revision(
-        self,
-        my_opinion: Opinion,
-        others: List[Opinion],
-        rebuttals: Optional[List[Rebuttal]] = None,
-        stock_data: StockData = None,
-    ) -> tuple[str, str]:
-        """
-        Revision용 LLM 메시지 생성기
-        - 내 의견(my_opinion), 타 에이전트 의견(others), 주가데이터(stock_data) 기반
-        - rebuttals 중 나(self.agent_id)를 대상으로 한 내용만 포함
-        """
-        # 기본 메타데이터
-        t = getattr(stock_data, "ticker", "UNKNOWN")
-        ccy = getattr(stock_data, "currency", "USD").upper()
-        agent_data = getattr(stock_data, self.agent_id, None)
-        if not agent_data or not isinstance(agent_data, dict):
-            raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
+# -------------------------------------
+# 4) 사용자 중심 이유 텍스트 상위 4개 만들기
+# -------------------------------------
+def make_user_reasons(self, df) -> List[Tuple[str, float]]:
+    # 예: 최근 윈도우의 피처 평균/변화 등을 기반으로 사용자 친화 라벨로 변환
+    label_map = user_reason_labels()
+    return pick_top_reason_texts(df.tail(self.cfg.window), label_map)
 
-        # 타 에이전트 의견 및 rebuttal 통합 요약
-        others_summary = []
-        for o in others:
-            entry = {
-                "agent_id": o.agent_id,
-                "predicted_price": float(o.target.next_close),
-                "confidence": float(o.target.confidence),
-                "uncertainty": float(o.target.uncertainty),
-                "reason": str(o.reason)[:500],
-            }
 
-            # 나에게 온 rebuttal만 stance/message 추출
-            if rebuttals:
-                related_rebuts = [
-                    {"stance": r.stance, "message": r.message}
-                    for r in rebuttals
-                    if r.from_agent_id == o.agent_id and r.to_agent_id == self.agent_id
-                ]
-                if related_rebuts:
-                    entry["rebuttals_to_me"] = related_rebuts
+# -------------------------------------
+# 5) 통합 실행 (의견 생성)
+# -------------------------------------
+def opinion(self) -> Dict[str, Any]:
+    data = self.load_data()
+    X, y, df = data["X"], data["y"], data["df"]
 
-            others_summary.append(entry)
+    # 스케일러: BaseAgent 공용 함수 사용
+    scaler = self.fit_or_load_scaler(X)
+    X_scaled = self.apply_scaler(scaler, X)
 
-        # Context 구성
-        ctx = {
-            "ticker": t,
-            "currency": ccy,
-            "agent_type": self.agent_id,
-            "my_opinion": {
-                "predicted_price": float(my_opinion.target.next_close),
-                "confidence": float(my_opinion.target.confidence),
-                "uncertainty": float(my_opinion.target.uncertainty),
-                "reason": str(my_opinion.reason)[:1000],
-            },
-            "others_summary": others_summary,
-            "data_summary": getattr(stock_data, self.agent_id, {}).get("feature_cols", []),
-        }
+    model = self.build_or_load_model(input_dim=X_scaled.shape[-1])
+    pred = self.predict_next(X_scaled[-1])
+    reasons = self.make_user_reasons(df)
 
-        # 최근 시계열 데이터 포함 (기술/심리적 패턴)
-        for col, values in agent_data.items():
-            if isinstance(values, (list, tuple)):
-                ctx[col] = values[-14:]  # 최근 14일치
-            else:
-                ctx[col] = [values]
+    text = render_yj_style(
+        ticker=self.ticker,
+        pred_return=pred["pred_return"],
+        pred_close=pred["pred_close"],
+        reasons_ranked=reasons,
+        confidence=pred["confidence"],
+        uncertainty=pred["uncertainty"],
+    )
 
-        # Prompt 구성
-        prompt_set = REVISION_PROMPTS.get(self.agent_id)
-        system_text = prompt_set["system"]
-        user_text = prompt_set["user"].format(context=json.dumps(ctx, ensure_ascii=False, indent=2))
+    return {
+        "agent_id": self.agent_id,
+        "ticker": self.ticker,
+        "prediction": pred,
+        "text": text,
+    }
 
-        return system_text, user_text
+
+# debate 진입점 (필요하면..)
+def run_debate(self):
+    return self.opinion()
