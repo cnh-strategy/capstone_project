@@ -8,12 +8,12 @@ import joblib
 from datetime import datetime
 from tensorflow.keras.models import load_model
 
-from agents.macro_classes.macro_sub import get_std_pred, MakeDatasetMacro
-from agents.macro_classes.macro_llm import AttributionAnalyzer, LLMExplainer, Opinion, Rebuttal
-from debate_ver4.agents_tmp.base_agent import BaseAgent, Target, StockData
-from debate_ver4.prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
+from config.agents import dir_info
+from core.macro_classes.macro_sub import get_std_pred, MakeDatasetMacro
+from core.macro_classes.macro_llm import AttributionAnalyzer, LLMExplainer, Opinion, Rebuttal
+from agents.base_agent import BaseAgent, Target, StockData
+from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 
-from debate_ver4.config.agents import dir_info
 
 model_dir: str = dir_info["model_dir"]
 data_dir: str = dir_info["data_dir"]
@@ -33,12 +33,13 @@ class MacroPredictor(BaseAgent):
                  **kwargs):
         # super().__init__(agent_id)  # ✅ 부모 초기화 필수
 
+        self.stockdata = None
         self.window_size = None
         self.agent_id = agent_id
         BaseAgent.__init__(self, self.agent_id, **kwargs)
-        self.model_path = f"agents/{model_dir}/{ticker}_{agent_id}.keras"
-        self.scaler_X_path = f"agents/{model_dir}/{ticker}_scaler_X.pkl"
-        self.scaler_y_path = f"agents/{model_dir}/{ticker}_scaler_y.pkl"
+        self.model_path = f"{model_dir}/{ticker}_{agent_id}.keras"
+        self.scaler_X_path = f"{model_dir}/{ticker}_scaler_X.pkl"
+        self.scaler_y_path = f"{model_dir}/{ticker}_scaler_y.pkl"
         self.base_date = base_date
         self.window = window
         self.tickers = [ticker] #or ["AAPL", "MSFT", "NVDA", "TSLA"]
@@ -255,11 +256,8 @@ class MacroPredictor(BaseAgent):
             'reason' : explanation
         }
 
-        stock_data = StockData(
-            agent_id=self.agent_id,
-            ticker=self.ticker,
-            last_price=0,
-            technical={
+        self.stockdata = StockData(
+            MacroSentiAgent={                              # ✅ 필드명은 self.agent_id와 동일해야 함
                 'feature_importance': {
                     'feature_summary': feature_summary,
                     'importance_dict': importance_dict,
@@ -270,11 +268,14 @@ class MacroPredictor(BaseAgent):
                 'our_prediction': pred_prices,
                 'uncertainty': round(target.uncertainty or 0.0, 4),
                 'confidence': round(target.confidence or 0.0, 4)
-            }
+            },
+            last_price=0,
+            currency="USD"
         )
 
+
         # 1) 메시지 생성 (→ 여기서 ctx가 만들어짐)
-        sys_text, user_text = self._build_messages_opinion(stock_data, target)
+        sys_text, user_text = self._build_messages_opinion(self.stockdata, target)
         msg_sys = self._msg("system", sys_text)
         msg_user = self._msg("user",   user_text)
 
@@ -287,7 +288,7 @@ class MacroPredictor(BaseAgent):
             "next_close": round(target.next_close, 3),
             "uncertainty_sigma": round(target.uncertainty or 0.0, 4),
             "confidence_beta": round(target.confidence or 0.0, 4),
-            "latest_data": str(stock_data),
+            "latest_data": str(self.stockdata),
             "feature_importance": {
                 'feature_summary': feature_summary,
                 'importance_dict': importance_dict,
@@ -324,14 +325,16 @@ class MacroPredictor(BaseAgent):
         """ LLM 프롬프트 메시지 구성 """
         print(f"build messages opinion - {self.agent_id}")
 
-        #
-        agent_data = getattr(stock_data, "technical", None)
+        # ✅ 해당 agent_id의 데이터 가져오기
+        agent_data = getattr(stock_data, self.agent_id, None)
         if not agent_data or not isinstance(agent_data, dict):
-            raise ValueError(f"{self.agent_id} 데이터 구조 오류: 'technical' dict형 데이터가 필요함")
+            raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 데이터가 필요함")
 
         # ✅ dataclass를 dict로 변환
         stock_data_dict = asdict(stock_data)
-        feature_imp = getattr(stock_data, "feature_importance", {})
+
+        # ✅ feature_importance는 agent_data 내부에서 가져오기
+        feature_imp = agent_data.get("feature_importance", {})
 
         # ✅ context 구성
         ctx = {

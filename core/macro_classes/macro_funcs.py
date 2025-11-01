@@ -1,5 +1,5 @@
-from agents.macro_classes.macro_class_dataset import MacroAData
-from debate_ver4.config.agents import dir_info
+from config.agents import dir_info
+from core.macro_classes.macro_class_dataset import MacroAData
 '''
 티커 통합 모델
 '''

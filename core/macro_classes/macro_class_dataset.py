@@ -10,29 +10,30 @@ from tensorflow.keras.optimizers import Adam
 import yfinance as yf
 import pandas as pd
 
-from agents.macro_classes.nasdaq_100 import nasdaq100_eng
+from config.agents import dir_info
+from core.macro_classes.nasdaq_100 import nasdaq100_eng
 
 # 종목 리스트 (딕셔너리 값 = 티커)
 symbols = list(nasdaq100_eng.values())
 # ============================================================
 # 공통 설정
 # ============================================================
-PROJECT_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..")
-)
-OUTPUT_DIR = os.path.join(PROJECT_ROOT, "data", "processed")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-
-
-dir_info = {
-    "data_dir": os.path.join(PROJECT_ROOT, "data", "processed"),
-    "model_dir": os.path.join(PROJECT_ROOT, "models"),
-}
+# PROJECT_ROOT = os.path.abspath(
+#     os.path.join(os.path.dirname(__file__), "..")
+# )
+# OUTPUT_DIR = os.path.join(PROJECT_ROOT, "data", "processed")
+# os.makedirs(OUTPUT_DIR, exist_ok=True)
+#
+#
+#
+# dir_info = {
+#     "data_dir": os.path.join(PROJECT_ROOT, "data", "processed"),
+#     "model_dir": os.path.join(PROJECT_ROOT, "models"),
+# }
 save_dir = dir_info["data_dir"]
 model_dir: str = dir_info["model_dir"]
 data_dir: str = dir_info["data_dir"]
-
+OUTPUT_DIR = data_dir
 
 # 데이터셋과 모델 만드는 클래스
 class MacroAData:

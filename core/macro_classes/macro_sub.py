@@ -4,7 +4,7 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import warnings
 
-from debate_ver4.config.agents import dir_info
+from config.agents import dir_info
 
 '''
 예측을 위해 최신 매크로 데이터 수집하는 클래스
