@@ -20,8 +20,8 @@ agents_info = {
         "gamma": 0.3,
         "delta_limit": 0.05,
     },
-    
-    "FundamentalAgent"  : {
+
+    "MacroSentiAgent"  : {
         "description": "거시경제 데이터 기반 시장 분석 모델 (LSTM)",
         "input_dim": 13,
         "hidden_dim": 64,
