@@ -1,3 +1,4 @@
+# agents/technical_agent.py
 import torch
 import torch.nn as nn
 import yfinance as yf
@@ -20,7 +21,15 @@ from agents.base_agent import r4, pct4  # 아연수정
 
 
 class TechnicalAgent(BaseAgent, nn.Module):
-    """Technical Agent: BaseAgent + LSTM×2 + time-attention"""
+    """
+    Technical Agent: BaseAgent + LSTM×2 + time-attention
+    목적
+    - 수익률(다음날)을 예측하는 LSTM×2 모델에 time-attention을 부여
+    - 설명은 SHAP 없이도 가능한 3요소 융합:
+      1) time-attention, 2) Grad×Input, 3) Occlusion
+    - LLM에는 '계산값'이 아니라 '요약·인용용 ctx'만 전달
+    """
+
     def __init__(self,
         agent_id="TechnicalAgent",
         input_dim=agents_info["TechnicalAgent"]["input_dim"],
@@ -108,11 +117,16 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # LSTM×2 + time-attention이 있으면 사용 (아연수정)
+        """
+        입력: x (B, T, F)
+        출력: (B, 1)  — 다음날 수익률(학습 스케일)
+        """
         h1, _ = self.lstm1(x)
         h1 = self.drop(h1)
         h2, _ = self.lstm2(h1)
         h2 = self.drop(h2)
 
+        # tiem-attention: 각 시점 가중치
         w = torch.softmax(torch.matmul(h2, self.attn_vec), dim=1)  # [B,T]
         self._last_attn = w.detach()                               # 아연수정
         ctx = (h2 * w.unsqueeze(-1)).sum(dim=1)                    # [B,u2]
@@ -294,7 +308,15 @@ class TechnicalAgent(BaseAgent, nn.Module):
         s = sum(deltas)
         return np.array([v/s if s > 0 else 1.0/F for v in deltas], dtype=float)
 
-    def explain_last(self, X_last: torch.Tensor, dates: list | None = None, top_k: int = 3):
+    def explain_last(
+        self,
+        X_last: torch.Tensor,
+        dates: list | None = None,
+        top_k: int = 3,
+        use_shap: bool = True, # 기본은 빠르게 off, 필요시 true
+        shap_weight_time: float = 0.20,      # 시간 중요도에서 SHAP 가중치(임의설정)
+        shap_weight_feat: float = 0.30       # 피처 중요도에서 SHAP 가중치(임의설정)
+        ):
         """
         기능: Attention + Grad×Input + Occlusion 융합으로 최신 윈도우 설명 패킷 생성.
         입력: X_last(1,T,F), dates(list|None), top_k(int)
@@ -311,7 +333,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         - evidence: 원천 지표들(attention, gradxinput, occlusion)
         - raw: Grad×Input 원시(T×F)
         """
-        # 1) 스케일 정합
+        # 스케일 정합
         device = next(self.parameters()).device
         X_np = X_last.detach().cpu().numpy()
         X_scaled = self._scale_like_train(X_np)
@@ -324,50 +346,82 @@ class TechnicalAgent(BaseAgent, nn.Module):
             dates = getattr(self.stockdata, f"{self.agent_id}_dates", [])
         dates = self._safe_dates(dates, T)
 
-        # 2) Attention
+        # 시간 중요도
         time_attn = self.time_importance_from_attention(Xs)  # (T,)
 
-        # 3) Grad×Input
-        g_time, g_feat, gi_raw = self.gradxinput_attrib(Xs, eps=0.0)
+        # GradxInput
+        g_time, g_feat, gi_raw = self.gradxinput_attrib(Xs, eps=0.0) # (T,), (F,)
 
-        # 4) Occlusion
-        occ_time = self.occlusion_time(Xs, fill="zero", batch=32)
-        occ_feat = self.occlusion_feature(Xs, fill="zero", batch=32)
+        # Occlusion
+        occ_time = self.occlusion_time(Xs, fill="zero", batch=32) # (T,)
+        occ_feat = self.occlusion_feature(Xs, fill="zero", batch=32) # (F,)
 
-        # 5) 융합 요약(가중 평균)
+        # 정규화 및 융합
         g_time_n = g_time / (g_time.sum() + 1e-12)
         g_feat_n = g_feat / (g_feat.sum() + 1e-12)
-        per_time = 0.5 * time_attn + 0.3 * g_time_n + 0.2 * occ_time
         occ_feat_n = occ_feat / (occ_feat.sum() + 1e-12)
-        per_feat = 0.7 * g_feat_n + 0.3 * occ_feat_n
 
-        # 6) 날짜별 상위 피처(Grad×Input 기준)
-        time_feature = {}
+        # (옵션) SHAP 추가
+        shap_time = None
+        shap_feat = None
+        shap_used = False
+        if use_shap:
+            try:
+                shap_res = self.shap_last(Xs, background_k=64)  # 아래에 정의
+                shap_time = shap_res["per_time"]    # (T,) 합=1
+                shap_feat = shap_res["per_feature"] # (F,) 합=1
+                shap_used = True
+            except Exception as _:
+                shap_time = None
+                shap_feat = None
+                shap_used = False  # 실패 시 무시하고 기본 3요소로 진행
+
+        # 융합 가중치(간단 휴리스틱, 필요시 검증셋에서 학습 가능)
+        if shap_time is not None and shap_feat is not None:
+            # 시간 중요도: attn 0.4, GI 0.25, occ 0.15, shap (인자) → 합 1로 재정규화
+            w_time = np.array([0.4, 0.25, 0.15, float(shap_weight_time)], dtype=float)
+            w_time = w_time / w_time.sum()
+            per_time = (
+                w_time[0]*time_attn +
+                w_time[1]*g_time_n +
+                w_time[2]*occ_time +
+                w_time[3]*shap_time
+            )
+            # 피처 중요도: GI 0.5, occ 0.2, shap (인자) → 합 1로 재정규화
+            w_feat = np.array([0.5, 0.2, float(shap_weight_feat)], dtype=float)
+            w_feat = w_feat / w_feat.sum()
+            per_feat = (
+                w_feat[0]*g_feat_n +
+                w_feat[1]*occ_feat_n +
+                w_feat[2]*shap_feat
+            )
+        else:
+            # SHAP 미사용/실패 시 기존 고정 비율
+            per_time = 0.5 * time_attn + 0.3 * g_time_n + 0.2 * occ_time
+            per_feat = 0.7 * g_feat_n   + 0.3 * occ_feat_n
+
+        # 날짜별 상위 피처(Grad×Input 기준으로 간단)
         gi_abs = np.abs(gi_raw)
+        time_feature = {}
         for t_idx, d in enumerate(dates):
-            pairs = sorted(zip(feat_names, gi_abs[t_idx].tolist()), key=lambda z: z[1], reverse=True)[:top_k]
+            pairs = sorted(
+                zip(feat_names, gi_abs[t_idx].tolist()),
+                key=lambda z: z[1], reverse=True
+            )[:top_k]
             time_feature[str(d)] = {k: float(v) for k, v in pairs}
 
-        # 7) time-attention 맵
+        # 결과 패킷
         time_attention = {str(d): r4(w) for d, w in zip(dates, time_attn.tolist())}
-
-        # 8) 패킷
         per_time_list = [{"date": str(d), "sum_abs": r4(v)} for d, v in zip(dates, per_time.tolist())]
         per_feat_list = [{"feature": k, "sum_abs": r4(v)} for k, v in sorted(zip(feat_names, per_feat.tolist()),
                                                                           key=lambda z: z[1], reverse=True)]
-        # 날짜별 상위 피처(Grad×Input 기준, 라운딩)
-        time_feature = {}
-        gi_abs = np.abs(gi_raw)
-        for t_idx, d in enumerate(dates):
-            pairs = sorted(zip(feat_names, gi_abs[t_idx].tolist()),
-                       key=lambda z: z[1], reverse=True)[:top_k]
-            time_feature[str(d)] = {k: r4(v) for k, v in pairs}
 
         evidence = {
             "attention": [r4(x) for x in time_attn.tolist()],
             "gradxinput_feat": [r4(x) for x in g_feat.tolist()],
             "occlusion_time": [r4(x) for x in occ_time.tolist()],
             "window_size": int(T),
+            "shap_used": bool(shap_used)
             }
 
         return {
@@ -379,8 +433,78 @@ class TechnicalAgent(BaseAgent, nn.Module):
             "raw": {"gradxinput": gi_abs.tolist()}  # 원시값은 비라운딩 유지 가능
           }
 
-    # idea 핵심만
+    # ---------------- SHAP 보조: 배경 샘플 추출 ----------------
+    def _background_windows(self, k: int = 64):
+        """
+        학습/검증 구간에서 윈도우 k개를 균등 간격으로 뽑아 배경으로 사용.
+        파일 상단 수정 없이 내부에서 lazy import.
+        """
+        try:
+            from core.data_set import load_dataset  # lazy import
+            X, _, _, _ = load_dataset(self.ticker, agent_id=self.agent_id, save_dir=self.data_dir)
+            if len(X) <= 1:
+                return None
+            k = min(int(k), len(X) - 1)
+            idx = np.linspace(0, len(X) - 2, num=k, dtype=int)
+            X_bg = X[idx]
+            X_bg_scaled, _ = self.scaler.transform(X_bg)
+            dev = next(self.parameters()).device
+            return torch.tensor(X_bg_scaled, dtype=torch.float32, device=dev)
+        except Exception:
+            return None
+
+    # ---------------- SHAP 계산(GradientExplainer) ----------------
+    #@torch.no_grad()
+    def shap_last(self, X_last: torch.Tensor, background_k: int = 64):
+        """
+        GradientExplainer로 SHAP 값을 1개 윈도우(1,T,F)에 대해 계산.
+        반환: {"per_time": (T,), "per_feature": (F,)}
+        """
+        try:
+            import shap  # lazy import (상단 수정 불필요)
+        except Exception as e:
+            raise RuntimeError("shap 미설치 또는 로드 실패: pip install shap==0.45.0") from e
+
+        self.eval()
+
+        # 배경 구성(없으면 현재 입력 복제)
+        X_bg = self._background_windows(k=background_k)
+        if X_bg is None:
+            X_bg = X_last.repeat(32, 1, 1)
+
+        # 입력 스케일 맞추기
+        X_np = X_last.detach().cpu().numpy()
+        X_scaled = self._scale_like_train(X_np)
+        X_in = torch.tensor(X_scaled, dtype=torch.float32, device=next(self.parameters()).device)
+        X_in.requires_grad_(True)  # 추가(shap 용)
+
+        # PyTorch 모델 직접 전달
+        explainer = shap.GradientExplainer(self, X_bg)
+        sv = explainer.shap_values(X_in)  # np.ndarray 또는 list
+
+        if isinstance(sv, list):
+            sv = sv[0]
+        if sv.ndim == 2:  # (T,F) → (1,T,F) 호환
+            sv = sv[None, ...]
+
+        sv_abs = np.abs(sv)          # (1,T,F)
+        per_time = sv_abs.sum(axis=2)[0]      # (T,)
+        per_feat = sv_abs.mean(axis=1)[0]     # (F,)
+
+        # 정규화(합=1)
+        per_time = per_time / (per_time.sum() + 1e-12)
+        per_feat = per_feat / (per_feat.sum() + 1e-12)
+        return {"per_time": per_time, "per_feature": per_feat}
+
+
+
+
+    # -----------------------------------------------------------
+    # 아이디어 압축(LLM 토큰 절약용)
+    # -----------------------------------------------------------
+    @staticmethod
     def _pack_idea(exp: dict, top_time=8, top_feat=6, coverage=0.8):
+        """상위 시간, 피처만 압축, 커버리지 80%까지 누적"""
         per_time = sorted(exp["per_time"], key=lambda z: z["sum_abs"], reverse=True)
         total = sum(z["sum_abs"] for z in per_time) or 1.0
         acc, picked = 0.0, []
@@ -392,19 +516,23 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
         per_feat = sorted(exp["per_feature"], key=lambda z: z["sum_abs"], reverse=True)[:top_feat]
         top_features = [{"feature": f["feature"], "weight": r4(f["sum_abs"])} for f in per_feat]
-
-        attn = exp.get("evidence", {}).get("attention", [])
         peak = picked[0]["date"] if picked else None
-        return {"top_time": picked, "top_features": top_features,
-            "peak_date": peak, "window_size": exp.get("evidence",{}).get("window_size")}
+        return {
+            "top_time": picked,
+            "top_features": top_features,
+            "peak_date": peak,
+            "window_size": exp.get("evidence",{}).get("window_size")}
 
 
-   # LLM Reasoning 메시지 (아연수정)
+    # -----------------------------------------------------------
+    # ctx 생성용 헬퍼 블록들
+    # -----------------------------------------------------------
+
+    # LLM Reasoning 메시지 (아연수정)
 
     def _build_messages_opinion(self, stock_data, target):
         """TechnicalAgent용 LLM 프롬프트 메시지 구성 + 설명값 포함"""
         last = float(getattr(stock_data, "last_price", target.next_close))
-        delta = (target.next_close / last) - 1.0
 
         # 최신 윈도우 설명 산출
         X_last = self.searcher(self.ticker)
@@ -412,8 +540,9 @@ class TechnicalAgent(BaseAgent, nn.Module):
           X_last = torch.tensor(X_last, dtype=torch.float32)
         T = X_last.shape[1]
         dates = getattr(self.stockdata, f"{self.agent_id}_dates", [])[-T:] or [f"t-{T-1-i}" for i in range(T)]
-        exp = self.explain_last(X_last, dates, top_k=5) if not getattr(target, "idea", None) else None
-        idea = target.idea if target.idea else _pack_idea(exp)
+
+        exp = self.explain_last(X_last, dates, top_k=5, use_shap=True)
+        idea = target.idea if target.idea else self._pack_idea(exp)  # ← self. 로 호출
         target.idea = idea  # Target에 저장
 
 
@@ -424,25 +553,21 @@ class TechnicalAgent(BaseAgent, nn.Module):
             "next_close": r4(target.next_close),
             "uncertainty": r4(target.uncertainty),
             "confidence": r4(target.confidence),
-            "delta_pct": pct4(delta),
             "sigma": r4(target.uncertainty or 0.0),
             "beta": r4(target.confidence or 0.0),
             "window_size": int(self.window_size),
             "idea": idea,  # 핵심만
+            "evidence": exp.get("evidence", {})
         }
-
-
-
-        from prompts import OPINION_PROMPTS
 
         system_text = OPINION_PROMPTS[self.agent_id]["system"]
         user_text = OPINION_PROMPTS[self.agent_id]["user"].format(
-        context=json.dumps(ctx, ensure_ascii=False)
-        )
+            context=json.dumps(ctx, ensure_ascii=False)
+            )
         return system_text, user_text
 
 
-
+    # 추후 수정
     def _build_messages_rebuttal(self,
                                 my_opinion: Opinion,
                                 target_opinion: Opinion,
@@ -487,6 +612,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         )
         return system_text, user_text
 
+    # 추후 수정
     def _build_messages_revision(
         self,
         my_opinion: Opinion,

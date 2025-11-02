@@ -1,3 +1,8 @@
+# core/features/technical.py
+# ===============================================
+# Technical Feature 데이터 수집
+# ===============================================
+
 # ===============================================
 # Technical Feature 데이터 수집
 # ===============================================
@@ -88,4 +93,5 @@ def build_features_technical(df_price: pd.DataFrame) -> pd.DataFrame:
               .astype(np.float32))
 
     return out
+
 

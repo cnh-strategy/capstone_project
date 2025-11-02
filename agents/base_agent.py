@@ -1,3 +1,4 @@
+# agents/base_agent.py
 # ===============================================================
 # BaseAgent: LLM 기반 공통 인터페이스
 # ===============================================================
@@ -294,12 +295,14 @@ class BaseAgent:
         # -----------------------------
         # 입력 변환
         # -----------------------------
+        # 원본 보존 → 설명 단계에서 단 한 번만 스케일
         if isinstance(X, np.ndarray):
-            X_scaled, _ = self.scaler.transform(X)
+            X_raw_np = X.copy()
+            X_scaled, _ = self.scaler.transform(X_raw_np)
             X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
         elif isinstance(X, torch.Tensor): # 아연수정
-            X_np = X.detach().cpu().numpy()
-            X_scaled, _ = self.scaler.transform(X_np)
+            X_raw_np = X.detach().cpu().numpy().copy()
+            X_scaled, _ = self.scaler.transform(X_raw_np)
             X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
         else:
             raise TypeError(f"Unsupported input type: {type(X)}")
@@ -355,12 +358,13 @@ class BaseAgent:
             idea = None, #일단 None으로 시작 # 아연수정
         )
 
-        X_last_tensor = X_tensor
-        T = X_last_tensor.shape[1]
+        # 설명은 "스케일 전" 입력을 사용해 내부에서 1회 스케일
+        X_last_raw = torch.tensor(X_raw_np, dtype=torch.float32)
+        T = X_last_raw.shape[1]
         dates_all = getattr(self.stockdata, f"{self.agent_id}_dates", [])
         dates = dates_all[-T:] if dates_all else [f"t-{T-1-i}" for i in range(T)]
 
-        exp = self.explain_last(X_last_tensor, dates, top_k=5)  # 설명 계산
+        exp = self.explain_last(X_last_raw, dates, top_k=5)  # 설명 계산
 
         target.idea = {
             "per_time": exp["per_time"],
@@ -999,4 +1003,5 @@ def load_explain_json(ticker, agent_id, path_dir="models/explain"):
         data = json.load(f)
     print(f"■ 설명 JSON 파일 로드 완료: {path}")
     return data
+
 
