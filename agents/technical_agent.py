@@ -1,4 +1,4 @@
-# technical_agent.py
+# agents/technical_agent.py
 
 import os
 import json
@@ -11,7 +11,12 @@ import torch.nn as nn
 import yfinance as yf
 
 from core.technical_classes.technical_base_agent import (
-    BaseAgent, StockData, Target, Opinion, Rebuttal, r4, pct4
+    TechnicalBaseAgent, StockData, Target, Opinion, Rebuttal, r4, pct4
+)
+
+from core.technical_classes.technical_data_set import (
+    build_dataset, load_dataset, get_latest_close_price,
+    compute_rsi, create_sequences, fetch_ticker_data,
 )
 
 from config.agents import agents_info, dir_info
@@ -19,7 +24,7 @@ from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 
 
 
-class TechnicalAgent(BaseAgent, nn.Module):
+class TechnicalAgent(TechnicalBaseAgent, nn.Module):
     """
     Technical Agent: BaseAgent + LSTM×2 + time-attention
     목적
@@ -42,7 +47,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         batch_size=agents_info["TechnicalAgent"]["batch_size"],
         **kwargs
     ):
-        BaseAgent.__init__(self, agent_id, **kwargs)
+        TechnicalBaseAgent.__init__(self, agent_id, **kwargs)
         nn.Module.__init__(self)
 
 
@@ -73,40 +78,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
         self.last_pred = None
         self.last_attn = None  # (아연수정) time-attention 캐시
 
-
-
-    '''
-    생략(아연수정)
-    def _build_model(self):
-        """TechnicalAgent 기본 GRU 모델 자동 생성"""
-        import torch.nn as nn
-        import torch
-
-        input_dim = getattr(self, "input_dim", 10)
-        hidden_dim = getattr(self, "hidden_dim", 64)
-        dropout_rate = getattr(self, "dropout_rate", 0.2)
-
-        class GRUNet(nn.Module):
-            def __init__(self, input_dim, hidden_dim, dropout_rate):
-                super().__init__()
-                self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True, dropout=dropout_rate)
-                self.dropout = nn.Dropout(dropout_rate)
-                self.fc = nn.Sequential(
-                    nn.Linear(hidden_dim, 1),
-                    # nn.Tanh()  # 기존: 출력을 -1~1로 제한 (문제 원인)
-                    # 수정: Tanh 제거하여 선형 출력으로 변경 - 상승/하락율 예측에 적합
-                )
-
-            def forward(self, x):
-                out, _ = self.gru(x)          # out: (batch, seq, hidden)
-                out = out[:, -1, :]           # 마지막 시점(hidden state)
-                out = self.dropout(out)
-                return self.fc(out)           # (batch, 1)
-
-        model = GRUNet(input_dim, hidden_dim, dropout_rate)
-        print(f"🧠 GRU 모델 생성됨 (input={input_dim}, hidden={hidden_dim}, dropout={dropout_rate})")
-        return model
-    '''
 
     # (아연수정) 기존 GRU 팩토리 우회 용도
     def _build_model(self):
@@ -439,7 +410,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         파일 상단 수정 없이 내부에서 lazy import.
         """
         try:
-            from core.data_set import load_dataset  # lazy import
+            from core.technical_classes.technical_data_set import load_dataset  
             X, _, _, _ = load_dataset(self.ticker, agent_id=self.agent_id, save_dir=self.data_dir)
             if len(X) <= 1:
                 return None

@@ -1,18 +1,20 @@
+# core/technical_classes/technical.py
 # ===============================================
 # Technical Feature 데이터 수집
 # ===============================================
+import numpy as np
+import pandas as pd
 
 """
 테크니컬 지표(13개)
-"data_cols": [
-            "vol_20d","obv","ret_3d",""log_ret_lag1"
-            "weekofyear","vol_ma_20","vol_chg",
-            "bbp","ma_200","macd","adx_14","mom_10"
-            ]
 """
 
-import numpy as np
-import pandas as pd
+TECH_COLS = [
+    "weekofyear_sin","weekofyear_cos","log_ret_lag1",
+    "ret_3d","mom_10","ma_200",
+    "macd","bbp","adx_14",
+    "obv","vol_ma_20","vol_chg","vol_20d",
+    ]
 
 def _ema(s, span):
     return s.ewm(span=span, adjust=False).mean()
@@ -96,12 +98,5 @@ def build_features_technical(df_price: pd.DataFrame) -> pd.DataFrame:
               .dropna()
               .astype(np.float32))
     
-    TECH_COLS = [
-    "weekofyear_sin","weekofyear_cos","log_ret_lag1",
-    "ret_3d","mom_10","ma_200",
-    "macd","bbp","adx_14",
-    "obv","vol_ma_20","vol_chg","vol_20d",
-    ]
-
     out = out.reindex(columns=TECH_COLS).astype(np.float32)
     return out

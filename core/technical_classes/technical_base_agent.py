@@ -1,5 +1,6 @@
+# core/technical_classes/technical_base_agent.py
 # ===============================================================
-# BaseAgent: LLM 기반 공통 인터페이스
+# TechnicalBaseAgent: LLM 기반 공통 인터페이스 (테크니컬 전용 베이스)
 # ===============================================================
 from __future__ import annotations
 from dataclasses import dataclass
@@ -11,7 +12,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 from config.agents import agents_info, dir_info
-from core.data_set import build_dataset, load_dataset
+from core.technical_classes.technical_data_set import (
+    build_dataset, load_dataset)
 import torch
 import torch.nn as nn # 아연수정
 import numpy as np
@@ -20,7 +22,7 @@ from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 import joblib
 
 # ===============================================================
-# utils(아연추가)
+# utils
 # ===============================================================
 def r4(x):
     """소수점 4자리 반올림"""
@@ -37,7 +39,7 @@ def pct4(x):
 # ===============================================================
 
 @dataclass
-class Target: # 아연수정
+class Target:
     """예측 목표값 + 불확실성 정보 포함
     - next_close: 다음 거래일 종가 예측치
     - uncertainty: Monte Carlo Dropout 기반 예측 표준편차(σ)
@@ -86,6 +88,7 @@ class StockData:
     - last_price : 최신 종가
     - currency   : 통화코드
     """
+    ticker: Optional[str] = None
     SentimentalAgent: Optional[Dict[str, Any]] = field(default_factory=dict)
     FundamentalAgent: Optional[Dict[str, Any]] = field(default_factory=dict)
     TechnicalAgent: Optional[Dict[str, Any]] = field(default_factory=dict)
@@ -93,14 +96,12 @@ class StockData:
     currency: Optional[str] = None
     feature_cols: Optional[List[str]] = field(default_factory=list) # 아연추가
     TechnicalAgent_dates: Optional[List[str]] = field(default_factory=list) # 아연추가
-
+    
 
 # ===============================================================
-# BaseAgent 클래스
+# TechnicalBaseAgent
 # ===============================================================
-class BaseAgent:
-    """LLM 기반 Multi-Agent Debate 공통 클래스"""
-
+class TechnicalBaseAgent:
     OPENAI_URL = "https://api.openai.com/v1/responses"
 
     def __init__(
@@ -177,83 +178,153 @@ class BaseAgent:
             "additionalProperties": False,
         }
 
+
+    # -----------------------------------------------------------
+    # 데이터 수집
+    # -----------------------------------------------------------
     def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
         import yfinance as yf
         import pandas as pd
 
         agent_id = self.agent_id
-
-        if ticker is None:
-            ticker = self.ticker
+        ticker = ticker or self.ticker
 
         dataset_path = os.path.join(self.data_dir, f"{ticker}_{agent_id}_dataset.csv")
+        cfg = agents_info.get(self.agent_id, {}) 
 
-        cfg = agents_info.get(self.agent_id, {}) # 아연수정
-        period   = cfg.get("period", "5y") # 아연수정
-        interval = cfg.get("interval", "1d") #아연수정
-
-
-        # 데이터셋이 없으면 자동 생성
-        if not os.path.exists(dataset_path) or rebuild:
-            print(f"⚙️ {ticker} {agent_id} dataset not found. Building new dataset...")
-            build_dataset(ticker=ticker, save_dir=self.data_dir)
-
+        need_build = rebuild or (not os.path.exists(dataset_path))
+        if need_build:
+            print(f"⚙️ {ticker} {agent_id} dataset not found. Building new dataset..." if not os.path.exists(dataset_path) else f"⚙️ {ticker} {agent_id} rebuild requested. Building dataset...")
+            build_dataset(
+                ticker=ticker,
+                save_dir=self.data_dir,
+                period=cfg.get("period", "5y"),
+                interval=cfg.get("interval", "1d"),
+            )
+    
         # CSV 로드 (아연수정)
         X, y, feature_cols, dates_all = load_dataset(ticker, agent_id=agent_id, save_dir=self.data_dir)
 
-        # -------- 전구간 스케일링 (아연수정) --------
-        scaler_path = os.path.join(self.data_dir, f"{ticker}.{agent_id}.xscaler.pkl")
-        if rebuild or not os.path.exists(scaler_path):
-            x_scaler = StandardScaler()
-            x_scaler.fit(X.reshape(-1, X.shape[-1]))          # 전체 구간으로 fit
-            os.makedirs(self.data_dir, exist_ok=True)
-            joblib.dump(x_scaler, scaler_path)
-        else:
-            x_scaler = joblib.load(scaler_path)
-
-        X_scaled = x_scaler.transform(X.reshape(-1, X.shape[-1])).reshape(X.shape)
-
         # StockData 구성 (아연수정)
-        self.stockdata = StockData()
-        self.stockdata.ticker = ticker
-        self.stockdata.feature_cols = feature_cols
-        setattr(self.stockdata, f"{agent_id}_dates", dates_all[-1] if len(dates_all) else [])
+        self.stockdata = StockData(ticker=ticker, feature_cols=feature_cols)
+        setattr(self.stockdata, f"{agent_id}_dates", dates_all[-1] if dates_all else [])
 
         # 최근 window
         X_latest = X[-1:]
-        dates_latest = dates_all[-1] # (아연수정) 시퀀스 날짜
-        X_tensor = torch.tensor(X_latest, dtype=torch.float32)
-
-        # DataFrame 변환
-        df_latest = pd.DataFrame(X_latest[0], columns=feature_cols)
-
-        # 컬럼별 리스트 저장
-        feature_dict = {col: df_latest[col].tolist() for col in df_latest.columns}
-
-        setattr(self.stockdata, agent_id, feature_dict)
-
-        # 날짜 시퀀스와 메타 저장 (아연수정)
-        setattr(self.stockdata, f"{agent_id}_dates", dates_latest)
-        setattr(self.stockdata, "feature_cols", feature_cols)
-
+        # last_price 안전 변환 (+빈 DF 가드)
         try:
-            data = yf.download(ticker, period="5y", interval="1d") # 아연수정
-            self.stockdata.last_price = float(data["Close"].iloc[-1].item()) # 아연수정
-        except Exception as e:
-            print(f"yfinance 오류 발생")
+            data = yf.download(ticker, period="5y", interval="1d", auto_adjust=True, progress=False)
+            if data is not None and not data.empty:
+                last_val = data["Close"].iloc[-1]
+                self.stockdata.last_price = float(last_val.item() if hasattr(last_val, "item") else last_val)
+            else:
+                self.stockdata.last_price = None
+        except Exception:
+            self.stockdata.last_price = None
 
-
+        # 통화코드
         try:
             self.stockdata.currency = yf.Ticker(ticker).info.get("currency", "USD")
-        except Exception as e:
-            print(f"yfinance 오류 발생, 통화 기본값 사용: {e}")
+        except Exception:
             self.stockdata.currency = "USD"
 
         print(f"■ {agent_id} StockData 생성 완료 ({ticker}, {self.stockdata.currency})")
+        return torch.tensor(X_latest, dtype=torch.float32)
 
-        return torch.tensor(X_latest, dtype=torch.float32) # 아연수정
+
+    def pretrain(self):
+        """Agent별 사전학습 루틴 (모델 생성, 학습, 저장, self.model 연결까지 포함)"""
+        epochs = agents_info[self.agent_id]["epochs"]
+        lr = agents_info[self.agent_id]["learning_rate"]
+        batch_size = agents_info[self.agent_id]["batch_size"]
+
+        # --------------------------
+        # 데이터 로드
+        # --------------------------
+        X, y, cols, _ = load_dataset(self.ticker, self.agent_id, save_dir=self.data_dir) # 아연수정 컬럼 4개
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
+
+        split_idx = int(len(X) * 0.8)
+        X_train, X_val = X[:split_idx], X[split_idx:]
+        y_train, y_val = y[:split_idx], y[split_idx:]
+
+        # 🔹 타깃 스케일 조정 복원 - 상승/하락율을 100배로 스케일링
+        # 기존: 원본 상승/하락율 그대로 사용 (문제: 너무 작은 값으로 과적합)
+        # 수정: ±0.04 → ±4.0으로 스케일링하여 적절한 학습 범위 확보
+        y_train *= 100.0
+        y_val   *= 100.0
+
+        self.scaler.fit_scalers(X_train, y_train)
+        self.scaler.save(self.ticker)
+
+        X_train, y_train = map(torch.tensor, self.scaler.transform(X_train, y_train))
+        X_train, y_train = X_train.float(), y_train.float()
+
+        # --------------------------
+        # 모델 생성 및 초기화 (아연수정) nn.Module이면 자기 자신 사용. 과거 자기참조 서브모듈 제거.
+        # --------------------------
+        if isinstance(self, nn.Module):
+          model = self
+          self._modules.pop("model", None)
+        else:
+          if getattr(self, "model", None) is None:
+              if hasattr(self, "_build_model"):
+                  self.model = self._build_model()
+                  print(f"■ {self.agent_id} 모델 새로 생성됨.")
+              else:
+                raise RuntimeError(f"{self.agent_id}에 _build_model()이 정의되지 않음")
+          model = self.model
 
 
+        # --------------------------
+        # 학습
+        # --------------------------
+        model.train()
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        # 기존: MSE Loss 사용
+        # loss_fn = torch.nn.MSELoss()
+        # 수정: Huber Loss 사용 - 이상치에 덜 민감하고 더 안정적인 학습
+        # delta=1.0으로 조정 (타겟 스케일링 후 적절한 값)
+        loss_fn = torch.nn.HuberLoss(delta=1.0)
+
+        # 아연수정
+        train_loader = DataLoader(TensorDataset(X_train, y_train.view(-1, 1)),
+                                  batch_size=batch_size, shuffle=True)
+
+        # --------------------------
+        # 학습 루프
+        # --------------------------
+        for epoch in range(epochs):
+            total_loss = 0.0
+            for Xb, yb in train_loader:
+                y_pred = model(Xb)
+                loss = loss_fn(y_pred, yb)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+
+            if (epoch + 1) % 5 == 0:
+                print(f"  Epoch {epoch+1:03d} | Loss: {total_loss/len(train_loader):.6f}")
+
+        # --------------------------
+        # 모델 저장 및 연결
+        # --------------------------
+        os.makedirs(self.model_dir, exist_ok=True)
+        model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
+        torch.save({"model_state_dict": model.state_dict()}, model_path)
+
+        # (아연수정) nn.Module 자기 자신이면 self.model에 등록하지 않음
+        if model is not self:
+          self.model = model
+
+        print(f" {self.agent_id} 모델 학습 및 저장 완료: {model_path}")   
+
+
+    # -----------------------------------------------------------
+    # 예측
+    # -----------------------------------------------------------
     def predict(self, X, n_samples: int = 30, current_price: float = None, X_last: np.ndarray = None):
         """
         Monte Carlo Dropout 기반 예측 + 불확실성(σ) 및 confidence 계산 (안정형)
@@ -648,94 +719,8 @@ class BaseAgent:
             print(f"오류 내용: {e}")
             return False
 
-    def pretrain(self):
-        """Agent별 사전학습 루틴 (모델 생성, 학습, 저장, self.model 연결까지 포함)"""
-        epochs = agents_info[self.agent_id]["epochs"]
-        lr = agents_info[self.agent_id]["learning_rate"]
-        batch_size = agents_info[self.agent_id]["batch_size"]
 
-        # --------------------------
-        # 데이터 로드
-        # --------------------------
-        X, y, cols, _ = load_dataset(self.ticker, self.agent_id, save_dir=self.data_dir) # 아연수정 컬럼 4개
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
-
-        split_idx = int(len(X) * 0.8)
-        X_train, X_val = X[:split_idx], X[split_idx:]
-        y_train, y_val = y[:split_idx], y[split_idx:]
-
-        # 🔹 타깃 스케일 조정 복원 - 상승/하락율을 100배로 스케일링
-        # 기존: 원본 상승/하락율 그대로 사용 (문제: 너무 작은 값으로 과적합)
-        # 수정: ±0.04 → ±4.0으로 스케일링하여 적절한 학습 범위 확보
-        y_train *= 100.0
-        y_val   *= 100.0
-
-        self.scaler.fit_scalers(X_train, y_train)
-        self.scaler.save(self.ticker)
-
-        X_train, y_train = map(torch.tensor, self.scaler.transform(X_train, y_train))
-        X_train, y_train = X_train.float(), y_train.float()
-
-        # --------------------------
-        # 모델 생성 및 초기화 (아연수정) nn.Module이면 자기 자신 사용. 과거 자기참조 서브모듈 제거.
-        # --------------------------
-        if isinstance(self, nn.Module):
-          model = self
-          self._modules.pop("model", None)
-        else:
-          if getattr(self, "model", None) is None:
-              if hasattr(self, "_build_model"):
-                  self.model = self._build_model()
-                  print(f"■ {self.agent_id} 모델 새로 생성됨.")
-              else:
-                raise RuntimeError(f"{self.agent_id}에 _build_model()이 정의되지 않음")
-          model = self.model
-
-
-        # --------------------------
-        # 학습
-        # --------------------------
-        model.train()
-
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        # 기존: MSE Loss 사용
-        # loss_fn = torch.nn.MSELoss()
-        # 수정: Huber Loss 사용 - 이상치에 덜 민감하고 더 안정적인 학습
-        # delta=1.0으로 조정 (타겟 스케일링 후 적절한 값)
-        loss_fn = torch.nn.HuberLoss(delta=1.0)
-
-        # 아연수정
-        train_loader = DataLoader(TensorDataset(X_train, y_train.view(-1, 1)),
-                                  batch_size=batch_size, shuffle=True)
-
-        # --------------------------
-        # 학습 루프
-        # --------------------------
-        for epoch in range(epochs):
-            total_loss = 0.0
-            for Xb, yb in train_loader:
-                y_pred = model(Xb)
-                loss = loss_fn(y_pred, yb)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item()
-
-            if (epoch + 1) % 5 == 0:
-                print(f"  Epoch {epoch+1:03d} | Loss: {total_loss/len(train_loader):.6f}")
-
-        # --------------------------
-        # 모델 저장 및 연결
-        # --------------------------
-        os.makedirs(self.model_dir, exist_ok=True)
-        model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
-        torch.save({"model_state_dict": model.state_dict()}, model_path)
-
-        # (아연수정) nn.Module 자기 자신이면 self.model에 등록하지 않음
-        if model is not self:
-          self.model = model
-
-        print(f" {self.agent_id} 모델 학습 및 저장 완료: {model_path}")
+       
 
     # 아연수정
     def _p(self, msg: str):
@@ -872,14 +857,15 @@ class DataScaler:
             "RobustScaler": RobustScaler,
             "None": None,
         }
-        Sx = ScalerMap[self.x_scaler]
-        Sy = ScalerMap[self.y_scaler]
+        # 문자열이면 클래스 매핑, 인스턴스면 그대로 사용
+        Sx = ScalerMap[self.x_scaler] if isinstance(self.x_scaler, str) else self.x_scaler
+        Sy = ScalerMap[self.y_scaler] if isinstance(self.y_scaler, str) else self.y_scaler
 
         # 3D 입력 (samples, seq_len, features) → 2D로 변환
         n_samples, seq_len, n_feats = X_train.shape
         X_2d = X_train.reshape(-1, n_feats)
-        self.x_scaler = Sx().fit(X_2d) if Sx else None
-        self.y_scaler = Sy().fit(y_train.reshape(-1, 1)) if Sy else None
+        self.x_scaler = (Sx().fit(X_2d) if isinstance(Sx, type) else Sx.fit(X_2d)) if Sx else None
+        self.y_scaler = (Sy().fit(y_train.reshape(-1,1)) if isinstance(Sy, type) else Sy.fit(y_train.reshape(-1,1))) if Sy else None
 
     def transform(self, X, y=None):
         # 3D 입력 (samples, seq_len, features) → 2D로 변환

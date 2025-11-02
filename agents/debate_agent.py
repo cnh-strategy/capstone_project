@@ -1,59 +1,104 @@
+# agents/debate_agent.py
+import os
+from config.agents import dir_info
+
 from datetime import datetime
+from typing import Dict, List
+from collections import defaultdict
 
 from agents.base_agent import BaseAgent, StockData, Target, Opinion, Rebuttal
 from agents.macro_agent import MacroPredictor
 from agents.technical_agent import TechnicalAgent
 from agents.sentimental_agent import SentimentalAgent
-from typing import Dict, List
-from collections import defaultdict
+
+import yfinance as yf
+import statistics
+
+# 테크니컬 별칭으로 따로 구분
+from core.technical_classes.technical_data_set import (
+    build_dataset as build_dataset_tech, 
+    load_dataset as load_dataset_tech,)
+
 from core.data_set import build_dataset, load_dataset
 from core.macro_classes.macro_funcs import macro_sercher
+
 
 class DebateAgent(BaseAgent):
     def __init__(self, rounds: int = 3, ticker: str = None):
         self.agents = {
-            "TechnicalAgent": TechnicalAgent("TechnicalAgent", ticker=ticker),
-            "MacroSentiAgent": MacroPredictor(agent_id="MacroSentiAgent", ticker=ticker,
+            "TechnicalAgent": TechnicalAgent(agent_id = "TechnicalAgent", ticker=ticker),
+            "MacroSentiAgent": MacroPredictor(agent_id= "MacroSentiAgent", ticker=ticker,
                                               base_date=datetime.today(),
                                               window=40),
-            "SentimentalAgent": SentimentalAgent("SentimentalAgent", ticker=ticker),
+            "SentimentalAgent": SentimentalAgent(ticker=ticker),
         }
         self.rounds = rounds
         self.opinions = {}
         self.rebuttals = {}
         self.ticker = ticker
 
-    def get_opinion(self, round: int, ticker: str = None):
+
+    def get_opinion(self, round: int, ticker: str = None, rebuild: bool = False, force_pretrain: bool = False):
         """각 agent의 Opinion(주장) 생성"""
         if not hasattr(self, "opinions"):
             self.opinions = {}
 
+        ticker = ticker or self.ticker
         opinions = {}
         X_scaled = None
         pred_prices = None
 
         for agent_id, agent in self.agents.items():
-            # 데이터 로드
+            # === Macro: macro_sercher → m_predictor → macro_reviewer_draft ===
             if agent_id == 'MacroSentiAgent':
                 print(f"{agent_id}의 데이터 로드.. macro_sercher")
                 X, X_scaled = macro_sercher(agent, ticker)
-            else:
+
+                print(f"{agent_id}의 예측")
+                pred_prices, target = agent.m_predictor(X)   #macro_4_predictor(self, macro_sub, X_seq) 로 묶어둠
+
+                print("[MacroSentiAgent] LLM (macro_reviewer_draft)")
+                _, opinion = agent.macro_reviewer_draft(X_scaled, pred_prices, target)  #llm_starter(X_scaled, pred_prices, target)
+
+
+            elif agent_id == 'TechnicalAgent':
+                # === Technical: searcher → (조건부) pretrain → predict → reviewer_draft ===
+                print("[TechnicalAgent] searcher 실행")
+                X = agent.searcher(ticker, rebuild=True)
+
+                # 모델 가중치 확인 후 필요시 학습
+                model_path = os.path.join(dir_info["model_dir"], f"{ticker}_{agent_id}.pt")
+                if force_pretrain or (not os.path.exists(model_path)):
+                    print("[TechnicalAgent] pretrain 실행")
+                    agent.pretrain()
+                else:
+                    print(f"[TechnicalAgent] 기존 모델 사용: {model_path}")
+
+                print("[TechnicalAgent] predict 실행")
+                target = agent.predict(X)
+
+                print("[TechnicalAgent] reviewer_draft 실행")
+                opinion = agent.reviewer_draft(agent.stockdata, target)
+
+            
+            else: 
+                # === Sentimental: searcher → predict → reviewer_draft ===
+                print("[SentimentalAgent] searcher 실행")
                 X = agent.searcher(ticker)      # base_agent에 존재 - 리턴: X_tensor
 
-            # 예측 수행
-            if agent_id == 'MacroSentiAgent':
-                print(f"{agent_id}의 예측")
-                pred_prices, target = agent.m_predictor(X)      #macro_4_predictor(self, macro_sub, X_seq) 로 묶어둠
-            else:
-                target = agent.predict(X)      # base_agent에 존재 - 리턴: target
+                print("[SentimentalAgent] predict 실행")
+                target = agent.predict(X)
 
-            # Opinion 생성 (LLM Reason 포함)
-            if agent_id == 'MacroSentiAgent':
-                _, opinion = agent.macro_reviewer_draft(X_scaled, pred_prices, target)           #llm_starter(X_scaled, pred_prices, target)
-            else:
-                opinion = agent.reviewer_draft(agent.stockdata, target)     # base_agent에 존재 - 리턴: 최신 오피니언
+                print("[SentimentalAgent] reviewer_draft 실행")
+                opinion = agent.reviewer_draft(agent.stockdata, target)
+
+            
             opinions[agent_id] = opinion
-
+            try:
+                print(f"  - {agent_id}: next_close={opinion.target.next_close:.4f}")
+            except Exception:
+                pass    
+        
         self.opinions[round] = opinions
         print(f" Round {round} 의견 수집 완료 ({len(opinions)} agents)")
         return opinions
