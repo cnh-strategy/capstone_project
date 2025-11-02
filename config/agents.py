@@ -13,28 +13,30 @@ agents_info = {
     # TechnicalAgent: 기술적 분석 기반 (예: TCN/LSTM 등)
     # -----------------------------------------------------------
     "TechnicalAgent": {
-        "description": "기술적 분석 기반 단기 추세 예측 모델",
-        # 모델/피처 관련
-        "input_dim": 10,
-        "hidden_dim": 64,
-        "dropout": 0.1,
+        "description": "TECH(13) → LSTM×2 + time-attention 모델 사용",
         "data_cols": [
-            "Open", "High", "Low", "Close", "Volume",
-            "returns", "sma_5", "sma_20", "rsi", "volume_z"
-        ],
-        # 시퀀스/학습 관련
-        "window_size": 14,
-        "epochs": 50,               # 빠른 테스트를 위한 값
-        "learning_rate": 1e-4,      # 주석과 값 일치(0.0001)
-        "batch_size": 16,
-        "period": "2y",             # yfinance: 2y/5y/10y
-        "interval": "1d",           # yfinance: 1d/1wk/1mo 등
-        # 스케일러
-        "x_scaler": "StandardScaler",   # StandardScaler | MinMaxScaler | RobustScaler | None
-        "y_scaler": "StandardScaler",   # 회귀 안정화를 위해 Standard 권장
-        # 합의/수렴 관련
+            "weekofyear_sin","weekofyear_cos","log_ret_lag1",
+            "ret_3d","mom_10","ma_200",
+            "macd","bbp","adx_14",
+            "obv","vol_ma_20","vol_chg","vol_20d"
+            ],
+        "feature_builder": "core.technical_classes.technical:build_features_technical", # 수정
+        "input_dim": 13,
+        "window_size": 55,              # lookback
+        "rnn_units1": 64,               # 1층 hidden size
+        "rnn_units2": 32,               # 2층 hidden size
+        "dropout": 0.18778570103014075,
+        "epochs": 45,
+        "patience": 8,
+        "learning_rate": 4.2471233429729313e-4,
+        "batch_size": 64,
+        "period": "5y",
+        "interval": "1d",
+        "x_scaler": "MinMaxScaler",
+        "y_scaler": "StandardScaler",
         "gamma": 0.3,
         "delta_limit": 0.05,
+        "seed": 1234
     },
 
     # -----------------------------------------------------------
@@ -103,4 +105,5 @@ dir_info = {
     "data_dir": "data/processed",
     "model_dir": "models",
     "scaler_dir": "models/scalers",
+    "artifacts_dir": "artifacts" # 아연추가(필요없을시 삭제)
 }
