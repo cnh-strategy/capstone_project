@@ -273,3 +273,70 @@ class SentimentalAgent(BaseAgent):
             "confidence": confidence,
         }
         return pred
+
+    # ---------------------------
+    # LLM 메시지 빌더 3종
+    # ---------------------------
+    def _build_messages_opinion(self, stock_data, target) -> Tuple[str, str]:
+        last = getattr(self.stockdata, "last_price", None)
+        try:
+            pred_ret = float(target.next_close / float(last) - 1.0) if (last and target and target.next_close) else None
+        except Exception:
+            pred_ret = None
+        sys = (
+            "너는 감성/뉴스 중심의 단기 주가 분석가다. "
+            "주어진 ctx를 근거로 다음 거래일 종가(next_close)에 대한 해석과 근거(reason)를 작성한다. "
+            "1~5번까지 번호를 매겨가며 작성하며 충분하고 구체적인 증거를 포함한다. "
+            "반드시 포함할 요소:\n"
+            "- 현재가 대비 예상 변화(비율 또는 방향)와 그 근거\n"
+            "- 긍정/부정 기사 비율(또는 감정 점수)과 기간(예: 최근 7일/30일) 비교\n"
+            "- 핵심 이벤트/뉴스(가능하면 날짜·출처·키워드)와 그 영향 해석\n"
+            "- 여론 추세 변화(개선/악화)와 강도, 노이즈/한계에 대한 주의점\n"
+            "- 모델 신호(예: 신뢰도/불확실성)가 있다면 수치로 간단히 해석\n"
+            "전문용어(예: attention, embedding, 회귀계수 등) 대신 일반 투자자가 이해하기 쉬운 표현을 사용하라. "
+            "출력은 반드시 하나의 JSON 객체로만 반환하며, 키는 "
+            "{\"next_close\": number, \"reason\": string} 만 허용한다."
+        )
+        # pred_return, pred_next_close = _compute_pred_fields(
+        #     last_close=last,
+        #     yhat_scaled=target.yhat_scaled,  # 모델 원시 출력 (target 안에 yhat_scaled 있다고 추정)
+        #     y_scaler=self.scaler.y_scaler if getattr(self.scaler, "y_scaler", None) else None,
+        #     target_mode="log_return"  # 실제 타깃에 맞게 설정
+        # )
+        user = (
+            "컨텍스트:\n"
+            f"- ticker: {self.ticker}\n"
+            f"- last_price: {last:.4f}\n"
+            f"- pred_next_close: {pred_next_close:.4f}\n"
+            f"- pred_return: {pred_return:.6f}\n"
+            f"- uncertainty_std: {getattr(target, 'uncertainty', None)}\n"
+            f"- confidence: {getattr(target, 'confidence', None)}\n"
+            "→ reason만 출력"
+        )
+        return sys, user
+
+    def _build_messages_rebuttal(self, my_opinion, target_opinion, stock_data) -> Tuple[str, str]:
+        sys = (
+            "너는 금융 토론 보조자다. 상대 의견의 수치·근거를 검토해 한 문단 이내로 "
+            "REBUT 또는 SUPPORT 메시지를 생성하라."
+        )
+        user = (
+            "컨텍스트:\n"
+            f"- 내 의견: {my_opinion}\n"
+            f"- 상대 의견: {target_opinion}\n"
+            f"- 현재가: {getattr(self.stockdata, 'last_price', None)}\n"
+            "→ stance와 message를 일관되게 구성"
+        )
+        return sys, user
+
+    def _build_messages_revision(self, my_opinion, others, rebuttals, stock_data) -> Tuple[str, str]:
+        sys = "너는 금융 분석가다. 토론 결과를 반영하여 2~3문장으로 수정 사유(reason)를 간결히 작성하라."
+        user = (
+            "컨텍스트:\n"
+            f"- 내 의견: {my_opinion}\n"
+            f"- 타 의견 수: {len(others)}\n"
+            f"- 반박/지지 수: {len(rebuttals)}\n"
+            f"- 현재가: {getattr(self.stockdata, 'last_price', None)}\n"
+            "→ reason만 출력"
+        )
+        return sys, user
