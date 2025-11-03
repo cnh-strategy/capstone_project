@@ -1,283 +1,233 @@
 # core/data_set.py
 # ===============================================================
 # 멀티에이전트용 데이터셋 빌더 및 로더
-#  - Sentimental / Technical / Macro* 데이터 구성
-#  - CSV(미리보기) + NPZ(학습용)
-#  - 타깃: "다음날 수익률" (Close_{t+1}/Close_t - 1)
+#  - if / elif 분기: 매크로 / 센티멘탈 / 테크니컬
+#  - 센티멘탈 분기에서는 "네가 맨 처음 썼던 코드" 기반 로직 사용
+#  - 타깃: 다음날 수익률 (Close_{t+1}/Close_t - 1)
+#  - 저장: {save_dir}/{ticker}_{agent_id}_dataset.csv
 # ===============================================================
 
 from __future__ import annotations
 import os
-import json
-from typing import Dict, Tuple, List, Optional
+from typing import Optional, Tuple, List, Dict
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
 
-# ---- optional macro import (지연) ----
+from config.agents import agents_info, dir_info
+
+# ---- optional macro import (지연) : 파일 상단에서 '한 번만' 처리 ----
+_HAS_MACRO = False
+_MACRO_IMPORT_ERROR = ""
 try:
-    from core.macro_classes.macro_funcs import macro_dataset
+    # 1) 패키지 내부 상대 임포트
+    from .macro_classes.macro_funcs import macro_dataset as _macro_dataset
+    macro_dataset = _macro_dataset
     _HAS_MACRO = True
-except Exception:
-    macro_dataset = None
-    _HAS_MACRO = False
+    _MACRO_SRC = "relative: .macro_classes.macro_funcs"
+except Exception as e1:
+    try:
+        # 2) 절대 임포트 (환경에 따라 상대가 막힐 때)
+        from core.macro_classes.macro_funcs import macro_dataset as _macro_dataset
+        macro_dataset = _macro_dataset
+        _HAS_MACRO = True
+        _MACRO_SRC = "absolute: core.macro_classes.macro_funcs"
+    except Exception as e2:
+        macro_dataset = None
+        _HAS_MACRO = False
+        _MACRO_IMPORT_ERROR = f"{type(e1).__name__}: {e1} | {type(e2).__name__}: {e2}"
+        _MACRO_SRC = "unavailable"
 
-# ---- config fallback ----
-try:
-    from config.agents import agents_info, dir_info
-except Exception:
-    agents_info = {
-        "SentimentalAgent": {"window_sizes": [40], "period": "2y", "interval": "1d"}
-    }
-    dir_info = {
-        "data_root": "data",
-        "processed_dir": os.path.join("data", "processed"),
-        "raw_dir": os.path.join("data", "raw"),
-        "preview_dir": os.path.join("data", "preview"),
-    }
 
-# ===============================================================
-# utils
-# ===============================================================
+# -----------------------------
+# 공용 유틸
+# -----------------------------
+def compute_rsi(series: pd.Series, window: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -1 * delta.clip(upper=0)
+    avg_gain = gain.rolling(window).mean()
+    avg_loss = loss.rolling(window).mean()
+    rs = avg_gain / (avg_loss + 1e-6)
+    return 100 - (100 / (1 + rs))
 
-def _ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
+def create_sequences(features: pd.DataFrame, target: np.ndarray, window_size: int = 14) -> Tuple[np.ndarray, np.ndarray]:
+    X, y = [], []
+    for i in range(len(features) - window_size):
+        X.append(features.iloc[i:i + window_size].to_numpy())
+        y.append(target[i + window_size])
+    return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32).reshape(-1, 1)
 
-def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
+def _save_agent_csv(flattened_rows: List[dict], csv_path: str) -> None:
+    agent_df = pd.DataFrame(flattened_rows)
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    agent_df.to_csv(csv_path, index=False, encoding="utf-8")
+
+
+# -----------------------------
+# 센티멘탈 전용(네 초기 코드 기반)
+# -----------------------------
+def _fetch_ticker_data_for_sentimental(ticker: str, period: Optional[str], interval: Optional[str]) -> pd.DataFrame:
+    period = period or "2y"
+    interval = interval or "1d"
+
+    df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
+    df.dropna(inplace=True)
+
+    # 멀티인덱스 컬럼 방어
     if isinstance(df.columns, pd.MultiIndex):
-        df = df.copy()
-        df.columns = ["_".join([str(x) for x in tup if str(x) != ""]).strip("_") for tup in df.columns]
-    return df
+        df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
 
-def _zscore(s: pd.Series, win: int) -> pd.Series:
-    m = s.rolling(win).mean()
-    sd = s.rolling(win).std(ddof=0)
-    return (s - m) / sd
+    # 기본 기술 지표
+    df["returns"] = df["Close"].pct_change().fillna(0)
+    df["sma_5"] = df["Close"].rolling(5).mean()
+    df["sma_20"] = df["Close"].rolling(20).mean()
+    df["rsi"] = compute_rsi(df["Close"])
+    df["volume_z"] = (df["Volume"] - df["Volume"].mean()) / (df["Volume"].std() + 1e-6)
 
-def _standardize_price_df(df: pd.DataFrame) -> pd.DataFrame:
-    df = _flatten_columns(df).copy()
-    close_candidates = [c for c in df.columns if c.lower().startswith("close")]
-    adj_candidates = [c for c in df.columns if c.lower().startswith("adj close") or c.lower().startswith("adjclose")]
-
-    if "Close" not in df.columns:
-        if "Adj Close" in df.columns:
-            df = df.rename(columns={"Adj Close": "Close"})
-        elif close_candidates:
-            df = df.rename(columns={close_candidates[0]: "Close"})
-        elif adj_candidates:
-            df = df.rename(columns={adj_candidates[0]: "Close"})
-
-    keep_names = []
-    for base in ["Open", "High", "Low", "Close", "Volume"]:
-        if base in df.columns:
-            keep_names.append(base)
-            continue
-        cand = [c for c in df.columns if c.lower().startswith(base.lower())]
-        if cand:
-            df = df.rename(columns={cand[0]: base})
-            keep_names.append(base)
-
-    if "Close" not in keep_names:
-        raise ValueError("Price dataframe must contain 'Close' (or an equivalent).")
-
-    df = df[keep_names]
-    if not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.to_datetime(df.index)
-    df = df.sort_index()
-    return df
-
-def _add_target_next_return(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    if "Close" not in df.columns:
-        if "Adj Close" in df.columns:
-            df = df.rename(columns={"Adj Close": "Close"})
-        else:
-            cand = [c for c in df.columns if c.lower().startswith("close")]
-            if cand:
-                df = df.rename(columns={cand[0]: "Close"})
-            if "Close" not in df.columns:
-                raise KeyError("Close 컬럼이 없습니다.")
-    df = df.assign(target_return_next=(df["Close"].shift(-1) / df["Close"] - 1.0))
-    if "target_return_next" not in df.columns:
-        df["target_return_next"] = df["Close"].shift(-1) / df["Close"] - 1.0
-    df = df[df["target_return_next"].notna()]
-    return df
-
-def _build_basic_features(df_price: pd.DataFrame) -> pd.DataFrame:
-    df = df_price.copy()
-    df["returns"] = df["Close"].pct_change()
-    df["rolling_vol_20"] = df["returns"].rolling(20).std(ddof=0)
-    df["zscore_close_20"] = _zscore(df["Close"], 20)
-    if "Volume" in df.columns:
-        df["zscore_volume_20"] = _zscore(df["Volume"].fillna(0), 20)
-        v_mean = df["Volume"].rolling(20).mean()
-        df["turnover_rate"] = (df["Volume"] / (v_mean.replace(0, np.nan))).clip(upper=10).fillna(0)
-        v_mean2 = df["Volume"].rolling(20).mean()
-        df["volume_spike"] = (df["Volume"] >= (v_mean2 * 1.5)).astype(int)
-    rolling_high = df["Close"].rolling(20).max()
-    df["breakout_20"] = (df["Close"] >= rolling_high).astype(int)
-    return df
-
-def _merge_macro_if_available(df_feat: pd.DataFrame, ticker: str) -> pd.DataFrame:
-    if not _HAS_MACRO or macro_dataset is None:
-        return df_feat
+    # Fundamental 보조(USD/KRW, NASDAQ, VIX)
     try:
-        df_macro = macro_dataset(ticker)
-        if not isinstance(df_macro.index, pd.DatetimeIndex):
-            df_macro.index = pd.to_datetime(df_macro.index)
-        df_macro = _flatten_columns(df_macro).sort_index()
-        df_macro = df_macro.add_prefix("macro_")
-        return df_feat.join(df_macro, how="left")
-    except Exception:
-        return df_feat
+        usd_krw = yf.download("USDKRW=X", period=period, interval=interval, auto_adjust=True, progress=False)
+        df["USD_KRW"] = (usd_krw["Close"].reindex(df.index, method="ffill") if not usd_krw.empty else 1300.0)
 
-def _sanity_clean(df: pd.DataFrame, required_cols: List[str]) -> pd.DataFrame:
-    df = df.replace([np.inf, -np.inf], np.nan)
-    existing = [c for c in required_cols if c in df.columns]
-    if not existing:
-        return df.dropna()
-    return df.dropna(subset=existing)
+        nasdaq = yf.download("^IXIC", period=period, interval=interval, auto_adjust=True, progress=False)
+        df["NASDAQ"] = (nasdaq["Close"].reindex(df.index, method="ffill") if not nasdaq.empty else 15000.0)
 
-def _to_sequences(
-    df: pd.DataFrame,
-    feature_cols: List[str],
-    target_col: str,
-    window_size: int
-) -> Tuple[np.ndarray, np.ndarray]:
-    assert target_col in df.columns, f"target_col '{target_col}' not in columns"
-    feature_cols = [c for c in feature_cols if c in df.columns]
-    values = df[feature_cols].values.astype(np.float32)
-    target = df[target_col].values.astype(np.float32)
+        vix = yf.download("^VIX", period=period, interval=interval, auto_adjust=True, progress=False)
+        df["VIX"] = (vix["Close"].reindex(df.index, method="ffill") if not vix.empty else 20.0)
+    except Exception as e:
+        print(f"⚠️ 추가 지표 다운로드 실패: {e}")
+        df["USD_KRW"] = 1300.0
+        df["NASDAQ"] = 15000.0
+        df["VIX"] = 20.0
 
-    X_list, y_list = [], []
-    end = len(df) - window_size + 1 - 1  # shift(-1) 반영
-    for i in range(max(0, end)):
-        X_list.append(values[i:i + window_size])
-        y_list.append(target[i + window_size - 1])
+    # 감성(placeholder): 초기 코드 그대로
+    df["sentiment_mean"] = df["returns"].rolling(3).mean().fillna(0)
+    df["sentiment_vol"] = df["returns"].rolling(3).std().fillna(0)
 
-    if not X_list:
-        raise ValueError(f"Not enough rows: len(df)={len(df)}, window={window_size}")
-    X = np.stack(X_list, axis=0)
-    y = np.array(y_list, dtype=np.float32).reshape(-1, 1)
-    return X, y
+    df.dropna(inplace=True)
+    return df
 
-# ===============================================================
-# build / load
-# ===============================================================
 
-def _resolve_dirs(save_dir: Optional[str]) -> Dict[str, str]:
-    data_root_default = "data"
-    processed_default = os.path.join("data", "processed")
-    raw_default = os.path.join("data", "raw")
-    preview_default = os.path.join("data", "preview")
-    try:
-        from config.agents import dir_info as _di
-        data_root_default = _di.get("data_root", data_root_default)
-        processed_default = _di.get("processed_dir", processed_default)
-        raw_default = _di.get("raw_dir", raw_default)
-        preview_default = _di.get("preview_dir", preview_default)
-    except Exception:
-        pass
-
-    if not save_dir:
-        processed, raw, preview = processed_default, raw_default, preview_default
-        root = data_root_default
-    else:
-        base = os.path.basename(os.path.normpath(save_dir)).lower()
-        if base in {"processed", "raw", "preview"}:
-            parent = os.path.dirname(os.path.normpath(save_dir)) or "."
-            if base == "processed":
-                processed = save_dir; raw = os.path.join(parent, "raw"); preview = os.path.join(parent, "preview")
-            elif base == "raw":
-                raw = save_dir; processed = os.path.join(parent, "processed"); preview = os.path.join(parent, "preview")
-            else:
-                preview = save_dir; processed = os.path.join(parent, "processed"); raw = os.path.join(parent, "raw")
-            root = parent
-        else:
-            processed = os.path.join(save_dir, "processed")
-            raw = os.path.join(save_dir, "raw")
-            preview = os.path.join(save_dir, "preview")
-            root = save_dir
-
-    for p in (processed, raw, preview):
-        os.makedirs(p, exist_ok=True)
-    return {"root": root, "processed": processed, "raw": raw, "preview": preview}
-
+# -----------------------------
+# 공개 API
+# -----------------------------
 def build_dataset(
     ticker: str,
-    save_dir: str,
-    agent_id: str = "SentimentalAgent",
+    save_dir: str = dir_info["data_dir"],
+    agent_id: Optional[str] = None,
     period: Optional[str] = None,
     interval: Optional[str] = None,
 ) -> None:
-    dirs = _resolve_dirs(save_dir)
-    agent_cfg = agents_info.get(agent_id, {})
-    window_sizes = agent_cfg.get("window_sizes", [40])
-    period = period or agent_cfg.get("period", "2y")
-    interval = interval or agent_cfg.get("interval", "1d")
+    """
+    debate_agent.py에서 agent_id를 넘겨주면, 여기서 분기 처리합니다.
+    - agent_id == 'MacroSentiAgent' / '매크로' / 'macro'
+    - agent_id == 'SentimentalAgent' / '센티멘탈' / 'sentimental'
+    - agent_id == 'TechnicalAgent' / '테크니컬' / 'technical' (추후)
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    aid = (agent_id or "").strip().lower()
 
-    df_price = yf.download(ticker, period=period, interval=interval, progress=False)
-    df_price = _standardize_price_df(df_price)
+    # ---------- macro_agent ----------
+    if aid in {"macrosentiagent", "macro", "매크로"}:
+        if not _HAS_MACRO or macro_dataset is None:
+            raise ImportError(
+                "macro_dataset 모듈을 찾을 수 없습니다. core/macro_classes 확인 필요. "
+                f"details={_MACRO_IMPORT_ERROR}"
+            )
+        # 팀 구현에 맞게 호출
+        macro_dataset(ticker_name=ticker)
+        print(f"✅ {ticker} MacroSentiAgent dataset saved (macro_dataset 호출 via {_MACRO_SRC})")
 
-    try:
-        df_price.to_csv(os.path.join(dirs["raw"], f"{ticker}_{agent_id}_price.csv"))
-    except Exception:
-        pass
+    # ---------- sentimental_agent ----------
+    elif aid in {"sentimentalagent", "sentimental", "센티멘탈"}:
+        df = _fetch_ticker_data_for_sentimental(ticker, period, interval)
 
-    df_feat = _build_basic_features(df_price)
-    df_feat = _merge_macro_if_available(df_feat, ticker)
-    df_feat = _add_target_next_return(df_feat)
+        # 원본 CSV 저장(후속처리 참고용)
+        df.to_csv(os.path.join(save_dir, f"{ticker}_raw_data.csv"), index=True, encoding="utf-8")
 
-    feature_cols: List[str] = [c for c in df_feat.columns if c != "target_return_next"]
-    df_feat = _sanity_clean(df_feat, required_cols=feature_cols + ["target_return_next"])
+        # 사용할 피처 컬럼
+        if agent_id in agents_info and "data_cols" in agents_info[agent_id]:
+            feature_cols = agents_info[agent_id]["data_cols"]
+            window_size = agents_info[agent_id].get("window_size", 14)
+        else:
+            # fallback: 네 초기 코드 기반으로 합리적 기본 피처
+            feature_cols = [
+                "returns", "sma_5", "sma_20", "rsi", "volume_z",
+                "USD_KRW", "NASDAQ", "VIX",
+                "sentiment_mean", "sentiment_vol",
+                "Open", "High", "Low", "Close", "Volume",
+            ]
+            window_size = 14
 
-    w = int(window_sizes[0])
-    X, y = _to_sequences(df_feat, feature_cols, target_col="target_return_next", window_size=w)
+        # 타깃: 다음날 수익률
+        returns = df["Close"].pct_change().shift(-1)
+        valid_mask = ~returns.isna()
+        y = returns[valid_mask].to_numpy().reshape(-1, 1)
+        X = df.loc[valid_mask, feature_cols]
 
-    npz_path = os.path.join(dirs["processed"], f"{ticker}_{agent_id}.npz")
-    meta_path = os.path.join(dirs["processed"], f"{ticker}_{agent_id}.json")
-    preview_path = os.path.join(dirs["preview"], f"{ticker}_{agent_id}_preview.csv")
+        # 시퀀스 생성
+        X_seq, y_seq = create_sequences(X, y, window_size=window_size)
+        samples, time_steps, n_feats = X_seq.shape
+        print(f"[SentimentalAgent] X_seq: {X_seq.shape}, y_seq: {y_seq.shape}")
 
-    np.savez_compressed(npz_path, X=X, y=y)
-    meta = {
-        "ticker": ticker, "agent_id": agent_id,
-        "feature_cols": feature_cols, "window_size": w,
-        "n_samples": int(X.shape[0]), "n_features": int(X.shape[2]),
-        "period": period, "interval": interval,
-    }
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+        # 플랫 CSV
+        flattened = []
+        for sample_idx in range(samples):
+            for time_idx in range(time_steps):
+                row = {
+                    "sample_id": sample_idx,
+                    "time_step": time_idx,
+                    "target": float(y_seq[sample_idx, 0]) if time_idx == time_steps - 1 else np.nan,
+                }
+                for feat_idx, feat_name in enumerate(feature_cols):
+                    row[feat_name] = float(X_seq[sample_idx, time_idx, feat_idx])
+                flattened.append(row)
 
-    try:
-        df_feat.tail(200).to_csv(preview_path, index=True)
-    except Exception:
-        pass
+        csv_path = os.path.join(save_dir, f"{ticker}_{agent_id}_dataset.csv")
+        _save_agent_csv(flattened, csv_path)
+        print(f"✅ {ticker} {agent_id} dataset saved to CSV ({samples} samples, {len(feature_cols)} features)")
 
-    print(f"[{agent_id}] X_seq: {X.shape}, y_seq: {y.shape}")
-    print(f"✅ {ticker} {agent_id} dataset saved to NPZ/CSV (window={w}, features={len(feature_cols)})")
+    # ---------- technical_agent ----------
+    elif aid in {"technicalagent", "technical", "테크니컬"}:
+        raise NotImplementedError("TechnicalAgent 데이터셋 빌더는 추후 연결 예정입니다.")
 
-def load_dataset(
-    ticker: str,
-    agent_id: str,
-    save_dir: str
-) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-    dirs = _resolve_dirs(save_dir)
-    npz_path = os.path.join(dirs["processed"], f"{ticker}_{agent_id}.npz")
-    meta_path = os.path.join(dirs["processed"], f"{ticker}_{agent_id}.json")
-
-    if not os.path.exists(npz_path):
-        print(f"[load_dataset] {npz_path} 없음 → 새로 생성 중...")
-        build_dataset(ticker=ticker, save_dir=save_dir, agent_id=agent_id)
-
-    with np.load(npz_path) as data:
-        X = data["X"]; y = data["y"]
-
-    if os.path.exists(meta_path):
-        with open(meta_path, "r", encoding="utf-8") as f:
-            meta = json.load(f)
-        feature_cols = meta.get("feature_cols") or [f"f{i}" for i in range(X.shape[2])]
     else:
-        feature_cols = [f"f{i}" for i in range(X.shape[2])]
+        raise ValueError(f"지원하지 않는 agent_id: {agent_id}")
+
+
+def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"]) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+    """
+    위에서 저장한 CSV({ticker}_{agent_id}_dataset.csv)를 다시 시퀀스로 복원.
+    """
+    csv_path = os.path.join(save_dir, f"{ticker}_{agent_id}_dataset.csv")
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"Dataset file not found: {csv_path}")
+
+    df = pd.read_csv(csv_path)
+    feature_cols = [c for c in df.columns if c not in ["sample_id", "time_step", "target"]]
+
+    unique_samples = df["sample_id"].nunique()
+    time_steps = df["time_step"].nunique()
+    n_features = len(feature_cols)
+
+    X = np.zeros((unique_samples, time_steps, n_features), dtype=np.float32)
+    y = np.zeros((unique_samples, 1), dtype=np.float32)
+
+    for i, sample_id in enumerate(sorted(df["sample_id"].unique())):
+        block = df[df["sample_id"] == sample_id].sort_values("time_step")
+        X[i] = block[feature_cols].to_numpy(dtype=np.float32)
+        # 마지막 타임스텝에만 target 값이 들어가 있으므로 그 값을 사용
+        y[i, 0] = block["target"].dropna().iloc[-1] if block["target"].notna().any() else np.nan
 
     return X, y, feature_cols
+
+
+def get_latest_close_price(ticker: str, save_dir: str = dir_info["data_dir"]) -> float:
+    raw_data_path = os.path.join(save_dir, f"{ticker}_raw_data.csv")
+    if os.path.exists(raw_data_path):
+        df = pd.read_csv(raw_data_path, index_col=0)
+        return float(df["Close"].iloc[-1])
+    data = yf.download(ticker, period="1d", interval="1d", progress=False)
+    return float(data["Close"].iloc[-1])
