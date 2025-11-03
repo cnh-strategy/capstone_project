@@ -654,7 +654,6 @@ class BaseAgent:
 
         print(f" {self.agent_id} 모델 학습 및 저장 완료: {model_path}")
 
-
     # OpenAI API 호출
     def _ask_with_fallback(self, msg_sys: dict, msg_user: dict, schema_obj: dict) -> dict:
         """모델 폴백 포함 OpenAI Responses API 호출"""

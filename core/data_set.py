@@ -1,8 +1,5 @@
 # core/data_set.py
 # ===============================================================
-# 멀티에이전트용 데이터셋 빌더 및 로더
-#  - if / elif 분기: 매크로 / 센티멘탈 / 테크니컬
-#  - 센티멘탈 분기에서는 "네가 맨 처음 썼던 코드" 기반 로직 사용
 #  - 타깃: 다음날 수익률 (Close_{t+1}/Close_t - 1)
 #  - 저장: {save_dir}/{ticker}_{agent_id}_dataset.csv
 # ===============================================================
@@ -17,7 +14,6 @@ import yfinance as yf
 
 from config.agents import agents_info, dir_info
 
-# ---- optional macro import (지연) : 파일 상단에서 '한 번만' 처리 ----
 _HAS_MACRO = False
 _MACRO_IMPORT_ERROR = ""
 try:
@@ -66,7 +62,7 @@ def _save_agent_csv(flattened_rows: List[dict], csv_path: str) -> None:
 
 
 # -----------------------------
-# 센티멘탈 전용(네 초기 코드 기반)
+# Sentimental
 # -----------------------------
 def _fetch_ticker_data_for_sentimental(ticker: str, period: Optional[str], interval: Optional[str]) -> pd.DataFrame:
     period = period or "2y"
@@ -121,7 +117,7 @@ def build_dataset(
     interval: Optional[str] = None,
 ) -> None:
     """
-    debate_agent.py에서 agent_id를 넘겨주면, 여기서 분기 처리합니다.
+    debate_agent.py에서 agent_id를 넘겨주면, 여기서 분기 처리
     - agent_id == 'MacroSentiAgent' / '매크로' / 'macro'
     - agent_id == 'SentimentalAgent' / '센티멘탈' / 'sentimental'
     - agent_id == 'TechnicalAgent' / '테크니컬' / 'technical' (추후)
@@ -133,10 +129,9 @@ def build_dataset(
     if aid in {"macrosentiagent", "macro", "매크로"}:
         if not _HAS_MACRO or macro_dataset is None:
             raise ImportError(
-                "macro_dataset 모듈을 찾을 수 없습니다. core/macro_classes 확인 필요. "
+                "macro_dataset 모듈을 찾을 수 없습니다. core/macro_classes 확인 필요 "
                 f"details={_MACRO_IMPORT_ERROR}"
             )
-        # 팀 구현에 맞게 호출
         macro_dataset(ticker_name=ticker)
         print(f"✅ {ticker} MacroSentiAgent dataset saved (macro_dataset 호출 via {_MACRO_SRC})")
 
@@ -199,27 +194,58 @@ def build_dataset(
 
 def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"]) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
-    위에서 저장한 CSV({ticker}_{agent_id}_dataset.csv)를 다시 시퀀스로 복원.
+    위에서 저장한 CSV({ticker}_{agent_id}_dataset.csv)를 다시 시퀀스로 복원
+    - 숫자형 컬럼만 사용하도록 안전 가드 추가(날짜/문자열 혼입 방지)
     """
     csv_path = os.path.join(save_dir, f"{ticker}_{agent_id}_dataset.csv")
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Dataset file not found: {csv_path}")
 
     df = pd.read_csv(csv_path)
-    feature_cols = [c for c in df.columns if c not in ["sample_id", "time_step", "target"]]
+
+    # 후보 피처: 플랫 CSV 기준 기본 제외 컬럼
+    candidate_cols = [c for c in df.columns if c not in ["sample_id", "time_step", "target"]]
 
     unique_samples = df["sample_id"].nunique()
     time_steps = df["time_step"].nunique()
+
+    # 최초 블록(가장 작은 sample_id)에서 숫자형 컬럼만 확정
+    first_id = sorted(df["sample_id"].unique())[0]
+    first_block = df[df["sample_id"] == first_id].sort_values("time_step")[candidate_cols]
+
+    numeric_feature_cols: List[str] = []
+    for c in candidate_cols:
+        s = first_block[c]
+        if pd.api.types.is_numeric_dtype(s):
+            numeric_feature_cols.append(c)
+
+    dropped = [c for c in candidate_cols if c not in numeric_feature_cols]
+    if dropped:
+        print(f"[warn] Non-numeric features dropped in load_dataset(): {dropped}")
+
+    feature_cols = numeric_feature_cols
     n_features = len(feature_cols)
+
+    if n_features == 0:
+        raise ValueError("No numeric feature columns found after filtering. Check your dataset builder.")
 
     X = np.zeros((unique_samples, time_steps, n_features), dtype=np.float32)
     y = np.zeros((unique_samples, 1), dtype=np.float32)
 
     for i, sample_id in enumerate(sorted(df["sample_id"].unique())):
         block = df[df["sample_id"] == sample_id].sort_values("time_step")
-        X[i] = block[feature_cols].to_numpy(dtype=np.float32)
+
+        # 안전을 위해 숫자형 변환 강제 시도(실패 시 NaN → 이후 astype에서 에러 방지)
+        block_numeric = block[feature_cols].apply(pd.to_numeric, errors="coerce")
+        if block_numeric.isna().any().any():
+            # 남은 NaN은 직전값 채우고, 그래도 남으면 0으로
+            block_numeric = block_numeric.fillna(method="ffill").fillna(0.0)
+
+        X[i] = block_numeric.to_numpy(dtype=np.float32)
+
         # 마지막 타임스텝에만 target 값이 들어가 있으므로 그 값을 사용
-        y[i, 0] = block["target"].dropna().iloc[-1] if block["target"].notna().any() else np.nan
+        y_val = block["target"].dropna()
+        y[i, 0] = float(y_val.iloc[-1]) if not y_val.empty else np.nan
 
     return X, y, feature_cols
 

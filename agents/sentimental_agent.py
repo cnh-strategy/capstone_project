@@ -1,15 +1,19 @@
 # agents/sentimental_agent.py
 from __future__ import annotations
 import os
+import math
+from datetime import datetime
 from typing import Optional, Tuple, Dict, Any, List
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pandas as pd
+import numpy as np
 import yfinance as yf
 
 from agents.base_agent import BaseAgent
+
 try:
     from config.agents import agents_info, dir_info
 except Exception:
@@ -27,6 +31,7 @@ except Exception:
             "delta_limit": 0.05,
         }
     }
+
     dir_info = {
         "data_dir": "data",
         "model_dir": "models",
@@ -34,6 +39,28 @@ except Exception:
     }
 
 from core.data_set import build_dataset, load_dataset
+
+
+# ---------------------------
+# 수익률 -> 예측 종가
+# ---------------------------
+def _compute_pred_fields(last_close: float, yhat_scaled: float, y_scaler, target_mode: str = "log_return"):
+    yhat = y_scaler.inverse_transform([[yhat_scaled]])[0, 0] if y_scaler else yhat_scaled
+
+    if target_mode == "log_return":
+        pred_return = math.exp(yhat) - 1.0
+        pred_next_close = last_close * (1.0 + pred_return)
+    elif target_mode == "return":
+        pred_return = yhat
+        pred_next_close = last_close * (1.0 + pred_return)
+    elif target_mode == "price":
+        pred_next_close = yhat
+        pred_return = (pred_next_close / last_close) - 1.0
+    else:
+        raise ValueError(f"Unknown target_mode: {target_mode}")
+
+    assert abs((pred_next_close / last_close - 1.0) - pred_return) < 1e-6
+    return float(pred_return), float(pred_next_close)
 
 
 # ---------------------------
@@ -47,7 +74,6 @@ class _LazyLSTMWithStub(nn.Module):
         self._inited = False
         self.lstm: Optional[nn.LSTM] = None
         self.fc: Optional[nn.Linear] = None
-        # ✔️ 파라미터 이터레이터가 비지 않도록 보장
         self._stub = nn.Parameter(torch.zeros(1))
 
     def _lazy_build(self, in_dim: int):
@@ -56,17 +82,20 @@ class _LazyLSTMWithStub(nn.Module):
         self._inited = True
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, T, F)
         if not self._inited:
             in_dim = int(x.size(-1))
             self._lazy_build(in_dim)
-        out, _ = self.lstm(x)      # (B, T, H)
-        out = out[:, -1, :]        # (B, H)
+
+        out, _ = self.lstm(x)
+        out = out[:, -1, :]
         out = F.dropout(out, p=self.dropout_p, training=self.training)
-        out = self.fc(out)         # (B, 1) → 다음날 수익률 예측
+        out = self.fc(out)
         return out
 
 
+# ---------------------------
+# SentimentalAgent
+# ---------------------------
 class SentimentalAgent(BaseAgent):
     """BaseAgent(풀스택)와 호환되는 감성 에이전트"""
 
@@ -75,12 +104,8 @@ class SentimentalAgent(BaseAgent):
         cfg = agents_info.get(self.agent_id, {})
         self.hidden_dim = int(cfg.get("hidden_dim", 128))
         self.dropout = float(cfg.get("dropout", 0.2))
-        # demo에서 참고하는 필드가 반드시 존재하도록 초기화
         self.feature_cols: List[str] = []
 
-    # ---------------------------
-    # BaseAgent가 호출하는 훅
-    # ---------------------------
     def _build_model(self) -> nn.Module:
         return _LazyLSTMWithStub(hidden_dim=self.hidden_dim, dropout=self.dropout)
 
@@ -100,7 +125,6 @@ class SentimentalAgent(BaseAgent):
 
         try:
             ckpt = torch.load(model_path, map_location="cpu")
-
             if getattr(self, "model", None) is None:
                 self.model = self._build_model()
                 print(f"■ {self.agent_id} 모델 새로 생성됨 (로드 전 초기화).")
@@ -116,10 +140,10 @@ class SentimentalAgent(BaseAgent):
             if state_dict is not None:
                 missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
                 if unexpected:
-                    print(f"⚠️ 무시된 키(예전 구조): {unexpected[:8]}{'...' if len(unexpected)>8 else ''}")
+                    print(f"⚠️ 무시된 키: {unexpected[:8]}{'...' if len(unexpected) > 8 else ''}")
                 if missing:
-                    print(f"⚠️ 새 구조 전용 키(체크포인트에 없음): {missing[:8]}{'...' if len(missing)>8 else ''}")
-                print(f"✅(loose)) 모델 로드 시도 완료: {model_path}")
+                    print(f"⚠️ 누락된 키: {missing[:8]}{'...' if len(missing) > 8 else ''}")
+                print(f"✅ 모델 로드 완료: {model_path}")
             else:
                 print("⚠️ 알 수 없는 체크포맷 → 새 모델 그대로 사용")
 
@@ -135,98 +159,117 @@ class SentimentalAgent(BaseAgent):
             return False
 
     # ---------------------------
-    # demo 코드가 ag.feature_cols를 참조하므로
-    # BaseAgent.searcher()를 오버라이드하여 반드시 세팅
+    # 데이터 검색/로딩 (최신 윈도우 반환)
     # ---------------------------
     def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
-        agent_id = self.agent_id
-        if ticker is None:
-            ticker = self.ticker
+        from agents.base_agent import StockData as _StockData
+
+        ticker = ticker or self.ticker
         self.ticker = ticker
-
+        agent_id = self.agent_id
         dataset_path = os.path.join(self.data_dir, f"{ticker}_{agent_id}_dataset.csv")
-        if not os.path.exists(dataset_path) or rebuild:
-            print(f"⚙️ {ticker} {agent_id} dataset not found. Building new dataset...")
-            build_dataset(ticker=ticker, save_dir=self.data_dir)
 
-        # X, y, feature_cols 로드 및 보관
+        if rebuild or not os.path.exists(dataset_path):
+            print(f"⚙️ {ticker} {agent_id} dataset {'rebuild requested' if rebuild else 'not found'}. Building new dataset...")
+            build_dataset(ticker=ticker, save_dir=self.data_dir, agent_id=agent_id)
+
         X, y, feature_cols = load_dataset(ticker, agent_id=agent_id, save_dir=self.data_dir)
-        self.feature_cols = feature_cols[:]  # ★ 반드시 세팅
+        self.feature_cols = feature_cols[:]
 
-        # 최신 윈도우 텐서 반환 (BaseAgent.predict와 호환)
         X_latest = X[-1:]
         X_tensor = torch.tensor(X_latest, dtype=torch.float32)
 
-        # StockData 구성 + 현재가/통화
-        self.stockdata = self.stockdata or type(self).StockData if hasattr(type(self), "StockData") else None
-        # stockdata는 base_agent의 dataclass를 사용해야 하므로 아래처럼 생성
-        from agents.base_agent import StockData as _StockData
         self.stockdata = _StockData(ticker=ticker)
 
         try:
-            data = yf.download(ticker, period="1d", interval="1d")
-            # pandas 경고 회피
-            self.stockdata.last_price = float(data["Close"].iloc[-1].item())
-        except Exception:
-            print("yfinance 오류 발생")
+            data = yf.download(ticker, period="1d", interval="1d", progress=False)
+            self.stockdata.last_price = float(data["Close"].iloc[-1])
+        except Exception as e:
+            print(f"yfinance 오류(가격): {e}")
 
         try:
-            self.stockdata.currency = yf.Ticker(ticker).info.get("currency", "USD")
+            info = yf.Ticker(ticker).info
+            self.stockdata.currency = info.get("currency", "USD")
         except Exception as e:
-            print(f"yfinance 오류 발생, 통화 기본값 사용: {e}")
+            print(f"yfinance 오류(통화), 기본값 USD 사용: {e}")
             self.stockdata.currency = "USD"
 
         print(f"■ {agent_id} StockData 생성 완료 ({ticker}, {self.stockdata.currency})")
         return X_tensor
 
-    # ---------------------------
-    # LLM 메시지 빌더 3종
-    # ---------------------------
-    def _build_messages_opinion(self, stock_data, target) -> Tuple[str, str]:
+    # ===========================================================
+    # ctx 생성: snapshot + prediction(preview)
+    # ===========================================================
+    def preview_opinion_ctx(self, ticker: Optional[str] = None, mc_passes: int = 30) -> Dict[str, Any]:
+        X_tensor = self.searcher(ticker or self.ticker)
+
+        if getattr(self, "model", None) is None:
+            self.model = self._build_model()
+            self.model.eval()
+
+        self.load_model()
+
+        snap = self._ctx_snapshot()
+        pred = self._ctx_prediction(X_tensor, mc_passes=mc_passes)
+
+        ctx: Dict[str, Any] = {
+            "agent_id": self.agent_id,
+            "ticker": self.ticker,
+            "snapshot": snap,
+            "prediction": pred,
+        }
+        return ctx
+
+    def _ctx_snapshot(self) -> Dict[str, Any]:
+        win = int(agents_info.get(self.agent_id, {}).get("window_size", 40))
+        feat_prev = (self.feature_cols or [])[:12]
+        snap = {
+            "asof_date": datetime.now().strftime("%Y-%m-%d"),
+            "last_price": getattr(self.stockdata, "last_price", None),
+            "currency": getattr(self.stockdata, "currency", None),
+            "window_size": win,
+            "feature_cols_preview": feat_prev,
+        }
+        return snap
+
+    def _mc_predict_return(self, X: torch.Tensor, n: int = 30) -> Tuple[float, float]:
+        assert X.ndim == 3, "X must be (B,T,F)"
+        if getattr(self, "model", None) is None:
+            self.model = self._build_model()
+
+        self.model.train()
+        preds: List[float] = []
+        with torch.no_grad():
+            for _ in range(int(max(1, n))):
+                y = self.model(X).squeeze(-1)
+                preds.append(float(y.cpu().numpy().reshape(-1)[0]))
+
+        self.model.eval()
+        mu = float(np.mean(preds)) if preds else 0.0
+        std = float(np.std(preds)) if preds else 0.0
+        return mu, std
+
+    def _ctx_prediction(self, X_tensor: torch.Tensor, mc_passes: int = 30) -> Dict[str, Any]:
         last = getattr(self.stockdata, "last_price", None)
-        try:
-            pred_ret = float(target.next_close / float(last) - 1.0) if (last and target and target.next_close) else None
-        except Exception:
-            pred_ret = None
+        mu_ret, std_ret = self._mc_predict_return(X_tensor, n=mc_passes)
 
-        sys = (
-            "너는 감성/뉴스 중심의 단기 주가 분석가다. "
-            "예측 수익률, 불확실성(표준편차), 신뢰도를 근거로 2~3문장 reason만 생성하라."
-        )
-        user = (
-            "컨텍스트:\n"
-            f"- ticker: {self.ticker}\n"
-            f"- last_price: {last}\n"
-            f"- pred_next_close: {getattr(target, 'next_close', None)}\n"
-            f"- pred_return: {pred_ret}\n"
-            f"- uncertainty_std: {getattr(target, 'uncertainty', None)}\n"
-            f"- confidence: {getattr(target, 'confidence', None)}\n"
-            "→ reason만 출력"
-        )
-        return sys, user
+        pred_close = None
+        if last is not None:
+            try:
+                pred_close = float(last * (1.0 + float(mu_ret)))
+            except Exception:
+                pred_close = None
 
-    def _build_messages_rebuttal(self, my_opinion, target_opinion, stock_data) -> Tuple[str, str]:
-        sys = (
-            "너는 금융 토론 보조자다. 상대 의견의 수치·근거를 검토해 한 문단 이내로 "
-            "REBUT 또는 SUPPORT 메시지를 생성하라."
-        )
-        user = (
-            "컨텍스트:\n"
-            f"- 내 의견: {my_opinion}\n"
-            f"- 상대 의견: {target_opinion}\n"
-            f"- 현재가: {getattr(self.stockdata, 'last_price', None)}\n"
-            "→ stance와 message를 일관되게 구성"
-        )
-        return sys, user
+        alpha = 5.0
+        confidence = float(1.0 / (1.0 + alpha * max(0.0, std_ret)))
 
-    def _build_messages_revision(self, my_opinion, others, rebuttals, stock_data) -> Tuple[str, str]:
-        sys = "너는 금융 분석가다. 토론 결과를 반영하여 2~3문장으로 수정 사유(reason)를 간결히 작성하라."
-        user = (
-            "컨텍스트:\n"
-            f"- 내 의견: {my_opinion}\n"
-            f"- 타 의견 수: {len(others)}\n"
-            f"- 반박/지지 수: {len(rebuttals)}\n"
-            f"- 현재가: {getattr(self.stockdata, 'last_price', None)}\n"
-            "→ reason만 출력"
-        )
-        return sys, user
+        pred = {
+            "pred_close": pred_close,
+            "pred_return": float(mu_ret),
+            "uncertainty": {
+                "std": float(std_ret),
+                "ci95": float(1.96 * std_ret),
+            },
+            "confidence": confidence,
+        }
+        return pred
