@@ -12,8 +12,12 @@ from datetime import datetime
 from dotenv import load_dotenv
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 from config.agents import agents_info, dir_info
+
 from core.technical_classes.technical_data_set import (
-    build_dataset, load_dataset)
+    build_dataset as build_dataset_tech,
+    load_dataset as load_dataset_tech,
+    )
+
 import torch
 import torch.nn as nn # 아연수정
 import numpy as np
@@ -117,8 +121,9 @@ class TechnicalBaseAgent:
         ticker: str=None,
         gamma: float = 0.3,
         delta_limit: float = 0.05,
+        **kwargs
     ):
-
+        super().__init__(**kwargs)
         load_dotenv()
         self.agent_id = agent_id # 에이전트 식별자
         self.model = model # 모델 이름
@@ -178,6 +183,9 @@ class TechnicalBaseAgent:
             "additionalProperties": False,
         }
 
+    def model_path(self) -> str:
+        os.makedirs(self.model_dir, exist_ok=True)
+        return os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
 
     # -----------------------------------------------------------
     # 데이터 수집
@@ -188,14 +196,15 @@ class TechnicalBaseAgent:
 
         agent_id = self.agent_id
         ticker = ticker or self.ticker
-
+        self.ticker = ticker
+        
         dataset_path = os.path.join(self.data_dir, f"{ticker}_{agent_id}_dataset.csv")
         cfg = agents_info.get(self.agent_id, {}) 
 
         need_build = rebuild or (not os.path.exists(dataset_path))
         if need_build:
             print(f"⚙️ {ticker} {agent_id} dataset not found. Building new dataset..." if not os.path.exists(dataset_path) else f"⚙️ {ticker} {agent_id} rebuild requested. Building dataset...")
-            build_dataset(
+            build_dataset_tech(
                 ticker=ticker,
                 save_dir=self.data_dir,
                 period=cfg.get("period", "5y"),
@@ -203,11 +212,11 @@ class TechnicalBaseAgent:
             )
     
         # CSV 로드 (아연수정)
-        X, y, feature_cols, dates_all = load_dataset(ticker, agent_id=agent_id, save_dir=self.data_dir)
+        X, y, feature_cols, dates_all = load_dataset_tech(ticker, agent_id=agent_id, save_dir=self.data_dir)
 
         # StockData 구성 (아연수정)
         self.stockdata = StockData(ticker=ticker, feature_cols=feature_cols)
-        setattr(self.stockdata, f"{agent_id}_dates", dates_all[-1] if dates_all else [])
+        setattr(self.stockdata, f"{agent_id}_dates", dates_all or [])
 
         # 최근 window
         X_latest = X[-1:]
@@ -241,7 +250,7 @@ class TechnicalBaseAgent:
         # --------------------------
         # 데이터 로드
         # --------------------------
-        X, y, cols, _ = load_dataset(self.ticker, self.agent_id, save_dir=self.data_dir) # 아연수정 컬럼 4개
+        X, y, cols, _ = load_dataset_tech(self.ticker, self.agent_id, save_dir=self.data_dir) # 아연수정 컬럼 4개
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
 
         split_idx = int(len(X) * 0.8)
@@ -790,7 +799,7 @@ class TechnicalBaseAgent:
             ticker = self.ticker
 
         # 데이터 로드 (아연수정)
-        X, y, feature_cols, _ = load_dataset(ticker, agent_id=self.agent_id, save_dir=self.data_dir)
+        X, y, feature_cols, _ = load_dataset_tech(ticker, agent_id=self.agent_id, save_dir=self.data_dir)
 
         # 시계열 분할 (80% 훈련, 20% 검증)
         split_idx = int(len(X) * 0.8)
@@ -896,7 +905,8 @@ class DataScaler:
     def convert_return_to_price(self, return_rate, current_price):
         """상승/하락율을 실제 가격으로 변환"""
         return current_price * (1 + return_rate)
-
+    
+    '''
     def evaluate(self, ticker: str = None):
         """검증 데이터로 성능 평가"""
         if ticker is None:
@@ -947,6 +957,7 @@ class DataScaler:
             'direction_accuracy': direction_accuracy,
             'n_samples': len(predictions)
         }
+    '''
 
     def save(self, ticker):
         os.makedirs(self.save_dir, exist_ok=True)

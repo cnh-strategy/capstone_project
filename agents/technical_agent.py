@@ -47,8 +47,11 @@ class TechnicalAgent(TechnicalBaseAgent, nn.Module):
         batch_size=agents_info["TechnicalAgent"]["batch_size"],
         **kwargs
     ):
-        TechnicalBaseAgent.__init__(self, agent_id, **kwargs)
+        # 1) nn.Module 먼저 초기화
         nn.Module.__init__(self)
+
+        # 2) 테크 베이스 초기화
+        TechnicalBaseAgent.__init__(self, agent_id=agent_id, data_dir=data_dir, **kwargs)
 
 
         # 모델 하이퍼파라미터 설정 (아연수정)

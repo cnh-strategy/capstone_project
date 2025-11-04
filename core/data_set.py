@@ -13,7 +13,7 @@ import pandas as pd
 import yfinance as yf
 
 from config.agents import agents_info, dir_info
-from .technical_classes.technical_data_set import fetch_ticker_data
+from .technical_classes import technical_data_set as _techds
 
 _HAS_MACRO = False
 _MACRO_IMPORT_ERROR = ""
@@ -124,11 +124,13 @@ def build_dataset(
     - agent_id == 'TechnicalAgent' / '테크니컬' / 'technical' (추후)
     """
     os.makedirs(save_dir, exist_ok=True)
-    # Raw Dataset 생성
-    df = fetch_ticker_data(ticker)
-
-    # 원본 데이터를 CSV로 저장
-    df.to_csv(os.path.join(save_dir, f"{ticker}_raw_data.csv"), index=True)
+    # 공통 RAW는 테크니컬 전용 fetch로 통일
+    raw = _techds.fetch_ticker_data(
+        ticker,
+        period=period or "5y",
+        interval=interval or "1d",
+    )
+    raw.to_csv(os.path.join(save_dir, f"{ticker}_raw_data.csv"), index=True)
 
     # Agent별 데이터셋을 CSV로 저장
     for aid, _ in agents_info.items():
@@ -193,7 +195,13 @@ def build_dataset(
 
         # ---------- technical_agent ----------
         elif aid in {"TechnicalAgent","technicalagent", "technical", "테크니컬"}:
-            print("TechnicalAgent 데이터셋 빌더는 추후 연결 예정입니다.")
+            _techds.build_dataset(
+                ticker=ticker,
+                save_dir=save_dir,
+                period=period or agents_info["TechnicalAgent"].get("period", "5y"),
+                interval=interval or agents_info["TechnicalAgent"].get("interval", "1d"),
+            )
+            print(f"✅ {ticker} TechnicalAgent dataset saved via technical_data_set")
 
         else:
             raise ValueError(f"지원하지 않는 agent_id: {agent_id}")
@@ -204,6 +212,16 @@ def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"
     위에서 저장한 CSV({ticker}_{agent_id}_dataset.csv)를 다시 시퀀스로 복원
     - 숫자형 컬럼만 사용하도록 안전 가드 추가(날짜/문자열 혼입 방지)
     """
+    # 1) 테크니컬은 전용 로더로 위임
+    norm = str(agent_id).lower()
+    if norm in {"technicalagent", "technical", "테크니컬"}:
+        X, y, feature_cols, _dates = _techds.load_dataset(
+            ticker=ticker,
+            agent_id="TechnicalAgent",
+            save_dir=save_dir,
+        )
+        return X, y, feature_cols
+    
     csv_path = os.path.join(save_dir, f"{ticker}_{agent_id}_dataset.csv")
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Dataset file not found: {csv_path}")

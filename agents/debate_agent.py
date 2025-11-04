@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Dict, List
 from collections import defaultdict
 
-from agents.base_agent import BaseAgent, StockData, Target, Opinion, Rebuttal
+from agents.base_agent import BaseAgent
 from agents.macro_agent import MacroPredictor
 from agents.technical_agent import TechnicalAgent
 from agents.sentimental_agent import SentimentalAgent
@@ -17,7 +17,8 @@ import statistics
 # 테크니컬 별칭으로 따로 구분
 from core.technical_classes.technical_data_set import (
     build_dataset as build_dataset_tech, 
-    load_dataset as load_dataset_tech,)
+    load_dataset as load_dataset_tech,
+)
 
 from core.data_set import build_dataset, load_dataset
 from core.macro_classes.macro_funcs import macro_sercher
@@ -65,7 +66,7 @@ class DebateAgent(BaseAgent):
                 # === Technical: searcher → (조건부) pretrain → predict → reviewer_draft ===
                 print("[TechnicalAgent] searcher 실행")
                 X = agent.searcher(ticker, rebuild=True)
-
+                model_path = agent.model_path()
                 # 모델 가중치 확인 후 필요시 학습
                 model_path = os.path.join(dir_info["model_dir"], f"{ticker}_{agent_id}.pt")
                 if force_pretrain or (not os.path.exists(model_path)):
