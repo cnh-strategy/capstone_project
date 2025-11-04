@@ -42,7 +42,7 @@ from core.data_set import build_dataset, load_dataset
 
 
 # ---------------------------
-# 수익률 -> 예측 종가
+# 수익률 -> 예측 종가(확인 필요)
 # ---------------------------
 def _compute_pred_fields(last_close: float, yhat_scaled: float, y_scaler, target_mode: str = "log_return"):
     yhat = y_scaler.inverse_transform([[yhat_scaled]])[0, 0] if y_scaler else yhat_scaled
@@ -97,8 +97,6 @@ class _LazyLSTMWithStub(nn.Module):
 # SentimentalAgent
 # ---------------------------
 class SentimentalAgent(BaseAgent):
-    """BaseAgent(풀스택)와 호환되는 감성 에이전트"""
-
     def __init__(self, **kwargs):
         super().__init__(agent_id="SentimentalAgent", **kwargs)
         cfg = agents_info.get(self.agent_id, {})
@@ -109,9 +107,6 @@ class SentimentalAgent(BaseAgent):
     def _build_model(self) -> nn.Module:
         return _LazyLSTMWithStub(hidden_dim=self.hidden_dim, dropout=self.dropout)
 
-    # ---------------------------
-    # 옛 체크포인트(Transformer 등)도 느슨하게 로드
-    # ---------------------------
     def load_model(self, model_path: Optional[str] = None) -> bool:
         if model_path is None:
             model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
@@ -127,7 +122,7 @@ class SentimentalAgent(BaseAgent):
             ckpt = torch.load(model_path, map_location="cpu")
             if getattr(self, "model", None) is None:
                 self.model = self._build_model()
-                print(f"■ {self.agent_id} 모델 새로 생성됨 (로드 전 초기화).")
+                print(f"■ {self.agent_id} 모델 새로 생성됨 (로드 전 초기화)")
 
             state_dict = None
             if isinstance(ckpt, dict):
@@ -158,9 +153,7 @@ class SentimentalAgent(BaseAgent):
             self.model.eval()
             return False
 
-    # ---------------------------
     # 데이터 검색/로딩 (최신 윈도우 반환)
-    # ---------------------------
     def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
         from agents.base_agent import StockData as _StockData
 
@@ -197,9 +190,7 @@ class SentimentalAgent(BaseAgent):
         print(f"■ {agent_id} StockData 생성 완료 ({ticker}, {self.stockdata.currency})")
         return X_tensor
 
-    # ===========================================================
     # ctx 생성: snapshot + prediction(preview)
-    # ===========================================================
     def preview_opinion_ctx(self, ticker: Optional[str] = None, mc_passes: int = 30) -> Dict[str, Any]:
         X_tensor = self.searcher(ticker or self.ticker)
 
@@ -274,69 +265,176 @@ class SentimentalAgent(BaseAgent):
         }
         return pred
 
-    # ---------------------------
-    # LLM 메시지 빌더 3종
-    # ---------------------------
-    def _build_messages_opinion(self, stock_data, target) -> Tuple[str, str]:
-        last = getattr(self.stockdata, "last_price", None)
-        try:
-            pred_ret = float(target.next_close / float(last) - 1.0) if (last and target and target.next_close) else None
-        except Exception:
-            pred_ret = None
-        sys = (
-            "너는 감성/뉴스 중심의 단기 주가 분석가다. "
-            "주어진 ctx를 근거로 다음 거래일 종가(next_close)에 대한 해석과 근거(reason)를 작성한다. "
-            "1~5번까지 번호를 매겨가며 작성하며 충분하고 구체적인 증거를 포함한다. "
-            "반드시 포함할 요소:\n"
-            "- 현재가 대비 예상 변화(비율 또는 방향)와 그 근거\n"
-            "- 긍정/부정 기사 비율(또는 감정 점수)과 기간(예: 최근 7일/30일) 비교\n"
-            "- 핵심 이벤트/뉴스(가능하면 날짜·출처·키워드)와 그 영향 해석\n"
-            "- 여론 추세 변화(개선/악화)와 강도, 노이즈/한계에 대한 주의점\n"
-            "- 모델 신호(예: 신뢰도/불확실성)가 있다면 수치로 간단히 해석\n"
-            "전문용어(예: attention, embedding, 회귀계수 등) 대신 일반 투자자가 이해하기 쉬운 표현을 사용하라. "
-            "출력은 반드시 하나의 JSON 객체로만 반환하며, 키는 "
-            "{\"next_close\": number, \"reason\": string} 만 허용한다."
-        )
-        # pred_return, pred_next_close = _compute_pred_fields(
-        #     last_close=last,
-        #     yhat_scaled=target.yhat_scaled,  # 모델 원시 출력 (target 안에 yhat_scaled 있다고 추정)
-        #     y_scaler=self.scaler.y_scaler if getattr(self.scaler, "y_scaler", None) else None,
-        #     target_mode="log_return"  # 실제 타깃에 맞게 설정
-        # )
-        user = (
-            "컨텍스트:\n"
-            f"- ticker: {self.ticker}\n"
-            f"- last_price: {last:.4f}\n"
-            f"- pred_next_close: {pred_next_close:.4f}\n"
-            f"- pred_return: {pred_return:.6f}\n"
-            f"- uncertainty_std: {getattr(target, 'uncertainty', None)}\n"
-            f"- confidence: {getattr(target, 'confidence', None)}\n"
-            "→ reason만 출력"
-        )
-        return sys, user
+    # 1) prompts.py에서 system/user 가져와 ctx 주입
+    def _messages_from_prompts_opinion(self, ctx: dict) -> tuple[str, str]:
+        from prompts import OPINION_PROMPTS
+        prompt_set = OPINION_PROMPTS.get(self.agent_id, OPINION_PROMPTS["SentimentalAgent"])
+        system_text = prompt_set["system"]
+        payload = json.dumps(ctx, ensure_ascii=False)
+        user_tpl = prompt_set["user"]
+        user_text = user_tpl.replace("{context_json}", payload).replace("{context}", payload)
+        return system_text, user_text
 
-    def _build_messages_rebuttal(self, my_opinion, target_opinion, stock_data) -> Tuple[str, str]:
-        sys = (
-            "너는 금융 토론 보조자다. 상대 의견의 수치·근거를 검토해 한 문단 이내로 "
-            "REBUT 또는 SUPPORT 메시지를 생성하라."
-        )
-        user = (
-            "컨텍스트:\n"
-            f"- 내 의견: {my_opinion}\n"
-            f"- 상대 의견: {target_opinion}\n"
-            f"- 현재가: {getattr(self.stockdata, 'last_price', None)}\n"
-            "→ stance와 message를 일관되게 구성"
-        )
-        return sys, user
+    def _schema_opinion_json(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "our_prediction": {"type": "number"},
+                "reason": {"type": "string"},
+            },
+            "required": ["our_prediction", "reason"],
+            "additionalProperties": False,
+        }
 
-    def _build_messages_revision(self, my_opinion, others, rebuttals, stock_data) -> Tuple[str, str]:
-        sys = "너는 금융 분석가다. 토론 결과를 반영하여 2~3문장으로 수정 사유(reason)를 간결히 작성하라."
-        user = (
-            "컨텍스트:\n"
-            f"- 내 의견: {my_opinion}\n"
-            f"- 타 의견 수: {len(others)}\n"
-            f"- 반박/지지 수: {len(rebuttals)}\n"
-            f"- 현재가: {getattr(self.stockdata, 'last_price', None)}\n"
-            "→ reason만 출력"
-        )
-        return sys, user
+
+        # LLM 호출 헬퍼
+        def run_opinion_with_prompts(self, ctx: dict) -> dict:
+            sys_text, user_text = self._messages_from_prompts_opinion(ctx)
+
+            parsed = self._ask_with_fallback(
+                self._msg("system", sys_text),
+                self._msg("user",   user_text),
+                self._schema_opinion_json()
+            )
+            # parsed: {"our_prediction": float, "reason": str}
+            return parsed
+
+
+    def _build_messages_opinion(self, ctx: dict) -> tuple[str, str]:
+        """
+        준비된 ctx(dict)를 prompts.py의 SentimentalAgent opinion 프롬프트에 주입해
+        (system_text, user_text)를 반환한다.
+        - ctx 즉석 생성/보정 없음 (호출부에서 완성된 ctx를 넘겨줄 것)
+        - 중괄호 충돌 방지를 위해 .format() 대신 {context}/{context_json}만 replace
+        """
+        assert isinstance(ctx, dict), "ctx는 dict로 미리 준비되어 있어야 합니다."
+
+        # 1) 프롬프트 로드
+        from prompts import OPINION_PROMPTS
+        prompt_set = OPINION_PROMPTS.get(self.agent_id, OPINION_PROMPTS["SentimentalAgent"])
+        system_text = prompt_set["system"]
+
+        # 2) ctx 주입 (format 금지, 안전한 치환)
+        payload = json.dumps(ctx, ensure_ascii=False)
+        user_tpl = prompt_set["user"]
+        user_text = user_tpl.replace("{context_json}", payload).replace("{context}", payload)
+
+        return system_text, user_text
+
+    from prompts import REBUTTAL_PROMPTS
+
+    def _build_messages_rebuttal(
+        self,
+        my_opinion: Opinion,
+        target_opinion: Opinion,
+        stock_data: StockData,
+    ) -> tuple[str, str]:
+        """
+        준비된 opinion 객체 2개와 stock_data로 ctx를 만들고,
+        prompts.py의 REBUTTAL_PROMPTS를 불러 system/user 메시지를 구성한다.
+        """
+        assert hasattr(stock_data, self.agent_id), f"{self.agent_id} 데이터 누락"
+
+        agent_data = getattr(stock_data, self.agent_id, {})
+        ctx = {
+            "ticker": getattr(stock_data, "ticker", "UNKNOWN"),
+            "currency": getattr(stock_data, "currency", "USD"),
+            "me": {
+                "agent_id": self.agent_id,
+                "our_prediction": float(my_opinion.target.next_close),
+                "reason": str(my_opinion.reason)[:1500],
+                "uncertainty": float(my_opinion.target.uncertainty),
+                "confidence": float(my_opinion.target.confidence),
+            },
+            "other": {
+                "agent_id": target_opinion.agent_id,
+                "our_prediction": float(target_opinion.target.next_close),
+                "reason": str(target_opinion.reason)[:1500],
+                "uncertainty": float(target_opinion.target.uncertainty),
+                "confidence": float(target_opinion.target.confidence),
+            },
+            "feature_cols": agent_data.get("feature_cols", []),
+        }
+
+        # 필요시 최근 14일 시계열 데이터 추가
+        for col, values in agent_data.items():
+            if isinstance(values, (list, tuple)):
+                ctx[col] = values[-14:]
+            else:
+                ctx[col] = [values]
+
+        # prompts.py에서 system/user 불러오기 (format → replace)
+        prompt_set = REBUTTAL_PROMPTS.get(self.agent_id, REBUTTAL_PROMPTS["SentimentalAgent"])
+        system_text = prompt_set["system"]
+        payload = json.dumps(ctx, ensure_ascii=False, indent=2)
+        user_tpl = prompt_set["user"]
+        user_text = user_tpl.replace("{context_json}", payload).replace("{context}", payload)
+
+        return system_text, user_text
+
+    import json
+    from prompts import REVISION_PROMPTS
+
+    def _build_messages_revision(
+        self,
+        my_opinion: Opinion,
+        others: list[Opinion],
+        rebuttals: Optional[list[Rebuttal]] = None,
+        stock_data: Optional[StockData] = None,
+    ) -> tuple[str, str]:
+        """
+        prompts.py의 REVISION_PROMPTS를 사용해 Revision 메시지 구성.
+        - my_opinion: 내 의견
+        - others: 타 에이전트들의 의견 리스트
+        - rebuttals: (선택) 내게 들어온 반박 리스트
+        - stock_data: 종목/데이터 정보
+        """
+        agent_data = getattr(stock_data, self.agent_id, {})
+        others_summary = []
+        for o in others:
+            entry = {
+                "agent_id": o.agent_id,
+                "predicted_price": float(o.target.next_close),
+                "confidence": float(o.target.confidence),
+                "uncertainty": float(o.target.uncertainty),
+                "reason": str(o.reason)[:600],
+            }
+            # 내게 들어온 rebuttal만 추가
+            if rebuttals:
+                related = [
+                    {"stance": r.stance, "message": r.message}
+                    for r in rebuttals
+                    if r.to_agent_id == self.agent_id and r.from_agent_id == o.agent_id
+                ]
+                if related:
+                    entry["rebuttals_to_me"] = related
+            others_summary.append(entry)
+
+        ctx = {
+            "ticker": getattr(stock_data, "ticker", "UNKNOWN"),
+            "currency": getattr(stock_data, "currency", "USD"),
+            "agent_type": self.agent_id,
+            "my_opinion": {
+                "predicted_price": float(my_opinion.target.next_close),
+                "confidence": float(my_opinion.target.confidence),
+                "uncertainty": float(my_opinion.target.uncertainty),
+                "reason": str(my_opinion.reason)[:1000],
+            },
+            "others_summary": others_summary,
+        }
+
+        # 최근 14일치 시계열 추가
+        for col, values in agent_data.items():
+            if isinstance(values, (list, tuple)):
+                ctx[col] = values[-14:]
+            else:
+                ctx[col] = [values]
+
+        # prompts.py에서 system/user 구성 (replace로 주입)
+        prompt_set = REVISION_PROMPTS.get(self.agent_id, REVISION_PROMPTS["SentimentalAgent"])
+        system_text = prompt_set["system"]
+        payload = json.dumps(ctx, ensure_ascii=False, indent=2)
+        user_tpl = prompt_set["user"]
+        user_text = user_tpl.replace("{context_json}", payload).replace("{context}", payload)
+
+        return system_text, user_text
