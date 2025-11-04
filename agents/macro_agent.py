@@ -33,6 +33,7 @@ class MacroPredictor(BaseAgent):
                  **kwargs):
         # super().__init__(agent_id)  # ✅ 부모 초기화 필수
 
+        self.last_price = None
         self.stockdata = None
         self.window_size = None
         self.agent_id = agent_id
@@ -134,19 +135,19 @@ class MacroPredictor(BaseAgent):
         pred_prices = {}
         for i, t in enumerate(self.tickers):
             pred_ret = float(pred_inv[0][i])
-            last_price = float(last_prices[t])
-            next_price = last_price * (1 + pred_ret)
+            self.last_price = float(last_prices[t])
+            next_price = self.last_price * (1 + pred_ret)
             pred_prices[t] = next_price
 
             records.append({
                 "Ticker": t,
-                "Last_Close": last_price,
+                "Last_Close": self.last_price,
                 "Predicted_Close": next_price,
                 "Predicted_Return": pred_ret,
                 "Predicted_%": pred_ret * 100
             })
 
-            print(f"{t}: 마지막 종가={last_price:.2f} → 예측 종가={next_price:.2f} (예상 수익률 {pred_ret*100:.2f}%)")
+            print(f"{t}: 마지막 종가={self.last_price:.2f} → 예측 종가={next_price:.2f} (예상 수익률 {pred_ret*100:.2f}%)")
 
         # 4. Monte Carlo Dropout 불확실성
         mean_pred, std_pred, confidence, predicted_price = get_std_pred(
@@ -174,7 +175,6 @@ class MacroPredictor(BaseAgent):
             uncertainty=float(std_pred[-1]),
             confidence=float(pred_df["confidence"].iloc[-1])
         )
-
 
         return pred_prices, target
 
@@ -205,7 +205,6 @@ class MacroPredictor(BaseAgent):
         feature_names = feature_df.columns.tolist()
 
         # ✅ numpy 변환 추가
-
         if isinstance(X_scaled, pd.DataFrame):
             X_scaled = X_scaled.to_numpy()
 
@@ -269,7 +268,7 @@ class MacroPredictor(BaseAgent):
                 'uncertainty': round(target.uncertainty or 0.0, 4),
                 'confidence': round(target.confidence or 0.0, 4)
             },
-            last_price=0,
+            last_price=self.last_price,
             currency="USD"
         )
 
