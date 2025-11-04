@@ -54,10 +54,7 @@ except Exception:
 
 from core.data_set import build_dataset, load_dataset
 
-
-# ---------------------------
 # 수익률 -> 예측 종가(검증용 유틸)
-# ---------------------------
 def _compute_pred_fields(
     last_close: float,
     yhat_scaled: float,
@@ -67,7 +64,9 @@ def _compute_pred_fields(
     """
     모델 출력(yhat_scaled)을 원복/해석해 (pred_return, pred_next_close) 반환
     """
-    yhat = y_scaler.inverse_transform([[yhat_scaled]])[0, 0] if y_scaler else yhat_scaled
+    # yhat = y_scaler.inverse_transform([[yhat_scaled]])[0, 0] if y_scaler else yhat_scaled
+    yhat = model(x)              # (B, 1)
+    loss = F.mse_loss(yhat.squeeze(-1), y)   # y shape -> (B,)
 
     if target_mode == "log_return":
         pred_return = math.exp(float(yhat)) - 1.0
@@ -85,10 +84,7 @@ def _compute_pred_fields(
     assert abs((pred_next_close / float(last_close) - 1.0) - pred_return) < 1e-6
     return float(pred_return), float(pred_next_close)
 
-
-# ---------------------------
 # Lazy LSTM (stub 파라미터 포함)
-# ---------------------------
 class _LazyLSTMWithStub(nn.Module):
     def __init__(self, hidden_dim: int = 128, dropout: float = 0.2):
         super().__init__()
@@ -116,9 +112,7 @@ class _LazyLSTMWithStub(nn.Module):
         return out
 
 
-# ---------------------------
 # SentimentalAgent
-# ---------------------------
 class SentimentalAgent(BaseAgent):
     def __init__(self, **kwargs):
         super().__init__(agent_id="SentimentalAgent", **kwargs)
@@ -314,9 +308,7 @@ class SentimentalAgent(BaseAgent):
         self._ensure_pred_next_close(ctx)
         return ctx
 
-    # ---------------------------
     # 프롬프트 빌더 (ctx 직접 주입 버전)
-    # ---------------------------
     def _messages_from_prompts_opinion(self, ctx: dict) -> tuple[str, str]:
         prompt_set = OPINION_PROMPTS.get(self.agent_id, OPINION_PROMPTS.get("SentimentalAgent", {}))
         system_text = prompt_set.get("system", "")
@@ -349,18 +341,11 @@ class SentimentalAgent(BaseAgent):
         # parsed: {"our_prediction": float, "reason": str}
         return parsed
 
-    # ---------------------------
     # BaseAgent.reviewer_* 호환 시그니처 버전
-    # ---------------------------
-
-    # SentimentalAgent 클래스 내부 최종본
-# ---------------------------
-# BaseAgent.reviewer_* 호환 시그니처 버전
-# ---------------------------
     def _build_messages_opinion(self, stock_data, target) -> tuple[str, str]:
         """
-        BaseAgent.reviewer_draft()에서 호출되는 시그니처와 호환.
-        stock_data/target로 ctx를 만들고, 기존 ctx 기반 빌더를 재사용해 (system, user)를 반환.
+        BaseAgent.reviewer_draft()에서 호출되는 시그니처와 호환
+        stock_data/target로 ctx를 만들고, 기존 ctx 기반 빌더를 재사용해 (system, user)를 반환
         """
         win = int(agents_info.get(self.agent_id, {}).get("window_size", 40))
         last = getattr(stock_data, "last_price", None)
@@ -400,56 +385,7 @@ class SentimentalAgent(BaseAgent):
         self._ensure_pred_next_close(ctx)
         return self._messages_from_prompts_opinion(ctx)
 
-    # def _messages_from_prompts_opinion(self, stock_data: StockData, target: Target) -> tuple[str, str]:
-    #     """
-    #     BaseAgent.reviewer_draft()에서 호출되는 시그니처와 호환.
-    #     stock_data/target로 ctx를 만들고, 기존 ctx 기반 빌더를 재사용해 (system, user)를 반환.
-    #     """
-    #     # snapshot
-    #     win = int(agents_info.get(self.agent_id, {}).get("window_size", 40))
-    #     last = getattr(stock_data, "last_price", None)
-    #     snap = {
-    #         "asof_date": datetime.now().strftime("%Y-%m-%d"),
-    #         "last_price": last,
-    #         "currency": getattr(stock_data, "currency", None),
-    #         "window_size": win,
-    #         "feature_cols_preview": (self.feature_cols or [])[:12],
-    #     }
-
-    #     # prediction (BaseAgent.Target: next_close/uncertainty/confidence 가정)
-    #     next_close = getattr(target, "next_close", None)
-    #     pred_return = None
-    #     if last is not None and next_close is not None:
-    #         try:
-    #             pred_return = float(next_close / float(last) - 1.0)
-    #         except Exception:
-    #             pred_return = None
-
-    #     pred = {
-    #         "pred_close": next_close,
-    #         "pred_return": pred_return,
-    #         "uncertainty": {
-    #             "std": getattr(target, "uncertainty", None),
-    #             "ci95": None,  # 필요시 추후 계산
-    #         },
-    #         "confidence": getattr(target, "confidence", None),
-    #     }
-
-    #     ctx = {
-    #         "agent_id": self.agent_id,
-    #         "ticker": getattr(stock_data, "ticker", self.ticker),
-    #         "snapshot": snap,
-    #         "prediction": pred,
-    #     }
-    #     # 호환 키 보장
-    #     self._ensure_pred_next_close(ctx)
-
-    #     # 기존 ctx 주입 빌더 재사용
-    #     return self._messages_from_prompts_opinion(ctx)
-
-    # ---------------------------
     # Rebuttal / Revision 메시지 빌더
-    # ---------------------------
     def _build_messages_rebuttal(
         self,
         my_opinion: Opinion,
@@ -557,3 +493,25 @@ class SentimentalAgent(BaseAgent):
         user_text = user_tpl.replace("{context_json}", payload).replace("{context}", payload)
 
         return system_text, user_text
+
+    def get_opinion(self, idx: int, ticker: str):
+        df = self.searcher(ticker)                 # 학습과 동일 규칙으로 만든 df
+        last_close = float(df["Close"].iloc[-2])   # ← 중요: y = shift(-1) 사용했으므로 X는 마지막-1까지
+                                                  # df.iloc[-1]는 타깃 없는 미래행일 수 있어 -2 사용
+        x_last = self._make_last_window(df)        # (1, W, F)
+
+        pred_return, pred_close = self.predict_next(x_last, last_close)
+
+        return Opinion(
+            agent_id=self.agent_id,
+            target=Target(
+                next_close=pred_close,
+                uncertainty=self._estimate_uncertainty(x_last),  # 기존 로직
+                confidence=self._calibrate_confidence(pred_return)
+            ),
+            reason=self._compose_reason(
+                last_close=last_close,
+                pred_close=pred_close,
+                pred_return=pred_return
+            )
+        )

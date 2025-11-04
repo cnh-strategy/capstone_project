@@ -282,3 +282,16 @@ def get_latest_close_price(ticker: str, save_dir: str = dir_info["data_dir"]) ->
         return float(df["Close"].iloc[-1])
     data = yf.download(ticker, period="1d", interval="1d", progress=False)
     return float(data["Close"].iloc[-1])
+
+
+def build_targets(close: pd.Series) -> pd.Series:
+    # P_{t+1} / P_t - 1
+    ret = close.shift(-1) / close - 1.0
+    # 마지막 행은 타깃 없음 → 제거
+    return ret.iloc[:-1]
+
+def build_features(df: pd.DataFrame, window: int):
+    # df.index는 날짜 정렬 가정, 마지막 행 제외하고 X, y 정렬 맞추기
+    y = build_targets(df["Close"])
+    X = df.iloc[:-1]          # y와 길이 정합
+    return X, y
