@@ -13,6 +13,7 @@ import pandas as pd
 import yfinance as yf
 
 from config.agents import agents_info, dir_info
+from .technical_classes.technical_data_set import fetch_ticker_data
 
 _HAS_MACRO = False
 _MACRO_IMPORT_ERROR = ""
@@ -123,73 +124,79 @@ def build_dataset(
     - agent_id == 'TechnicalAgent' / '테크니컬' / 'technical' (추후)
     """
     os.makedirs(save_dir, exist_ok=True)
-    aid = (agent_id or "").strip().lower()
+    # Raw Dataset 생성
+    df = fetch_ticker_data(ticker)
 
-    # ---------- macro_agent ----------
-    if aid in {"macrosentiagent", "macro", "매크로"}:
-        if not _HAS_MACRO or macro_dataset is None:
-            raise ImportError(
-                "macro_dataset 모듈을 찾을 수 없습니다. core/macro_classes 확인 필요 "
-                f"details={_MACRO_IMPORT_ERROR}"
-            )
-        macro_dataset(ticker_name=ticker)
-        print(f"✅ {ticker} MacroSentiAgent dataset saved (macro_dataset 호출 via {_MACRO_SRC})")
+    # 원본 데이터를 CSV로 저장
+    df.to_csv(os.path.join(save_dir, f"{ticker}_raw_data.csv"), index=True)
 
-    # ---------- sentimental_agent ----------
-    elif aid in {"sentimentalagent", "sentimental", "센티멘탈"}:
-        df = _fetch_ticker_data_for_sentimental(ticker, period, interval)
+    # Agent별 데이터셋을 CSV로 저장
+    for aid, _ in agents_info.items():
+        # ---------- macro_agent ----------
+        if aid in {"MacroSentiAgent","macrosentiagent", "macro", "매크로"}:
+            if not _HAS_MACRO or macro_dataset is None:
+                raise ImportError(
+                    "macro_dataset 모듈을 찾을 수 없습니다. core/macro_classes 확인 필요 "
+                    f"details={_MACRO_IMPORT_ERROR}"
+                )
+            macro_dataset(ticker_name=ticker)
+            print(f"✅ {ticker} MacroSentiAgent dataset saved (macro_dataset 호출 via {_MACRO_SRC})")
 
-        # 원본 CSV 저장(후속처리 참고용)
-        df.to_csv(os.path.join(save_dir, f"{ticker}_raw_data.csv"), index=True, encoding="utf-8")
+        # ---------- sentimental_agent ----------
+        elif aid in {"SentimentalAgent","sentimentalagent", "sentimental", "센티멘탈"}:
+            df = _fetch_ticker_data_for_sentimental(ticker, period, interval)
 
-        # 사용할 피처 컬럼
-        if agent_id in agents_info and "data_cols" in agents_info[agent_id]:
-            feature_cols = agents_info[agent_id]["data_cols"]
-            window_size = agents_info[agent_id].get("window_size", 14)
+            # 원본 CSV 저장(후속처리 참고용)
+            df.to_csv(os.path.join(save_dir, f"{ticker}_raw_data.csv"), index=True, encoding="utf-8")
+
+            # 사용할 피처 컬럼
+            if agent_id in agents_info and "data_cols" in agents_info[agent_id]:
+                feature_cols = agents_info[agent_id]["data_cols"]
+                window_size = agents_info[agent_id].get("window_size", 14)
+            else:
+                # fallback: 네 초기 코드 기반으로 합리적 기본 피처
+                feature_cols = [
+                    "returns", "sma_5", "sma_20", "rsi", "volume_z",
+                    "USD_KRW", "NASDAQ", "VIX",
+                    "sentiment_mean", "sentiment_vol",
+                    "Open", "High", "Low", "Close", "Volume",
+                ]
+                window_size = 14
+
+            # 타깃: 다음날 수익률
+            returns = df["Close"].pct_change().shift(-1)
+            valid_mask = ~returns.isna()
+            y = returns[valid_mask].to_numpy().reshape(-1, 1)
+            X = df.loc[valid_mask, feature_cols]
+
+            # 시퀀스 생성
+            X_seq, y_seq = create_sequences(X, y, window_size=window_size)
+            samples, time_steps, n_feats = X_seq.shape
+            print(f"[SentimentalAgent] X_seq: {X_seq.shape}, y_seq: {y_seq.shape}")
+
+            # 플랫 CSV
+            flattened = []
+            for sample_idx in range(samples):
+                for time_idx in range(time_steps):
+                    row = {
+                        "sample_id": sample_idx,
+                        "time_step": time_idx,
+                        "target": float(y_seq[sample_idx, 0]) if time_idx == time_steps - 1 else np.nan,
+                    }
+                    for feat_idx, feat_name in enumerate(feature_cols):
+                        row[feat_name] = float(X_seq[sample_idx, time_idx, feat_idx])
+                    flattened.append(row)
+
+            csv_path = os.path.join(save_dir, f"{ticker}_{agent_id}_dataset.csv")
+            _save_agent_csv(flattened, csv_path)
+            print(f"✅ {ticker} {agent_id} dataset saved to CSV ({samples} samples, {len(feature_cols)} features)")
+
+        # ---------- technical_agent ----------
+        elif aid in {"TechnicalAgent","technicalagent", "technical", "테크니컬"}:
+            print("TechnicalAgent 데이터셋 빌더는 추후 연결 예정입니다.")
+
         else:
-            # fallback: 네 초기 코드 기반으로 합리적 기본 피처
-            feature_cols = [
-                "returns", "sma_5", "sma_20", "rsi", "volume_z",
-                "USD_KRW", "NASDAQ", "VIX",
-                "sentiment_mean", "sentiment_vol",
-                "Open", "High", "Low", "Close", "Volume",
-            ]
-            window_size = 14
-
-        # 타깃: 다음날 수익률
-        returns = df["Close"].pct_change().shift(-1)
-        valid_mask = ~returns.isna()
-        y = returns[valid_mask].to_numpy().reshape(-1, 1)
-        X = df.loc[valid_mask, feature_cols]
-
-        # 시퀀스 생성
-        X_seq, y_seq = create_sequences(X, y, window_size=window_size)
-        samples, time_steps, n_feats = X_seq.shape
-        print(f"[SentimentalAgent] X_seq: {X_seq.shape}, y_seq: {y_seq.shape}")
-
-        # 플랫 CSV
-        flattened = []
-        for sample_idx in range(samples):
-            for time_idx in range(time_steps):
-                row = {
-                    "sample_id": sample_idx,
-                    "time_step": time_idx,
-                    "target": float(y_seq[sample_idx, 0]) if time_idx == time_steps - 1 else np.nan,
-                }
-                for feat_idx, feat_name in enumerate(feature_cols):
-                    row[feat_name] = float(X_seq[sample_idx, time_idx, feat_idx])
-                flattened.append(row)
-
-        csv_path = os.path.join(save_dir, f"{ticker}_{agent_id}_dataset.csv")
-        _save_agent_csv(flattened, csv_path)
-        print(f"✅ {ticker} {agent_id} dataset saved to CSV ({samples} samples, {len(feature_cols)} features)")
-
-    # ---------- technical_agent ----------
-    elif aid in {"technicalagent", "technical", "테크니컬"}:
-        raise NotImplementedError("TechnicalAgent 데이터셋 빌더는 추후 연결 예정입니다.")
-
-    else:
-        raise ValueError(f"지원하지 않는 agent_id: {agent_id}")
+            raise ValueError(f"지원하지 않는 agent_id: {agent_id}")
 
 
 def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"]) -> Tuple[np.ndarray, np.ndarray, List[str]]:
