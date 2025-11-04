@@ -903,3 +903,49 @@ class DataScaler:
             self.x_scaler = joblib.load(x_path)
         if os.path.exists(y_path):
             self.y_scaler = joblib.load(y_path)
+
+    def _build_messages_opinion(self, stock_data, target) -> tuple[str, str]:
+        """
+        BaseAgent.reviewer_draft 가 호출하는 시그니처와 호환.
+        stock_data/target으로 ctx를 만들고 기존 ctx-주입 빌더를 호출.
+        """
+        win = int(agents_info.get(self.agent_id, {}).get("window_size", 40))
+        last = getattr(stock_data, "last_price", None)
+        snap = {
+            "asof_date": datetime.now().strftime("%Y-%m-%d"),
+            "last_price": last,
+            "currency": getattr(stock_data, "currency", None),
+            "window_size": win,
+            "feature_cols_preview": (self.feature_cols or [])[:12],
+        }
+
+        next_close = getattr(target, "next_close", None)
+        pred_return = None
+        if last is not None and next_close is not None:
+            try:
+                pred_return = float(next_close) / float(last) - 1.0
+            except Exception:
+                pred_return = None
+
+        pred = {
+            "pred_close": next_close,
+            "pred_return": pred_return,
+            "uncertainty": {
+                "std": getattr(target, "uncertainty", None),
+                "ci95": None,
+            },
+            "confidence": getattr(target, "confidence", None),
+        }
+
+        ctx = {
+            "agent_id": self.agent_id,
+            "ticker": getattr(stock_data, "ticker", self.ticker),
+            "snapshot": snap,
+            "prediction": pred,
+        }
+
+        # pred_next_close 보장
+        self._ensure_pred_next_close(ctx)
+
+        # 최종 프롬프트
+        return self._messages_from_prompts_opinion(ctx)

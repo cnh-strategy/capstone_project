@@ -39,7 +39,7 @@ class DebateAgent(BaseAgent):
         self.ticker = ticker
 
 
-    def get_opinion(self, round: int, ticker: str = None, rebuild: bool = False, force_pretrain: bool = False):
+    def get_opinion(self, round: int, ticker: str = None, rebuild: bool = True, force_pretrain: bool = True):
         """각 agent의 Opinion(주장) 생성"""
         if not hasattr(self, "opinions"):
             self.opinions = {}
