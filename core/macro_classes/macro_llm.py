@@ -141,6 +141,18 @@ class LLMExplainer:
         SHAP / LSTM 결과 기반으로 LLM Reasoning 생성 (system + user 구조)
         """
 
+        def _summarize(obj, max_len=1500):
+            text = str(obj)
+            if len(text) > max_len:
+                text = text[:max_len] + "\n...(truncated)"
+            return text
+
+        importance_summary = _summarize(importance_summary)
+        temporal_summary = _summarize(temporal_summary)
+        causal_summary = _summarize(causal_summary)
+        interaction_summary = _summarize(interaction_summary)
+
+
         # 1️⃣ system 메시지
         sys_text = (
             "너는 금융 시장을 분석하는 인공지능 애널리스트이며, "
