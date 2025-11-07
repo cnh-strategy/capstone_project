@@ -159,7 +159,7 @@ class MacroPredictor(BaseAgent):
             r["uncertainty"] = float(std_pred[i]) if len(std_pred) > 1 else float(std_pred[-1])
             r["confidence"] = float(confidence[i]) if len(confidence) > 1 else float(confidence[-1])
 
-        pred_df = pd.DataFrame(records).round(4)
+        pred_df = pd.DataFrame(records)
         self.pred_df = pred_df
         self.pred_prices = pred_prices
 
@@ -228,7 +228,7 @@ class MacroPredictor(BaseAgent):
         temporal_summary = temporal_df.head().to_dict(orient="records") if temporal_df is not None else []
         causal_summary = causal_df.to_dict(orient="records") if causal_df is not None else []
         if isinstance(interaction_df, pd.DataFrame):
-            interaction_summary = interaction_df.iloc[:5, :5].round(3).to_dict()
+            interaction_summary = interaction_df.iloc[:5, :5].to_dict()
         else:
             interaction_summary = {}
 
@@ -239,7 +239,7 @@ class MacroPredictor(BaseAgent):
         print("\n4️⃣ Generating explanation using LLM...")
 
         llm  = LLMExplainer()
-        feature_summary = feature_df.tail(5).describe().round(3).to_dict()
+        feature_summary = feature_df.tail(5).describe().to_dict()
         explanation = llm.generate_explanation(feature_summary, pred_prices, importance_dict,
                                                temporal_summary, causal_summary, interaction_summary)
 
@@ -265,8 +265,8 @@ class MacroPredictor(BaseAgent):
                     'interaction_summary': interaction_summary
                 },
                 'our_prediction': pred_prices,
-                'uncertainty': round(target.uncertainty or 0.0, 4),
-                'confidence': round(target.confidence or 0.0, 4)
+                'uncertainty': round(target.uncertainty or 0.0, 8),
+                'confidence': round(target.confidence or 0.0, 8)
             },
             last_price=self.last_price,
             currency="USD"
@@ -285,8 +285,8 @@ class MacroPredictor(BaseAgent):
         context = json.dumps({
             "agent_id": self.agent_id,
             "next_close": round(target.next_close, 3),
-            "uncertainty_sigma": round(target.uncertainty or 0.0, 4),
-            "confidence_beta": round(target.confidence or 0.0, 4),
+            "uncertainty_sigma": round(target.uncertainty or 0.0, 8),
+            "confidence_beta": round(target.confidence or 0.0, 8),
             "latest_data": str(self.stockdata),
             "feature_importance": {
                 'feature_summary': feature_summary,

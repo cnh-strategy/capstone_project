@@ -15,21 +15,8 @@ from core.macro_classes.nasdaq_100 import nasdaq100_eng
 
 # 종목 리스트 (딕셔너리 값 = 티커)
 symbols = list(nasdaq100_eng.values())
-# ============================================================
-# 공통 설정
-# ============================================================
-# PROJECT_ROOT = os.path.abspath(
-#     os.path.join(os.path.dirname(__file__), "..")
-# )
-# OUTPUT_DIR = os.path.join(PROJECT_ROOT, "data", "processed")
-# os.makedirs(OUTPUT_DIR, exist_ok=True)
-#
-#
-#
-# dir_info = {
-#     "data_dir": os.path.join(PROJECT_ROOT, "data", "processed"),
-#     "model_dir": os.path.join(PROJECT_ROOT, "models"),
-# }
+
+
 save_dir = dir_info["data_dir"]
 model_dir: str = dir_info["model_dir"]
 data_dir: str = dir_info["data_dir"]
@@ -164,7 +151,31 @@ class MacroAData:
         macro_ret = macro_df[macro_features].pct_change()
         macro_ret.columns = [f"{c}_ret" for c in macro_ret.columns]
         macro_full = pd.concat([macro_df, macro_ret], axis=1)
-        macro_full = macro_full.replace([np.inf, -np.inf], np.nan).dropna(subset=['Date']).fillna(0)
+        # macro_full = macro_full.replace([np.inf, -np.inf], np.nan).dropna(subset=['Date']).fillna(0)
+        macro_full = macro_full.replace([np.inf, -np.inf], np.nan).dropna(subset=['Date'])
+        macro_full = macro_full.ffill().bfill()
+
+
+        # ✅ 거래량 없는 피처 제거 (원본 + 변화율 포함)
+        remove_patterns = [
+            "Volume_^FVX", "Volume_^IRX", "Volume_^TNX",
+            "Volume_^VIX", "Volume_DX-Y.NYB",
+            "Volume_EURUSD=X", "Volume_USDJPY=X"
+        ]
+
+        macro_full = macro_full.drop(
+            columns=[c for c in macro_full.columns if any(p in c for p in remove_patterns)],
+            errors='ignore'
+        )
+        print(f"[INFO] Removed all constant Volume columns matching patterns: {remove_patterns}")
+        print(f"[INFO] Remaining Volume columns: {[c for c in macro_full.columns if 'Volume' in c]}")
+
+        # ✅ 분산이 0인 상수 피처 자동 제거
+        constant_cols = [c for c in macro_full.columns if macro_full[c].std() == 0]
+        if constant_cols:
+            print(f"[INFO] Removing {len(constant_cols)} constant columns: {constant_cols}")
+            macro_full = macro_full.drop(columns=constant_cols)
+
 
         # -------------------------------------------------------------
         # 3. 주가 기반 피처 생성 (각 종목별)
@@ -273,3 +284,7 @@ class MacroAData:
         save_model(model, f"{self.model_path}")
         joblib.dump(scaler_X, f"{self.scaler_X_path}")
         joblib.dump(scaler_y, f"{self.scaler_y_path}")
+
+        print("[CHECK] macro_full variance summary:")
+        numeric_cols = macro_full.select_dtypes(include=[np.number]).columns
+        print(macro_full[numeric_cols].var().sort_values().head(10))
