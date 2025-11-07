@@ -423,39 +423,91 @@ class InteractionSHAPAnalyzer:
 
 
 class AttributionAnalyzer:
-    """통합 SHAP 해석 레이어"""
+    """통합 SHAP 해석 레이어 (피처 그룹핑 포함)"""
     def __init__(self, model):
         self.model = model
 
-    def run_all_shap(self, X_scaled, feature_names):
-        base_result, temporal_df, causal_df, interaction_df = {},{},{},{}
+    # -----------------------------
+    # 1️⃣ 피처 그룹 정의
+    # -----------------------------
+    def _get_feature_groups(self) -> dict:
+        """경제적 의미 기반 피처 그룹 정의"""
+        return {
+            "equity_index": ["SPY", "QQQ", "^DJI", "^GSPC", "^IXIC"],
+            "yield_curve": ["^IRX", "^FVX", "^TNX"],
+            "commodities": ["CL=F", "GC=F", "HG=F"],
+            "forex": ["DX-Y.NYB", "EURUSD=X", "USDJPY=X"],
+            "volatility": ["^VIX"],
+        }
 
-        # Base SHAP
+    # -----------------------------
+    # 2️⃣ 그룹 단위 피처 변환
+    # -----------------------------
+    def _group_features(self, X_scaled, feature_names):
+        """
+        SHAP 입력을 그룹화하되, 모델의 입력 차원은 유지 (학습 피처 수 일치).
+        즉, 각 그룹 내 피처의 값을 그룹 평균으로 대체.
+        """
+        groups = self._get_feature_groups()
+
+        X_grouped = X_scaled.copy()  # 원본 복사
+        feature_array = np.array(feature_names)
+
+        # 각 그룹별 평균 → 소속 피처에 덮어쓰기
+        for group_name, tickers in groups.items():
+            group_cols = [i for i, c in enumerate(feature_names) if any(t in c for t in tickers)]
+            if not group_cols:
+                continue
+
+            group_mean = X_scaled[:, :, group_cols].mean(axis=2, keepdims=True)  # (batch, time, 1)
+            X_grouped[:, :, group_cols] = np.repeat(group_mean, len(group_cols), axis=2)
+
+        print(f"[INFO] Grouping applied (preserved input dim): {X_scaled.shape[2]} features")
+        return X_grouped, feature_names
+
+    # -----------------------------
+    # 3️⃣ 통합 SHAP 실행
+    # -----------------------------
+    def run_all_shap(self, X_scaled, feature_names):
+        """
+        기존 모델은 그대로 두고, SHAP 입력만 그룹 평균으로 변환하여 실행.
+        """
+        # ✅ Step 1: 피처 그룹핑 적용
+        try:
+            X_grouped, grouped_features = self._group_features(X_scaled, feature_names)
+        except Exception as e:
+            print(f"[⚠️ Feature grouping failed, fallback to raw features]: {e}")
+            X_grouped, grouped_features = X_scaled, feature_names
+
+        # ✅ Step 2: SHAP 분석 수행
+        base_result = {}
+        temporal_df = pd.DataFrame()      # ← 여기를 수정
+        causal_df = pd.DataFrame()        # ← 여기를 수정
+        interaction_df = pd.DataFrame()   # ← 여기를 수정
+
         try:
             base = BaseSHAPAnalyzer(self.model)
-            base_result = base.compute_feature_importance(X_scaled, feature_names)
+            base_result = base.compute_feature_importance(X_grouped, grouped_features)
         except Exception as e:
             print(f"[⚠️ Base SHAP Error]: {e}")
 
-        # Temporal SHAP
         try:
             temporal = TemporalSHAPAnalyzer(self.model)
-            temporal_df = temporal.compute_temporal_shap(X_scaled, feature_names, target_idx=0)
+            temporal_df = temporal.compute_temporal_shap(X_grouped, grouped_features, target_idx=0)
         except Exception as e:
             print(f"[⚠️ Temporal SHAP Error]: {e}")
 
-        # Causal SHAP
         try:
             causal = CausalSHAPAnalyzer(self.model)
-            causal_df = causal.compute_causal_shap(X_scaled, feature_names, target_idx=0)
+            causal_df = causal.compute_causal_shap(X_grouped, grouped_features, target_idx=0)
         except Exception as e:
             print(f"[⚠️ Causal SHAP Error]: {e}")
 
-        # Interaction SHAP
         try:
             interaction = InteractionSHAPAnalyzer(self.model)
-            interaction_df = interaction.compute_interaction_importance(X_scaled, feature_names, target_idx=0)
+            interaction_df = interaction.compute_interaction_importance(X_grouped, grouped_features, target_idx=0)
         except Exception as e:
             print(f"[⚠️ Interaction SHAP Error]: {e}")
 
         return base_result, temporal_df, causal_df, interaction_df
+
