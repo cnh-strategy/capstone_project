@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import dataclass
 
 import numpy as np
@@ -10,7 +11,7 @@ from openai import OpenAI
 from agents.dump_keys import CAPSTONE_OPENAI_API
 from typing import Dict, List, Optional, Literal, Tuple
 from collections import defaultdict
-
+# CAPSTONE_OPENAI_API = os.getenv("CAPSTONE_OPENAI_API")
 # -----------------------------
 # 데이터 구조 정의
 # -----------------------------

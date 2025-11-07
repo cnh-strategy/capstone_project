@@ -17,6 +17,7 @@ model_dir: str = dir_info["model_dir"]
 
 class MakeDatasetMacro:
     def __init__(self, base_date: datetime, window: int = 40, target_tickers=None):
+        self.ticker = None
         self.macro_df = None
         self.macro_tickers = {
             "SPY": "SPY", "QQQ": "QQQ", "^GSPC": "^GSPC", "^DJI": "^DJI", "^IXIC": "^IXIC",
@@ -62,6 +63,7 @@ class MakeDatasetMacro:
         price_dfs = []
         for t in self.target_tickers:
             print(f"   ↳ Downloading {t} ...")
+            self.ticker = t
             try:
                 df_t = yf.download(t, start=self.start_date, end=self.end_date, interval="1d")
                 df_t = df_t.rename(columns={
@@ -125,7 +127,7 @@ class MakeDatasetMacro:
         # (3) 스케일러 순서 맞추기
         try:
             from joblib import load
-            scaler_X = load(f"{model_dir}/scalers/{self.target_tickers}_{self.agent_id}_xscaler.pkl")
+            scaler_X = load(f"{model_dir}/scalers/{self.ticker}_{self.agent_id}_xscaler.pkl")
             feature_order = list(scaler_X.feature_names_in_)
             df = df.reindex(columns=feature_order, fill_value=0)
         except Exception as e:
