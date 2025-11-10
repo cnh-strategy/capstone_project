@@ -282,6 +282,7 @@ class MacroAData:
 
         # 전체 모델 저장
         save_model(model, f"{self.model_path}")
+        scaler_X.feature_names_in_ = np.array(X_all.columns)    #로드 시에도 feature_names_in_ 속성이 복원
         joblib.dump(scaler_X, f"{self.scaler_X_path}")
         joblib.dump(scaler_y, f"{self.scaler_y_path}")
 

@@ -7,7 +7,7 @@ import pandas as pd
 import joblib
 from datetime import datetime
 from tensorflow.keras.models import load_model
-
+import tensorflow as tf
 from config.agents import dir_info
 from core.macro_classes.macro_sub import get_std_pred, MakeDatasetMacro
 from core.macro_classes.macro_llm import LLMExplainer, Opinion, Rebuttal, GradientAnalyzer
@@ -506,3 +506,110 @@ class MacroPredictor(BaseAgent):
         user_text = prompt_set["user"].format(context=json.dumps(ctx, ensure_ascii=False, indent=2))
 
         return system_text, user_text
+
+
+
+
+
+
+
+    def reviewer_revise(
+            self,
+            my_opinion: Opinion,
+            others: List[Opinion],
+            rebuttals: List[Rebuttal],
+            stock_data: StockData,
+            fine_tune: bool = True,
+            lr: float = 1e-4,
+            epochs: int = 5,
+    ):
+        """
+        MacroPredictor 전용 Revision 단계
+        - σ 기반 β-weighted 신뢰도 계산
+        - γ 수렴율로 예측값 보정
+        - (옵션) Keras fine-tuning
+        - LLM reasoning 생성
+        """
+        gamma = getattr(self, "gamma", 0.3)
+        delta_limit = getattr(self, "delta_limit", 0.05)
+
+        try:
+            # ① 불확실성 기반 β 계산
+            my_price = my_opinion.target.next_close
+            my_sigma = abs(my_opinion.target.uncertainty or 1e-6)
+            other_prices = np.array([o.target.next_close for o in others])
+            other_sigmas = np.array([abs(o.target.uncertainty or 1e-6) for o in others])
+
+            inv_sigmas = 1 / (np.concatenate([[my_sigma], other_sigmas]) + 1e-6)
+            betas = inv_sigmas / inv_sigmas.sum()
+
+            delta = np.sum(betas[1:] * (other_prices - my_price))
+            revised_price = my_price + gamma * delta
+
+        except Exception as e:
+            print(f"[{self.agent_id}] β/γ 계산 실패: {e}")
+            revised_price = my_opinion.target.next_close
+
+        # ② Fine-tuning (Keras 모델)
+        loss_value = None
+        if fine_tune and self.model is not None:
+            try:
+                current_price = getattr(self, "last_price", 100.0)
+                revised_return = (revised_price / current_price) - 1
+
+                # 입력 데이터 준비
+                X_seq, _ = self.prepare_features()
+                y_true = np.array([[revised_return]], dtype=np.float32)
+
+                self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
+                                   loss="mse")
+                history = self.model.fit(X_seq, y_true, epochs=epochs, verbose=0)
+                loss_value = float(history.history["loss"][-1])
+                print(f"[{self.agent_id}] fine-tuning 완료: loss={loss_value:.6f}")
+            except Exception as e:
+                print(f"[{self.agent_id}] fine-tuning 실패: {e}")
+
+        # ③ Fine-tuning 이후 재예측
+        try:
+            X_seq, X_scaled = self.prepare_features()
+            pred_prices, target = self.m_predictor(X_seq)
+        except Exception as e:
+            print(f"[{self.agent_id}] 재예측 실패: {e}")
+            target = my_opinion.target
+
+        # ④ LLM reasoning
+        try:
+            sys_text, user_text = self._build_messages_revision(
+                my_opinion=my_opinion,
+                others=others,
+                rebuttals=rebuttals,
+                stock_data=stock_data,
+            )
+        except Exception as e:
+            print(f"[{self.agent_id}] revision 메시지 생성 실패: {e}")
+            sys_text, user_text = (
+                "너는 거시경제 분석가다. 거시 지표를 기반으로 reason을 간단히 생성하라.",
+                json.dumps({"reason": "기본 메시지 생성 실패"}),
+            )
+
+        parsed = self._ask_with_fallback(
+            self._msg("system", sys_text),
+            self._msg("user", user_text),
+            {
+                "type": "object",
+                "properties": {"reason": {"type": "string"}},
+                "required": ["reason"],
+                "additionalProperties": False,
+            },
+        )
+
+        revised_reason = parsed.get("reason", "(수정 사유 생성 실패)")
+        revised_opinion = Opinion(
+            agent_id=self.agent_id,
+            target=target,
+            reason=revised_reason,
+        )
+
+        self.opinions.append(revised_opinion)
+        print(f"[{self.agent_id}] revise 완료 → new_close={target.next_close:.2f}, loss={loss_value}")
+        return revised_opinion
