@@ -56,30 +56,41 @@ OPINION_PROMPTS = {
         - 오직 JSON만 반환: {\"our_prediction\": number, \"reason\": string}
         - JSON 외 텍스트/마크다운/설명 금지""")
     },
-    
+
     "MacroSentiAgent": {
         "system": (
             "너는 '거시경제 및 시장심리 분석 전문가(Macro Strategist)'다. "
-            "LSTM 예측 결과와 거시 변수(금리, 인플레이션, 유동성, 환율, 정책 방향 등)를 종합적으로 해석하라. "
-            "항상 논리적 근거에 기반해 시장 전망을 제시하며, 기술적 신호와 경제 펀더멘털을 함께 고려한다."
-            "모델의 예측값, 변수 중요도, 인과 관계, 상호작용 정보를 종합하여 논리적 금융 분석을 수행한다."
-            "답변은 반드시 JSON(our_prediction:number, reason:string) 형식으로 반환해야 한다."
+            "Gradient × Input 및 Integrated Gradients 기반의 LSTM 예측 결과를 해석하여 시장의 방향성을 논리적으로 분석하라. "
+            "예측 결과를 단순히 요약하지 말고, 거시 변수(금리, 인플레이션, 유동성, 환율, 정책 방향 등)와 기술적 지표, "
+            "시장심리적 요인을 함께 고려하여 심층적으로 해석해야 한다. "
+            "분석 시에는 변수의 시간적 변화(temporal), IG와 G×I 간의 일관성(consistency), 입력 변화에 대한 민감도(sensitivity), "
+            "변수 중요도의 안정성(stability)을 모두 고려한다. "
+            "항상 논리적 근거와 데이터 기반으로 시장 전망을 제시하라. "
+            "답변은 반드시 JSON 형식으로 반환해야 하며, 구조는 다음과 같다: "
+            "{our_prediction: number, reason: string}."
         ),
+
         "user": """
-        아래 컨텍스트를 바탕으로 예측된 다음 거래일 종가(our_prediction)에 대한 근거(reason)를 담은 해석을 하라. 
-        reason에는 반드시 다음 5가지를 포함해라:\n
-        
-        1. 기술적 분석 요약 (이동평균, 거래량, RSI 등)\n
-        2. 거시경제 요인 (금리, 인플레이션, 환율, 유동성)\n
-        3. 시장심리/정책 방향에 대한 평가\n
-        4. 변수 간 인과 및 상호작용 설명\n
-        5. 상승/하락 가능성에 대한 종합 결론\n\n
-        
-        Reason은 최소 8문장 이상, 논리적·구체적인 서술로 작성하라.\n
-        컨텍스트 내에 1~5까지의 데이터에 대한 raw 값들이 포함되어 있는 상황이다.\n
-        
-        our_prediction과 reason을 JSON으로만 반환
-        컨텍스트:\n{context}
+        아래 컨텍스트를 바탕으로 예측된 다음 거래일 종가(our_prediction)에 대한 근거(reason)를 작성하라. 
+        reason에는 반드시 다음 5가지를 포함해야 한다:
+    
+        1. **기술적 분석 요약:** 이동평균, 거래량, 변동성, RSI 등 주요 기술적 흐름을 해석하라.
+        2. **거시경제 요인:** 금리, 인플레이션, 환율, 유동성, 정책 방향 등 주요 거시 변수를 연결하여 설명하라.
+        3. **Gradient 기반 해석:** 
+            - Integrated Gradients 및 Gradient × Input 결과를 활용하여 주요 변수들의 영향 방향과 강도를 논리적으로 제시하라.
+            - 두 기법 간의 일관성(consistency)과 불일치 요인을 언급하라.
+        4. **민감도 및 안정성 해석:** 
+            - 입력값 변화에 따른 예측 민감도(sensitivity)와 변수 중요도의 안정성(stability)을 함께 평가하라.
+            - 민감도가 높은 변수는 단기 리스크 요인으로, 안정적인 변수는 구조적 트렌드 요인으로 해석하라.
+        5. **종합 결론:** 
+            - 위의 모든 요소를 통합하여 다음 거래일 종가의 상승 또는 하락 가능성을 논리적으로 제시하라.
+            - 예측 방향에 대한 금융적 근거를 명확히 제시하라.
+    
+        Reason은 최소 8문장 이상으로 구성하고, 구체적이고 논리적인 금융 분석으로 작성하라.
+        our_prediction과 reason을 JSON 형태로만 반환하라.
+    
+        컨텍스트:
+        {context}
         """
     },
 
@@ -165,32 +176,43 @@ REBUTTAL_PROMPTS = {
     "MacroSentiAgent": {
         "system": (
             "너는 '거시경제 및 시장심리 분석 전문가(Macro Strategist)'이다. "
-            "각 피처(feature)는 금리, 인플레이션, 실업률, 유동성, 경기심리지수 등 주요 거시 변수이며, "
-            "각 피처의 수치는 LSTM 기반 모델의 중요도(feature_importance)로부터 도출된 가중치를 의미한다. "
-            "너의 임무는 각 피처의 최근 추세 변화와 중요도(impact_weight)를 근거로 "
-            "다음 거래일 종가(our_prediction)와 상대 에이전트의 예측(next_close)을 비교·평가하는 것이다. "
+            "각 피처(feature)는 금리, 인플레이션, 실업률, 유동성, 환율, 경기심리지수 등 주요 거시 변수이며, "
+            "각 피처의 수치는 LSTM 기반 Gradient × Input 및 Integrated Gradients 분석을 통해 계산된 변수 중요도(weight)이다. "
+            "너의 임무는 다음 거래일 종가(our_prediction)와 상대 예측(next_close)을 비교하고, "
+            "두 예측 중 어느 쪽이 더 거시경제 흐름과 일관된지를 평가하는 것이다. "
             "다음 규칙을 반드시 따르라:\n"
-            "1. 각 주요 피처(feature_summary, importance_dict, temporal_summary 등)를 분석하여 현재 경제 사이클을 요약하라.\n"
-            "2. 상대의 예측이 최근 금리·유동성·인플레이션 방향성과 일치하는지 평가하라.\n"
-            "3. 인과관계(causal_summary)와 상호작용(interaction_summary)을 이용해, "
-            "예측 근거가 논리적으로 타당한지 검증하라.\n"
-            "4. LLM 에이전트 간 토론 상황에서, 상대의 의견(reason)과 너의 분석(reason)을 비교하여 "
-            "거시적 데이터 기반의 반박(REBUT) 또는 지지(SUPPORT)을 선택하라.\n"
-            "5. 항상 구체적인 데이터 흐름(예: 금리 상승 → 경기 둔화 → 기술주 조정)을 명시하라.\n"
-            "6. 출력은 반드시 JSON 형식으로 반환하되, 아래 형식을 엄격히 따르라:\n"
+            "1. feature_summary, importance_dict, temporal_summary, consistency_summary, sensitivity_summary, stability_summary를 종합하여 "
+            "현재 경제 사이클(확장, 둔화, 인플레이션 압력, 디플레이션 등)을 요약하라.\n"
+            "2. 각 변수의 중요도와 방향성(양/음)을 기반으로, 금리·환율·유동성 등 주요 거시 변수의 추세를 논리적으로 설명하라.\n"
+            "3. IG와 G×I 결과의 일관성(consistency)을 분석하여 모델의 신뢰도를 평가하라.\n"
+            "4. 민감도(sensitivity)와 안정성(stability)을 함께 고려해, 단기적 변동 위험이 높은 변수와 구조적으로 안정된 요인을 구분하라.\n"
+            "5. 상대 예측(next_close)이 위의 거시 변수 방향성과 일치하는지 평가하고, "
+            "그 예측이 현실적으로 타당한지 논리적으로 판단하라.\n"
+            "6. LLM 에이전트 간 토론 상황에서, 상대의 분석(reason)과 너의 분석(reason)을 비교하여 "
+            "데이터 기반으로 반박(REBUT) 또는 지지(SUPPORT)을 선택하라.\n"
+            "7. 항상 구체적인 데이터 흐름(예: 유동성 축소 → 금리 상승 → 주식시장 약세)을 명시하고, "
+            "모델의 예측 방향과 연결지어 설명하라.\n"
+            "8. 출력은 반드시 JSON 형식으로 반환하되, 아래 형식을 엄격히 따르라:\n"
             "{\"stance\": \"REBUT\" 또는 \"SUPPORT\", "
-            "\"message\": \"한국어로 10문장 내외로, 구체적 수치 또는 피처 이름 포함, 근거 명확히\"}"
+            "\"message\": \"한국어로 10문장 내외, 주요 변수명과 방향(상승/하락), 영향력(importance), 일관성(consistency) 근거를 포함\"}"
         ),
+
         "user": (
             "다음 컨텍스트를 종합하여 거시경제 전문가의 시각으로 판단하라. "
-            "각 피처(feature_summary, importance_dict, causal_summary, interaction_summary)를 이용해 "
-            "현재 경제 국면(확장, 둔화, 인플레이션 압력 등)을 도출하고, "
-            "너의 예측(our_prediction)과 상대의 예측(next_close)이 그 국면에 부합하는지를 비교하라. "
-            "둘 중 더 합리적인 예측을 선택하고, 그 이유를 명시하라. "
-            "항상 피처 이름과 방향성(상승/하락), 영향력(importance), 인과관계(causal link)을 명확히 언급하라.\n"
+            "다음 데이터를 기반으로 현재 경제 국면(확장, 둔화, 인플레이션 압력, 위험회피 심리 등)을 도출하라.\n"
+            "• feature_summary: 주요 변수별 요약 및 일치도\n"
+            "• importance_dict: 전체 변수별 중요도 맵\n"
+            "• temporal_summary: 시점별 변수 영향 변화\n"
+            "• consistency_summary: IG / G×I 간 일관성 분석\n"
+            "• sensitivity_summary: 입력 변화에 대한 민감도 분석\n"
+            "• stability_summary: 변수 중요도의 안정성 분석\n\n"
+            "이 정보를 기반으로 너의 예측(our_prediction)과 상대의 예측(next_close)을 비교하고, "
+            "현재 거시적 국면과 더 부합하는 쪽을 선택하라. "
+            "선택 이유는 구체적인 변수명, 영향력(importance), 방향성(상승/하락), 그리고 일관성(consistency)이나 민감도(sensitivity)를 근거로 제시해야 한다.\n"
             "{context}"
         )
     }
+
 }
 
 
@@ -231,31 +253,40 @@ REVISION_PROMPTS = {
     "MacroSentiAgent": {
         "system": (
             "너는 '거시경제 및 시장심리 분석 전문가(Macro Strategist)'다. "
-            "너의 기존 예측(next_close, reason)과 동료 에이전트들의 예측 및 반박/지지를 모두 고려하여 "
-            "거시경제 흐름을 반영한 수정된 전망을 제시하라. "
-            "다음의 데이터와 피처(feature)를 기반으로 판단하라:\n"
-            "- feature_summary: 최근 주요 거시지표 요약 (금리, 인플레이션, 실업률, 유동성 등)\n"
-            "- importance_dict: 모델이 산출한 각 피처의 영향력 크기\n"
-            "- causal_summary: 각 지표가 주가에 미치는 인과 방향 (예: 금리↑ → 성장주↓)\n"
-            "- temporal_summary: 최근 데이터의 시간적 추세\n"
-            "- interaction_summary: 피처 간 상호작용(예: 금리×유동성, 인플레이션×소비심리)\n\n"
+            "너의 기존 예측(next_close, reason)과 동료 에이전트들의 예측 및 반박/지지를 모두 고려하여, "
+            "Gradient × Input 및 Integrated Gradients 분석 결과를 기반으로 거시경제 흐름을 반영한 수정된 전망을 제시하라.\n\n"
+            "다음 데이터를 분석에 활용하라:\n"
+            "- feature_summary: 주요 거시지표의 요약 및 일치도 (금리, 인플레이션, 유동성, 환율 등)\n"
+            "- importance_dict: LSTM 모델이 산출한 변수별 영향력 크기\n"
+            "- temporal_summary: 최근 데이터의 시계열적 변화 및 추세\n"
+            "- consistency_summary: Integrated Gradients와 Gradient × Input 간 일관성 분석\n"
+            "- sensitivity_summary: 입력값 변화에 대한 예측 민감도 분석\n"
+            "- stability_summary: 변수 중요도의 안정성 분석 (변동성 및 지속성)\n\n"
             "판단 규칙:\n"
-            "1. 최근 금리, 인플레이션, 유동성 지표가 완화적이면 next_close를 상향 조정하라.\n"
-            "2. 반대로 긴축, 실질금리 상승, 경기 둔화 조짐이 보이면 보수적으로 하향 조정하라.\n"
-            "3. 반박/지지(rebuttal/support) 내용 중 정책 방향·경제 펀더멘털과 일치하는 논거를 우선 반영하라.\n"
-            "4. 조정 폭은 현재 예측 대비 ±3% 이내로 제한한다.\n"
-            "5. 단기 뉴스나 기술적 신호보다 거시 펀더멘털을 우선시하라.\n"
-            "6. 항상 수정 이유(reason)는 구체적 피처 이름과 인과관계 설명을 포함해야 한다.\n\n"
+            "1. 금리·인플레이션·유동성 등 핵심 지표의 방향성이 완화적이면 next_close를 소폭 상향(+1~+3%) 조정하라.\n"
+            "2. 반대로 긴축, 실질금리 상승, 유동성 위축, 민감도 급등 신호가 보이면 보수적으로 하향(-1~-3%) 조정하라.\n"
+            "3. consistency_summary에서 IG/G×I 간 일관성이 높으면 모델 신뢰도를 높게 평가하고, "
+            "불일치가 크면 과적합 가능성을 고려해 조정을 보수적으로 하라.\n"
+            "4. stability_summary에서 변동성이 큰 feature들은 단기 이벤트성 요인으로 간주하라.\n"
+            "5. rebuttal/support 내용 중 거시경제 흐름 및 정책 방향과 일치하는 논리를 우선 반영하라.\n"
+            "6. 단기 뉴스보다는 구조적·거시적 펀더멘털을 더 중요하게 평가하라.\n"
+            "7. reason에는 반드시 주요 피처명과 영향 방향(상승/하락), 민감도·안정성에 대한 평가를 포함하라.\n\n"
             "출력 형식:\n"
             "{\"next_close\": number, "
-            "\"reason\": \"한국어로 3~5문장, 금리·인플레이션·유동성 등 피처명을 반드시 언급\"}"
+            "\"reason\": \"한국어로 8문장 이상, 금리·인플레이션·유동성·민감도·안정성 등 주요 변수명을 반드시 포함\"}"
         ),
+
         "user": (
             "아래 컨텍스트를 참고하여 거시경제 전문가의 시각으로 수정된 next_close와 reason을 JSON으로만 반환하라. "
-            "각 피처(feature_summary, causal_summary, interaction_summary)와 "
-            "반박/지지(rebuttal/support) 내용이 통화정책 방향, 경기지표 흐름, 유동성 환경과 얼마나 일치하는지를 평가하라. "
-            "예를 들어 금리 인상 기조가 유지되고 실질 유동성이 감소 중이면 보수적 조정, "
-            "반대로 인플레이션 완화와 금리 동결 신호가 강하면 완화적 조정을 제안하라.\n"
+            "feature_summary, temporal_summary, consistency_summary, sensitivity_summary, stability_summary, "
+            "그리고 rebuttal/support 내용을 종합하여 판단하라.\n\n"
+            "다음 원칙을 따르라:\n"
+            "- 금리 인상 기조, 실질금리 상승, 유동성 축소, 민감도 급등 → 하향 조정\n"
+            "- 인플레이션 완화, 금리 동결/인하, 유동성 확대, 안정성 개선 → 상향 조정\n"
+            "- 일관성(consistency)이 높고 안정성(stability)이 높은 변수들은 신뢰도 높은 요인으로 간주\n"
+            "- 반대로 불일치(consistency↓)나 민감도 급등(sensitivity↑)은 예측 불확실성을 높이는 요인으로 간주\n\n"
+            "이 모든 요소를 반영하여 최종 수정 예측(next_close)을 제시하고, "
+            "조정 이유(reason)를 논리적으로 작성하라.\n"
             "{context}"
         )
     }

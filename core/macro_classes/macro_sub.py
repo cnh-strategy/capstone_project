@@ -214,7 +214,20 @@ def get_std_pred(model, X_seq, n_samples=30, scaler_y=None, current_price=None, 
         else:
             current_price = 100.0  # 기본값
 
-    predicted_return = float(mean_pred[-1])  # 예측된 수익률
+    # ✅ 스케일 복원 추가 (scaler_y 없을 때도 기본 복원)
+    if scaler_y is None:
+        # 모델 출력이 수익률 예측일 경우 → 그대로 사용
+        predicted_return = float(mean_pred[-1])
+    else:
+        # 역변환 적용
+        try:
+            restored = scaler_y.inverse_transform(mean_pred.reshape(-1, 1)).flatten()
+            predicted_return = float(restored[-1])
+            mean_pred = restored
+        except Exception as e:
+            print(f"[WARN] scaler_y inverse_transform 실패: {e}")
+            predicted_return = float(mean_pred[-1])
+
     predicted_price = current_price * (1 + predicted_return)
 
     # -------------------------------------------------

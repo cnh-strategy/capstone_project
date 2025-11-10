@@ -10,7 +10,7 @@ from tensorflow.keras.models import load_model
 
 from config.agents import dir_info
 from core.macro_classes.macro_sub import get_std_pred, MakeDatasetMacro
-from core.macro_classes.macro_llm import AttributionAnalyzer, LLMExplainer, Opinion, Rebuttal
+from core.macro_classes.macro_llm import LLMExplainer, Opinion, Rebuttal, GradientAnalyzer
 from agents.base_agent import BaseAgent, Target, StockData
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 
@@ -181,6 +181,10 @@ class MacroPredictor(BaseAgent):
 
     #macro_reviewer_draft 역할
     def macro_reviewer_draft(self, X_scaled, pred_prices, target):
+        """
+        모델 예측 이후 attribution 결과를 요약하는 함수.
+        Gradient 기반 6요약 구조 버전.
+        """
         # 예측 일자 설정
         base_date = datetime.today()
 
@@ -214,24 +218,31 @@ class MacroPredictor(BaseAgent):
 
 
         # -------------------------------
-        # 3️⃣ SHAP 계산
+        # 3️⃣ Gradient  계산
         # -------------------------------
         # --- (run() 안의 안전 처리) ---
         X_scaled = X_scaled.astype(np.float32)
         X_scaled = X_scaled[:, :, :300]
         feature_names = feature_names[:300]
 
-        print("\n3️⃣ Calculating feature importance...")
-        analyzer = AttributionAnalyzer(self.model)
-        importance_dict, temporal_df, causal_df, interaction_df = analyzer.run_all_shap(X_scaled, feature_names)
+        print("\n3️⃣ Running GradientAnalyzer for interpretability...")
+        gradient_analyzer = GradientAnalyzer(self.model, feature_names)
 
+        # 변경된 run_all_gradients 리턴 구조 반영
+        importance_dict, temporal_df, consistency_df, sensitivity_df, grad_results = gradient_analyzer.run_all_gradients(X_scaled)
+
+        # stability_summary는 grad_results 내부에 포함되어 있으므로 별도 DataFrame 생성 가능
+        stability_df = pd.DataFrame(grad_results["stability_summary"])
+
+
+        # 요약 데이터 추출
         temporal_summary = temporal_df.head().to_dict(orient="records") if temporal_df is not None else []
-        causal_summary = causal_df.to_dict(orient="records") if causal_df is not None else []
-        if isinstance(interaction_df, pd.DataFrame):
-            interaction_summary = interaction_df.iloc[:5, :5].to_dict()
-        else:
-            interaction_summary = {}
+        consistency_summary = consistency_df.to_dict(orient="records") if consistency_df is not None else []
+        sensitivity_summary = sensitivity_df.to_dict(orient="records") if sensitivity_df is not None else []
+        stability_summary = grad_results["stability_summary"]
 
+        # feature_summary (핵심 상위 구조)
+        feature_summary = grad_results["feature_summary"]
 
         # -------------------------------
         # 4️⃣ llm 생성
@@ -239,9 +250,9 @@ class MacroPredictor(BaseAgent):
         print("\n4️⃣ Generating explanation using LLM...")
 
         llm  = LLMExplainer()
-        feature_summary = feature_df.tail(5).describe().to_dict()
         explanation = llm.generate_explanation(feature_summary, pred_prices, importance_dict,
-                                               temporal_summary, causal_summary, interaction_summary)
+                                               temporal_summary, consistency_summary, sensitivity_summary,
+                                               stability_summary)
 
         print(f"\n================= pred_prices:{pred_prices} =================")
 
@@ -261,8 +272,9 @@ class MacroPredictor(BaseAgent):
                     'feature_summary': feature_summary,
                     'importance_dict': importance_dict,
                     'temporal_summary': temporal_summary,
-                    'causal_summary': causal_summary,
-                    'interaction_summary': interaction_summary
+                    'consistency_summary': consistency_summary,
+                    'sensitivity_summary': sensitivity_summary,
+                    'stability_summary':stability_summary
                 },
                 'our_prediction': pred_prices,
                 'uncertainty': round(target.uncertainty or 0.0, 8),
@@ -292,8 +304,9 @@ class MacroPredictor(BaseAgent):
                 'feature_summary': feature_summary,
                 'importance_dict': importance_dict,
                 'temporal_summary': temporal_summary,
-                'causal_summary': causal_summary,
-                'interaction_summary': interaction_summary
+                'consistency_summary': consistency_summary,
+                'sensitivity_summary': sensitivity_summary,
+                'stability_summary':stability_summary
             },
         }, ensure_ascii=False, indent=2)
 
@@ -349,8 +362,9 @@ class MacroPredictor(BaseAgent):
                 "feature_summary": feature_imp.get("feature_summary", []),
                 "importance_dict": feature_imp.get("importance_dict", []),
                 "temporal_summary": feature_imp.get("temporal_summary", []),
-                "causal_summary": feature_imp.get("causal_summary", []),
-                "interaction_summary": feature_imp.get("interaction_summary", {}),
+                'consistency_summary': feature_imp.get('consistency_summary', []),
+                'sensitivity_summary': feature_imp.get('sensitivity_summary', []),
+                'stability_summary': feature_imp.get('stability_summary', [])
             },
         }
 
