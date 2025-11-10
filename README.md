@@ -1,3 +1,9 @@
+# 매크로 에이전트 돌리기 위해서: agents 폴더 밑에 dump_keys.py를 생성 후 
+# CAPSTONE_OPENAI_API='키값'
+# 이 한 줄을 넣은 파일을 만들어주세요!!
+# .env가 안먹혀서 임시로 연결해두었습니다ㅠㅠㅠ
+
+
 # 🧠 AI Stock Debate System (MVP)
 
 > **신뢰도 기반 Revise를 수행하는 AI 주식 토론 시스템**
