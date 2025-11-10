@@ -126,6 +126,8 @@ class DebateAgent(BaseAgent):
         print(f" Round {round} rebuttals 생성 완료 ({len(round_rebuttals)} agents)")
         return round_rebuttals
 
+
+    # 각 에이전트가 토론 이후 자신의 예측을 수정하는 단계
     def get_revise(self, round: int):
         """모든 agent 간 상호 revise 수행 및 opinions 갱신"""
         round_revises = {}
@@ -143,31 +145,16 @@ class DebateAgent(BaseAgent):
             ]
             stock_data = getattr(agent, "stockdata", None)
 
-            revise = agent.reviewer_revise(
-                revised_target=my_opinion.target,
-                old_opinion=my_opinion,
-                rebuttals=rebuttals,
+            # BaseAgent의 reviewer_revise() 시그니처에 맞게 호출
+            revised_opinion = agent.reviewer_revise(
+                my_opinion=my_opinion,
                 others=other_opinions,
-                X_input=getattr(stock_data, "X", None),
+                rebuttals=rebuttals,
+                stock_data=stock_data,
             )
 
-            # if agent_id == 'MacroSentiAgent':
-            #     revise = macro_reviewer_revise(
-            #     my_opinion,
-            #     other_opinions,
-            #     rebuttals,
-            #     stock_data
-            # )
-            # else:
-            #     revise = agent.reviewer_revise(
-            #         my_opinion,
-            #         other_opinions,
-            #         rebuttals,
-            #         stock_data
-            #     )
-
             # revise 결과 opinion 갱신
-            round_revises[agent_id] = revise
+            round_revises[agent_id] = revised_opinion
 
         # opinions에 다음 라운드 의견으로 등록
         self.opinions[round] = round_revises
