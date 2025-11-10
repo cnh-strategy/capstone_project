@@ -60,14 +60,21 @@ class Target:
             f"Target(next_close={self.next_close:.4f}, "
             f"uncertainty={(self.uncertainty or 0):.4f}, "
             f"confidence={(self.confidence or 0):.4f}, "
-            f"idea={self.idea})"
-        )
+            )
+        
 
+# 아연수정
 @dataclass
 class Opinion:
     agent_id: str
     target: Target
     reason: str
+    def __str__(self):
+        return (f"Opinion(agent_id={self.agent_id}, "
+                f"target=Target(next_close={self.target.next_close:.4f}, "
+                f"uncertainty={self.target.uncertainty:.4f}, "
+                f"confidence={self.target.confidence:.4f}))\n"
+                f"reason:\n{self.reason}")
 
 @dataclass
 class Rebuttal:
@@ -212,14 +219,17 @@ class TechnicalBaseAgent:
             )
     
         # CSV 로드 (아연수정)
-        X, y, feature_cols, dates_all = load_dataset_tech(ticker, agent_id=agent_id, save_dir=self.data_dir)
+        X, y, feature_cols, dates_all = load_dataset_tech(
+            ticker, agent_id=agent_id, save_dir=self.data_dir
+            )
+
+        # 최근 window
+        X_latest = X[-1:]
 
         # StockData 구성 (아연수정)
         self.stockdata = StockData(ticker=ticker, feature_cols=feature_cols)
         setattr(self.stockdata, f"{agent_id}_dates", dates_all or [])
 
-        # 최근 window
-        X_latest = X[-1:]
         # last_price 안전 변환 (+빈 DF 가드)
         try:
             data = yf.download(ticker, period="5y", interval="1d", auto_adjust=True, progress=False)
@@ -237,7 +247,12 @@ class TechnicalBaseAgent:
         except Exception:
             self.stockdata.currency = "USD"
 
+        df_latest = pd.DataFrame(X_latest[0], columns=feature_cols)  # (T, F)
+        feature_dict = {col: df_latest[col].tolist() for col in df_latest.columns}
+        setattr(self.stockdata, agent_id, feature_dict)
+
         print(f"■ {agent_id} StockData 생성 완료 ({ticker}, {self.stockdata.currency})")
+
         return torch.tensor(X_latest, dtype=torch.float32)
 
 
@@ -430,6 +445,7 @@ class TechnicalBaseAgent:
         # -----------------------------
         # Target 생성 및 반환
         # -----------------------------
+        
         target = Target(
             next_close=float(predicted_price),
             uncertainty=sigma,

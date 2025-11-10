@@ -530,17 +530,16 @@ class TechnicalAgent(TechnicalBaseAgent, nn.Module):
             "beta": r4(target.confidence or 0.0),
             "window_size": int(self.window_size),
             "idea": idea,  # 핵심만
-            "evidence": exp.get("evidence", {})
+            # "evidence": exp.get("evidence", {})
         }
 
         system_text = OPINION_PROMPTS[self.agent_id]["system"]
-        user_text = OPINION_PROMPTS[self.agent_id]["user"].format(
-            context=json.dumps(ctx, ensure_ascii=False)
-            )
+        tmpl = OPINION_PROMPTS[self.agent_id]["user"]
+        user_text = tmpl.replace("{context}", json.dumps(ctx, ensure_ascii=False))
         return system_text, user_text
 
 
-    # 추후 수정
+    # 수정 완료
     def _build_messages_rebuttal(self,
                                 my_opinion: Opinion,
                                 target_opinion: Opinion,
@@ -555,7 +554,7 @@ class TechnicalAgent(TechnicalBaseAgent, nn.Module):
         ctx = {
             "ticker": t,
             "currency": ccy,
-            "data_summary": getattr(stock_data, self.agent_id, {}).get("feature_cols", []),
+            "data_summary": getattr(stock_data, "feature_cols", []), # 수정
             "me": {
                 "agent_id": self.agent_id,
                 "next_close": float(my_opinion.target.next_close),
@@ -572,17 +571,18 @@ class TechnicalAgent(TechnicalBaseAgent, nn.Module):
             }
         }
         # 각 컬럼별 최근 시계열 그대로 포함
-        # (최근 7~14일 정도면 LLM이 이해 가능한 범위)
+    
         for col, values in agent_data.items():
             if isinstance(values, (list, tuple)):
-                ctx[col] = values[self.window_size:]  # 최근 14일치 전체 시계열
+                ctx[col] = values[-self.window_size:] # 수정
             else:
                 ctx[col] = [values]
 
+        # 아연 수정
         system_text = REBUTTAL_PROMPTS[self.agent_id]["system"]
-        user_text   = REBUTTAL_PROMPTS[self.agent_id]["user"].format(
-            context=json.dumps(ctx, ensure_ascii=False)
-        )
+        tmpl = REBUTTAL_PROMPTS[self.agent_id]["user"]
+        user_text = tmpl.replace("{context}", json.dumps(ctx, ensure_ascii=False))
+    
         return system_text, user_text
 
     # 추후 수정
