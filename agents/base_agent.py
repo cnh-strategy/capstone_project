@@ -192,8 +192,9 @@ class BaseAgent:
         self.stockdata.ticker = ticker
 
         try:
-            data = yf.download(ticker, period="1d", interval="1d")
-            self.stockdata.last_price = float(data["Close"].iloc[-1])
+            data = yf.download(ticker, period="1d", interval="1d", auto_adjust=False, progress=False)
+            val = data["Close"].iloc[-1]
+            self.stockdata.last_price = float(val.item() if hasattr(val, "item") else val)
         except Exception as e:
             print(f"yfinance 오류 발생")
 
