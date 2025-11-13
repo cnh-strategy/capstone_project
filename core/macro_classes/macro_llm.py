@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import dataclass
 
 import numpy as np
@@ -7,15 +8,13 @@ import requests
 import shap
 from openai import OpenAI
 
-import os
-from dotenv import load_dotenv
-load_dotenv()
-CAPSTONE_OPENAI_API = os.getenv("CAPSTONE_OPENAI_API") or os.getenv("OPENAI_API_KEY")
-
-from typing import Dict, List, Optional, Literal, Tuple
+from agents.dump_keys import CAPSTONE_OPENAI_API
+from typing import Dict, List, Optional, Literal, Tuple, Any
 from collections import defaultdict
+import tensorflow as tf
+from config.agents import dir_info
 
-
+# CAPSTONE_OPENAI_API = os.getenv("CAPSTONE_OPENAI_API")
 
 
 # -----------------------------
@@ -80,7 +79,8 @@ class LLMExplainer:
                  preferred_models: Optional[List[str]] = None,
                  temperature: float = 0.2,
                  verbose: bool = False,
-                 need_training: bool = True):
+                 need_training: bool = True,
+                 ):
         self.client = OpenAI(api_key=CAPSTONE_OPENAI_API)
         self.model = model_name
 
@@ -94,6 +94,7 @@ class LLMExplainer:
             self.preferred_models = [model] + [
                 m for m in self.preferred_models if m != model
             ]
+
 
         # API 키 로드
         self.api_key = CAPSTONE_OPENAI_API
@@ -131,66 +132,98 @@ class LLMExplainer:
             "additionalProperties": False,
         }
 
-
     def generate_explanation(
             self,
             feature_summary,
             predictions,
             importance_summary,
             temporal_summary=None,
-            causal_summary=None,
-            interaction_summary=None,
+            consistency_summary=None,
+            sensitivity_summary=None,
+            stability_summary=None,
             stock_data=None,
             target=None,
     ):
         """
-        SHAP / LSTM 결과 기반으로 LLM Reasoning 생성 (system + user 구조)
+        Gradient × Input / Integrated Gradients 기반 feature importance 결과를 바탕으로
+        LLM이 논리적 금융 분석을 생성하도록 하는 버전
         """
+
+        def _summarize(obj, max_len=1500):
+            text = str(obj)
+            if len(text) > max_len:
+                text = text[:max_len] + "\n...(truncated)"
+            return text
+
+        # ✅ 안전한 문자열 변환
+        importance_summary = _summarize(importance_summary)
+        temporal_summary = _summarize(temporal_summary)
+        consistency_summary = _summarize(consistency_summary)
+        sensitivity_summary = _summarize(sensitivity_summary)
+        stability_summary = _summarize(stability_summary)
 
         # 1️⃣ system 메시지
         sys_text = (
-            "너는 금융 시장을 분석하는 인공지능 애널리스트이며, "
-            "LSTM 기반의 시계열 모델 예측 결과를 해석해야 한다. "
-            "모델의 예측값, 변수 중요도, 인과 관계, 상호작용 정보를 종합하여 논리적 금융 분석을 수행한다."
+            "너는 금융 시장을 분석하는 인공지능 애널리스트이다. "
+            "Gradient × Input 및 Integrated Gradients 기반의 LSTM 예측 결과를 해석해야 한다. "
+            "모델의 예측값, 변수 중요도, 시간적 변화, 일관성, 민감도, 안정성을 종합적으로 고려하여 "
+            "경제적 의미를 도출하라."
         )
 
-        # 2️⃣ user 메시지 (LSTM 예측 결과 중심)
+        # 2️⃣ user 메시지 (Gradient 기반 분석 중심)
         user_text = f"""
         ### 1. 모델 예측 결과
         {predictions}
     
-        ### 2. 종목별 주요 변수 중요도 (Base SHAP)
+        ### 2. 주요 변수 중요도 요약 (feature_summary)
+        {feature_summary}
+    
+        ### 3. 전체 변수 중요도 맵 (importance_dict)
         {importance_summary}
     
-        ### 3. 시점별 변수 영향 변화 (Temporal SHAP)
+        ### 4. 상위 변수 및 시점별 영향 변화 (temporal_summary)
         {temporal_summary}
     
-        ### 4. 변수별 인과 효과 (Causal SHAP)
-        {causal_summary}
+        ### 5. IG / G×I 간 일관성 분석 (consistency_summary)
+        {consistency_summary}
     
-        ### 5. 변수 간 상호작용 행렬 (Interaction SHAP)
-        {interaction_summary}
+        ### 6. 입력 변화 민감도 분석 (sensitivity_summary)
+        {sensitivity_summary}
     
-        ---
-        위 데이터를 바탕으로 아래 내용을 체계적으로 작성하세요:
+        ### 7. 변수 중요도 안정성 분석 (stability_summary)
+        {stability_summary}
     
-        (1) **Temporal 분석:** 
-            - 어떤 변수들이 최근 시점으로 갈수록 영향력이 커졌는가?
-            - 영향이 약해진 변수는 무엇인가?
-            - 시간 흐름에 따라 피처 영향이 달라진 이유를 금융적 관점에서 설명.
-    
-        (2) **Causal 분석:** 
-            - causal_effect가 양(+)이면 주가 상승 요인, 음(-)이면 하락 요인으로 해석.
-            - 각 종목별로 어떤 피처가 인과적으로 강한 영향을 미쳤는가?
-            - 예: “금리 상승(+) → 달러 강세 → 기술주 약세” 형태로 인과 구조를 제시.
-    
-        (3) **Interaction 분석:** 
-            - 상관도가 높은 피처 쌍을 찾아 그 상호작용을 해석.
-            - 예: “유가와 금리 동반 상승 → 비용 압박 증가 → AAPL/MSFT 부정적 영향”.
-    
-        (4) **종합 결론:** 
-            - 세 가지 관점을 통합하여 각 종목(AAPL, MSFT, NVDA)의 예측 방향과 원인을 설명.
-            - 특정 종목이 타 종목 대비 어떤 변수에 더 민감했는지 논리적으로 요약.
+        ---  
+        위 데이터를 바탕으로 아래 항목을 중심으로 체계적이고 논리적으로 분석하세요.
+        
+        (1) **Feature Trend (Temporal) 분석:**
+            - 어떤 변수들의 영향력이 최근 시점으로 갈수록 커졌습니까?
+            - 반대로 영향력이 약화된 변수는 무엇입니까?
+            - 이러한 변화가 나타난 거시적·산업적 요인은 무엇입니까?
+            - 시간 흐름에 따른 변수 영향 변화가 예측 방향에 어떤 의미를 가지는지 설명하십시오.
+        
+        (2) **Model Consistency 분석:**
+            - Integrated Gradients와 Gradient × Input 결과가 일치하는 주요 feature와 불일치하는 feature를 구분하십시오.
+            - 불일치가 높은 feature는 어떤 시장 불확실성, 데이터 잡음, 또는 비선형 구조에 의해 발생했을 가능성이 있습니까?
+            - 일관성이 높은 변수군이 모델이 신뢰할 만한 구조적 요인을 반영하고 있는지 논의하십시오.
+        
+        (3) **Sensitivity (민감도) 분석:**
+            - 입력값의 작은 변화에 큰 예측 변화가 발생한 변수는 무엇입니까?
+            - 민감도가 높다는 것은 해당 feature가 단기 시장 변동성 또는 과민 반응에 민감함을 의미합니다. 
+              이러한 feature들이 포트폴리오 리스크나 단기 트레이딩 전략에 어떤 시사점을 주는지 분석하십시오.
+            - 민감도가 낮은 feature는 어떤 안정적 요인을 반영하는지 설명하십시오.
+        
+        (4) **Stability (안정성) 분석:**
+            - 학습 구간이나 샘플링 변화에 따라 feature 중요도의 변동 폭이 큰 변수는 무엇입니까?
+            - 변동성이 높은 변수는 시장 국면 전환이나 뉴스 이벤트에 반응할 가능성이 있습니다.
+            - 반대로 변동성이 낮은 변수들은 구조적·장기적 트렌드에 연동된 요인일 수 있습니다. 
+              이러한 차이를 금융적으로 해석하십시오.
+        
+        (5) **통합 결론 (Integrated Insight):**
+            - 위 네 가지 관점을 종합하여 이번 예측의 주요 원동력을 설명하십시오.
+            - 어떤 변수 조합이 향후 가격 움직임에 가장 큰 영향을 미칠 것으로 예상되는지 논리적으로 제시하십시오.
+            - 모델의 신뢰성과 해석 가능성을 동시에 고려하여, 예측 결과에 대한 전문가적 평가를 작성하십시오.
+
         
         ---
         추가 맥락:
@@ -263,205 +296,187 @@ class LLMExplainer:
 
 
 
+
+
 # ==============================================================
-# Base SHAP (종목별 기본 중요도)
+# GradientAnalyzer (Integrated Gradients (IG) 와 Gradient × Input (G×I))
 # ==============================================================
-class BaseSHAPAnalyzer:
-    def __init__(self, model):
+class GradientAnalyzer:
+    """
+    Gradient × Input + Integrated Gradients 기반 피처 중요도 분석기
+    - SHAP을 대체하며, LSTM 등 시계열 모델에도 안정적으로 동작
+    - 두 방법 간 상관계수를 통해 일관성 검증 및 중요도 통합
+    """
+
+    def __init__(self, model, feature_names, baseline=None, steps:int=50):
         self.model = model
+        self.feature_names = feature_names
+        self.baseline = baseline
+        self.steps = steps
 
-    def compute_feature_importance(self, X_scaled, feature_names):
-        X_scaled = np.array(X_scaled, dtype=np.float32)
-        time_steps, num_features = X_scaled.shape[1], X_scaled.shape[2]
+    # ------------------------------------------------------------
+    # 1️⃣ Gradient × Input 계산
+    # ------------------------------------------------------------
+    def compute_gradient_x_input(self, x_input: np.ndarray) -> np.ndarray:
+        """
+        Gradient × Input 계산
+        - 입력 차원을 (batch, time, features) 형태로 강제 정규화
+        - (1, 1, 40, 169) 같은 잘못된 입력도 자동 수정
+        """
+        # ✅ 차원 정규화
+        x_input = np.array(x_input, dtype=np.float32)
+        if x_input.ndim == 4:
+            # (1, 1, 40, features) -> (1, 40, features)
+            x_input = np.squeeze(x_input, axis=1)
+        elif x_input.ndim == 2:
+            # (40, features) -> (1, 40, features)
+            x_input = np.expand_dims(x_input, axis=0)
 
-        # baseline 다양화
-        X_flat = X_scaled.reshape(X_scaled.shape[0], -1).astype(np.float32)
-        background_mean = X_flat.mean(axis=0)
-        background_noise = background_mean + np.random.normal(0, 0.03, size=X_flat.shape[1])
-        background = np.vstack([background_mean, background_noise]).astype(np.float32)
+        # ✅ Tensor 변환 및 Gradient 계산
+        x = tf.convert_to_tensor(x_input, dtype=tf.float32)
+        with tf.GradientTape() as tape:
+            tape.watch(x)
+            preds = self.model(x)
 
-        print(f"[SHAP] Computing Base SHAP for AAPL (모델 입력 {num_features}개 피처)")
+        grads = tape.gradient(preds, x)
+        gx = tf.abs(grads * x)
 
-        def model_wrapper_single(X):
-            X = np.array(X).astype(np.float32)
-            X = X.reshape(X.shape[0], time_steps, num_features)
-            return self.model.predict(X, verbose=0)[:, 0]
+        # ✅ 출력 shape 확인
+        print(f"[DEBUG] Gradient × Input output shape: {gx.shape}")
 
-        # ✅ SamplingExplainer로 변경 (메모리 절약)
-        explainer = shap.KernelExplainer(model_wrapper_single, background)
+        return gx.numpy()
 
-        # ✅ 샘플 수 제한
-        sample_idx = np.random.choice(len(X_flat), size=min(3, len(X_flat)), replace=False)
-        shap_values = explainer.shap_values(X_flat[sample_idx], nsamples=30)
-        shap_values = np.array(shap_values).reshape(-1, time_steps, num_features)
 
-        mean_importance = np.abs(shap_values).mean(axis=(0, 1))
-        df = pd.DataFrame({
+    # ------------------------------------------------------------
+    # 2️⃣ Integrated Gradients 계산
+    # ------------------------------------------------------------
+    def compute_integrated_gradients(self, x_input: np.ndarray) -> np.ndarray:
+        # ✅ 차원 정리: (batch, time, features)
+        x_input = np.array(x_input, dtype=np.float32)
+        if x_input.ndim == 4:
+            # (steps, 1, 40, features) or (1, 1, 40, features)
+            x_input = np.squeeze(x_input, axis=1)
+        if x_input.ndim == 2:
+            # (40, features) -> (1, 40, features)
+            x_input = np.expand_dims(x_input, axis=0)
+
+        if self.baseline is None:
+            self.baseline = np.zeros_like(x_input)
+
+        # ✅ baseline과 shape 동일 확인
+        assert self.baseline.shape == x_input.shape, \
+            f"Baseline shape {self.baseline.shape} != x_input {x_input.shape}"
+
+        interpolated = [
+            self.baseline + (float(i)/self.steps)*(x_input - self.baseline)
+            for i in range(self.steps + 1)
+        ]
+        interpolated = np.array(interpolated, dtype=np.float32)  # (steps+1, 1, 40, features) 형태
+        interpolated = np.squeeze(interpolated, axis=1)          # ✅ (steps+1, 40, features)
+
+        interpolated_tf = tf.convert_to_tensor(interpolated)
+        with tf.GradientTape() as tape:
+            tape.watch(interpolated_tf)
+            preds = self.model(interpolated_tf)
+
+        grads = tape.gradient(preds, interpolated_tf)
+        avg_grads = tf.reduce_mean(grads[:-1], axis=0)
+        ig = (x_input - self.baseline) * avg_grads.numpy()
+
+        print(f"[DEBUG] x_input shape before IG: {x_input.shape}")
+        print(f"[DEBUG] interpolated shape: {interpolated.shape}")
+        return ig
+
+    # ------------------------------------------------------------
+    # 3️⃣ 병합 실행 (SHAP 대체)
+    # ------------------------------------------------------------
+    def run_all_gradients(self, x_input: np.ndarray):
+        """
+        Gradient × Input + Integrated Gradients를 동시에 수행하고
+        6가지 summary 구조로 feature importance를 반환하는 버전.
+        """
+
+        print("[INFO] Running Gradient × Input + Integrated Gradients analysis...")
+
+        # 1️⃣ Gradient × Input / Integrated Gradients 계산
+        gx = self.compute_gradient_x_input(x_input)
+        ig = self.compute_integrated_gradients(x_input)
+
+        gx_mean = np.mean(np.abs(gx), axis=(0, 1))
+        ig_mean = np.mean(np.abs(ig), axis=(0, 1))
+
+        feature_names = np.array(self.feature_names)
+        importance_df = pd.DataFrame({
             "feature": feature_names,
-            "importance": mean_importance
+            "gradxinput": gx_mean,
+            "integrated_gradients": ig_mean
         })
 
-        # ✅ AAPL 관련 + 매크로 피처만 남기기
-        selected_features = [f for f in feature_names if "AAPL_" in f or not any(t in f for t in ["MSFT_", "NVDA_"])]
-        df = df[df["feature"].isin(selected_features)]
-        df = df.sort_values("importance", ascending=False)
+        # 2️⃣ 두 attribution의 평균을 최종 중요도로 사용
+        importance_df["final_importance"] = (
+                0.5 * (importance_df["gradxinput"] + importance_df["integrated_gradients"])
+        )
 
-        importance_dict = {"AAPL": df.head(10).to_dict(orient="records")}
-        print(f"[OK] SHAP 계산 완료: {len(df)}개 feature 중 상위 10개 추출")
-        return importance_dict
+        # 3️⃣ 일관성(agreement ratio)
+        corr = np.corrcoef(gx_mean, ig_mean)[0, 1]
+        print(f"[INFO] IG–G×I correlation (agreement_ratio): {corr:.4f}")
 
+        # 4️⃣ feature summary (핵심 요약)
+        feature_summary = {
+            "agreement_ratio": float(corr),
+            "gx_importance_top": importance_df.sort_values("gradxinput", ascending=False).head(3)["feature"].tolist(),
+            "ig_importance_top": importance_df.sort_values("integrated_gradients", ascending=False).head(3)["feature"].tolist()
+        }
 
+        # 5️⃣ importance dict
+        importance_dict = dict(
+            zip(feature_names, importance_df["final_importance"])
+        )
 
-# ==============================================================
-# Temporal SHAP (시점별 영향도)
-# ==============================================================
-class TemporalSHAPAnalyzer:
-    def __init__(self, model):
-        self.model = model
+        # 6️⃣ temporal summary (상위 5개 feature 세부요약)
+        temporal_summary = (
+            importance_df.sort_values("final_importance", ascending=False)
+            .head(5)
+            .to_dict(orient="records")
+        )
 
-    def compute_temporal_shap(self, X_scaled, feature_names, target_idx=0):
-        print("[Causal SHAP] Computing temporal perturbation effects...")
-        X_scaled = np.array(X_scaled, dtype=np.float32)
-        time_steps, num_features = X_scaled.shape[1], X_scaled.shape[2]
+        # 7️⃣ consistency summary (IG vs G×I 순위 일치도)
+        ig_rank = importance_df.sort_values("integrated_gradients", ascending=False).reset_index(drop=True)
+        gx_rank = importance_df.sort_values("gradxinput", ascending=False).reset_index(drop=True)
+        consistency_summary = []
+        for f in feature_names:
+            ig_pos = ig_rank[ig_rank["feature"] == f].index[0]
+            gx_pos = gx_rank[gx_rank["feature"] == f].index[0]
+            rank_gap = abs(int(ig_pos) - int(gx_pos))
+            if rank_gap > 10:  # 순위 차이가 큰 feature만 저장
+                consistency_summary.append({"feature": f, "rank_gap": rank_gap})
 
-        # ✅ baseline 다양화
-        X_flat = X_scaled.reshape(X_scaled.shape[0], -1)
-        background_mean = X_flat.mean(axis=0)
-        background_noise = background_mean + np.random.normal(0, 0.03, size=X_flat.shape[1])
-        background = np.vstack([background_mean, background_noise, X_flat[:5]])
+        # 8️⃣ sensitivity summary (gradient 표준편차 기반 민감도)
+        grads = np.abs(gx)
+        sensitivity_summary = [
+            {"feature": f, "sensitivity": float(np.std(grads[:, :, i]))}
+            for i, f in enumerate(feature_names)
+        ]
+        sensitivity_summary = sorted(sensitivity_summary, key=lambda x: x["sensitivity"], reverse=True)[:5]
 
-        def model_wrapper(X):
-            X = np.array(X).astype(np.float32)
-            X = X.reshape(X.shape[0], time_steps, num_features)
-            return self.model.predict(X, verbose=0)[:, target_idx]
+        # 9️⃣ stability summary (feature 중요도의 변동성)
+        importance_df["variance"] = importance_df[["gradxinput", "integrated_gradients"]].var(axis=1)
+        stability_summary = (
+            importance_df.sort_values("variance", ascending=False)
+            .head(5)
+            .to_dict(orient="records")
+        )
 
-        explainer = shap.KernelExplainer(model_wrapper, background)
+        # 🔟 모든 summary 통합
+        grad_results = {
+            "feature_summary": feature_summary,
+            "importance_dict": importance_dict,
+            "temporal_summary": temporal_summary,
+            "consistency_summary": consistency_summary,
+            "sensitivity_summary": sensitivity_summary,
+            "stability_summary": stability_summary
+        }
 
-        # ✅ 더 많은 시점 샘플 사용
-        sample_idx = np.random.choice(len(X_flat), size=min(5, len(X_flat)), replace=False)
-        shap_values = explainer.shap_values(X_flat[sample_idx], nsamples=30)
-        shap_values = np.array(shap_values).reshape(-1, time_steps, num_features)
-
-        temporal_importance = np.abs(shap_values).mean(axis=0)
-        temporal_df = pd.DataFrame(temporal_importance, columns=feature_names)
-        temporal_df["time_step"] = np.arange(1, time_steps + 1)
-        return temporal_df
-
-
-# ==============================================================
-# Causal SHAP (인과 효과 근사)
-# ==============================================================
-class CausalSHAPAnalyzer:
-    def __init__(self, model):
-        self.model = model
-
-    def compute_causal_shap(self, X_scaled, feature_names, target_idx=0):
-        print("[Causal SHAP] Computing causal perturbation effects...")
-
-        X_scaled = np.array(X_scaled, dtype=np.float32)
-        baseline_pred = self.model.predict(X_scaled, verbose=0)[:, target_idx].mean()
-
-        effects = []
-        for j, feat in enumerate(feature_names):
-            perturbed = X_scaled.copy()
-            perturb_factor = np.random.uniform(1.1, 1.3)  # ✅ 더 강한 perturbation
-            perturbed[:, :, j] *= perturb_factor
-            new_pred = self.model.predict(perturbed, verbose=0)[:, target_idx].mean()
-            effects.append(new_pred - baseline_pred)
-
-        df = pd.DataFrame({"feature": feature_names, "causal_effect": effects})
-        df["abs_effect"] = df["causal_effect"].abs()
-        df = df.sort_values("abs_effect", ascending=False)
-        return df.head(10)
-
-
-# ==============================================================
-# Interaction SHAP (상호작용 근사)
-# ==============================================================
-class InteractionSHAPAnalyzer:
-    def __init__(self, model):
-        self.model = model
-
-    def compute_interaction_importance(self, X_scaled, feature_names, target_idx=0):
-        print("[Interaction SHAP] Computing interaction correlations...")
-
-        X_scaled = np.array(X_scaled, dtype=np.float32)
-        time_steps, num_features = X_scaled.shape[1], X_scaled.shape[2]
-
-        X_flat = X_scaled.reshape(X_scaled.shape[0], -1)
-        background_mean = X_flat.mean(axis=0)
-        background_noise = background_mean + np.random.normal(0, 0.03, size=X_flat.shape[1])
-        background = np.vstack([background_mean, background_noise, X_flat[:3]])
-
-        def model_wrapper(X):
-            X = np.array(X).astype(np.float32)
-            X = X.reshape(X.shape[0], time_steps, num_features)
-            return self.model.predict(X, verbose=0)[:, target_idx]
-
-        explainer = shap.KernelExplainer(model_wrapper, background)
-
-        sample_idx = np.random.choice(len(X_flat), size=min(3, len(X_flat)), replace=False)
-        shap_values = explainer.shap_values(X_flat[sample_idx], nsamples=10)
-        shap_values = np.array(shap_values).reshape(-1, time_steps, num_features)
-
-        # ✅ 여기까진 full feature (189)로 계산
-
-        shap_matrix = shap_values.reshape(-1, num_features).astype(np.float32)
-
-        valid_mask = shap_matrix.std(axis=0) > 1e-6
-        shap_matrix = shap_matrix[:, valid_mask]
-        valid_features = np.array(feature_names)[valid_mask]
-
-        if shap_matrix.shape[1] > 100:
-            print(f"[Interaction SHAP] Reducing features for correlation: {shap_matrix.shape[1]} → 100")
-            shap_matrix = shap_matrix[:, :100]
-            valid_features = valid_features[:100]
-
-        if shap_matrix.shape[1] < 2:
-            print("⚠️ Not enough variance for interaction computation.")
-            return pd.DataFrame()
-
-        print(f"[Interaction SHAP] Computing correlation among {shap_matrix.shape[1]} features...")
-        inter_corr = np.corrcoef(shap_matrix, rowvar=False)
-        inter_df = pd.DataFrame(inter_corr, index=valid_features, columns=valid_features).round(3)
-        return inter_df
-
-
-
-class AttributionAnalyzer:
-    """통합 SHAP 해석 레이어"""
-    def __init__(self, model):
-        self.model = model
-
-    def run_all_shap(self, X_scaled, feature_names):
-        base_result, temporal_df, causal_df, interaction_df = {},{},{},{}
-
-        # Base SHAP
-        try:
-            base = BaseSHAPAnalyzer(self.model)
-            base_result = base.compute_feature_importance(X_scaled, feature_names)
-        except Exception as e:
-            print(f"[⚠️ Base SHAP Error]: {e}")
-
-        # Temporal SHAP
-        try:
-            temporal = TemporalSHAPAnalyzer(self.model)
-            temporal_df = temporal.compute_temporal_shap(X_scaled, feature_names, target_idx=0)
-        except Exception as e:
-            print(f"[⚠️ Temporal SHAP Error]: {e}")
-
-        # Causal SHAP
-        try:
-            causal = CausalSHAPAnalyzer(self.model)
-            causal_df = causal.compute_causal_shap(X_scaled, feature_names, target_idx=0)
-        except Exception as e:
-            print(f"[⚠️ Causal SHAP Error]: {e}")
-
-        # Interaction SHAP
-        try:
-            interaction = InteractionSHAPAnalyzer(self.model)
-            interaction_df = interaction.compute_interaction_importance(X_scaled, feature_names, target_idx=0)
-        except Exception as e:
-            print(f"[⚠️ Interaction SHAP Error]: {e}")
-
-        return base_result, temporal_df, causal_df, interaction_df
+        print("[INFO] Gradient analysis completed successfully.")
+        return (importance_dict, pd.DataFrame(temporal_summary), pd.DataFrame(consistency_summary),
+                pd.DataFrame(sensitivity_summary), grad_results)
