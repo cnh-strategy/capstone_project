@@ -467,6 +467,7 @@ class GradientAnalyzer:
             .to_dict(orient="records")
         )
 
+
         # 🔟 모든 summary 통합
         grad_results = {
             "feature_summary": feature_summary,
