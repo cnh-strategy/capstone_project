@@ -23,8 +23,8 @@ from core.technical_classes.technical_data_set import (
 from core.data_set import build_dataset, load_dataset
 from core.macro_classes.macro_funcs import macro_sercher
 from core.macro_classes.macro_llm import (
-    LLMExplainer, Opinion, Rebuttal,
-    TemporalSHAPAnalyzer as GradientAnalyzer,
+    LLMExplainer, Opinion,Rebuttal,
+    GradientAnalyzer,
 )
 
 class DebateAgent(BaseAgent):
@@ -215,4 +215,3 @@ class DebateAgent(BaseAgent):
             "currency": currency,
             "last_price": current_price,
         }
-

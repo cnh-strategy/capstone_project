@@ -1,3 +1,4 @@
+# core\sentimental_classes\news.py
 import os
 from typing import List
 import pandas as pd
