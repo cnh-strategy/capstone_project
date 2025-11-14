@@ -1,10 +1,19 @@
 core/*
 !core/__init__.py
 !core/data_set.py
+
+# sentimental
+!core/sentimental_classes/
 !core/sentimental_classes/**
+
+# macro
+!core/macro_classes/
 !core/macro_classes/**
-!core/technical_classes/**
+
+# technical
+!core/technical_classes/
+!core/technical_classes/**g
 
 __pycache__/
 *.pyc
-__pycache
+__pycache__
