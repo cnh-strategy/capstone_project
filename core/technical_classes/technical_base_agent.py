@@ -604,24 +604,40 @@ class TechnicalBaseAgent:
         # ③ Fine-tuning (return 단위)
         # ===================================
         loss_value = None
-        if fine_tune and hasattr(self, "model"):
+        if fine_tune:
             try:
                 current_price = getattr(self.stockdata, "last_price", 100.0)
-                revised_return = (revised_price / current_price) - 1  # 🔹수익률 변환
+                revised_return = (revised_price / current_price) - 1  # 수익률 변환
 
+                # 최신 입력
                 X_input = self.searcher(self.ticker)
-                device = next(self.model.parameters()).device
-                X_tensor = torch.tensor(X_input, dtype=torch.float32).to(device)
+
+                # ✅ TechnicalAgent(nn.Module) 대응: self 자체를 모델로 사용
+                if isinstance(self, nn.Module) and hasattr(self, "forward"):
+                    model = self
+                else:
+                    model = getattr(self, "model", None)
+                    if model is None:
+                        raise RuntimeError(f"{self.agent_id} 모델이 초기화되지 않음")
+
+                device = next(model.parameters()).device
+
+                # X_input 이 이미 Tensor인 경우 대비
+                if isinstance(X_input, torch.Tensor):
+                    X_tensor = X_input.to(device).float()
+                else:
+                    X_tensor = torch.tensor(X_input, dtype=torch.float32).to(device)
+
                 y_tensor = torch.tensor([[revised_return]], dtype=torch.float32).to(device)
 
-                self.model.train()
-                optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+                model.train()
+                optimizer = torch.optim.Adam(model.parameters(), lr=lr)
                 criterion = torch.nn.MSELoss()
 
                 for _ in range(epochs):
                     optimizer.zero_grad()
-                    pred = self.model(X_tensor)
-                    loss = criterion(pred, y_tensor) # 아연수정
+                    pred = model(X_tensor)
+                    loss = criterion(pred, y_tensor)
                     loss.backward()
                     optimizer.step()
 
@@ -630,6 +646,7 @@ class TechnicalBaseAgent:
 
             except Exception as e:
                 print(f"[{self.agent_id}] fine-tuning 실패: {e}")
+
 
         # ===================================
         # ④ fine-tuning 이후 새 예측 생성
