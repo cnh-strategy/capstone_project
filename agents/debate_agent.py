@@ -110,23 +110,31 @@ class DebateAgent(BaseAgent):
 
     def get_rebuttal(self, round: int):
         """모든 agent 간 상호 rebuttal 수행"""
-        round_rebuttals = list()
+        round_rebuttals = []
 
-        opinions = self.opinions[round-1]
+        # opinions 는 get_opinion(round=?) 에서 self.opinions[round] 로 저장됐다고 가정
+        if round not in self.opinions:
+            raise ValueError(f"get_rebuttal(round={round}) 호출 전에 get_opinion(round={round}) 이(가) 먼저 호출되어야 합니다.")
+
+        opinions = self.opinions[round]  # ✅ round-1 말고 round 그대로 사용
 
         for agent_id, agent in self.agents.items():
             my_opinion = opinions[agent_id]
 
-            # 각 agent가 자신 외 모든 agent에게 rebuttal 생성
-            for other_agent_id, other_opinion in opinions.items():
-                if other_agent_id == agent_id:
+            # 나 이외의 에이전트들에 대해 rebuttal 작성
+            for other_id, other_op in opinions.items():
+                if other_id == agent_id:
                     continue
 
-                rebuttal = agent.reviewer_rebut(my_opinion, other_opinion, round)
-                round_rebuttals.append(rebuttal)
+                rebut = agent.reviewer_rebuttal(
+                    my_opinion=my_opinion,
+                    other_opinion=other_op,
+                    round_index=round,
+                )
+                round_rebuttals.append(rebut)
 
+        # 필요하면 저장
         self.rebuttals[round] = round_rebuttals
-        print(f" Round {round} rebuttals 생성 완료 ({len(round_rebuttals)} agents)")
         return round_rebuttals
 
 
