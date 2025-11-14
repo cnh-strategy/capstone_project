@@ -216,11 +216,16 @@ class BaseAgent:
         # -----------------------------
         # 모델 준비 및 스케일러 로드
         # -----------------------------
-        if self.model is None or not hasattr(self.model, "parameters"):
+        already_loaded = bool(getattr(self, "model_loaded", False))
+
+        if (self.model is None or not hasattr(self.model, "parameters")) and not already_loaded:
             model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
             if os.path.exists(model_path):
                 print(f"■ {self.agent_id} 모델 자동 로드 시도...")
-                self.load_model(model_path)
+                ok = self.load_model(model_path)
+                # 일부 에이전트는 model_loaded 속성이 없을 수 있어서 getattr/hasattr로 방어
+                if hasattr(self, "model_loaded"):
+                    self.model_loaded = bool(ok)
             else:
                 print(f"■ {self.agent_id} 모델 없음 → pretrain 수행...")
                 if not self.ticker and getattr(self, "stockdata", None):
@@ -302,13 +307,24 @@ class BaseAgent:
     # -----------------------------
     # 메인 워크플로
     # -----------------------------
-    def reviewer_draft(self, stock_data: StockData = None, target: Target = None) -> Opinion:
-        """(1) searcher → (2) predicter → (3) LLM(JSON Schema)로 reason 생성 → Opinion 반환"""
-
+    def reviewer_draft(self, stock_data=None, target=None):
         # 1) 데이터 수집
         if stock_data is None:
-            stock_data = getattr(self.stockdata, self.agent_id)
+            sd = getattr(self, "stockdata", None)
+            if sd is None:
+                raise RuntimeError(
+                    f"[{self.agent_id}] stockdata가 None 입니다. 먼저 run_dataset() 또는 StockData 생성 로직을 호출하세요."
+                )
+            # dict / namespace / 단일 객체 모두 대응
+            if isinstance(sd, dict):
+                stock_data = sd.get(self.agent_id, None)
+            else:
+                stock_data = sd
 
+            if stock_data is None:
+                raise RuntimeError(
+                    f"[{self.agent_id}] stockdata에서 유효한 StockData를 찾지 못했습니다."
+                )
         # 2) 예측값 생성
         if target is None:
             target = self.predict(stock_data)

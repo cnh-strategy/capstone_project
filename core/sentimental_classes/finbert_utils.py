@@ -1,244 +1,50 @@
 # core/sentimental_classes/finbert_utils.py
-from __future__ import annotations
-from typing import List, Tuple, Iterable, Optional, Sequence, Dict, Any, Union
-import os
-import math
-from datetime import datetime, date, timedelta
-from statistics import mean, pstdev
+from pathlib import Path
+import json
+from datetime import date
 
-import torch
-import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from core.utils_datetime import safe_parse_iso_datetime as _safe_dt
-from .utils_datetime import safe_parse_iso_datetime as _safe_dt
+ROOT = Path(__file__).resolve().parents[2]  # capstone_project 루트 기준으로 조정
 
-# --- 환경변수 기본값 유지 ---
-_FINBERT_MODEL_ID = os.getenv("FINBERT_MODEL_ID", "ProsusAI/finbert")
-_HF_CACHE_DIR = os.getenv("HF_HOME") or os.getenv("TRANSFORMERS_CACHE") or None
+def _normalize_symbol(ticker: str) -> str:
+    """EODHD 심볼 형식 통일 (NVDA -> NVDA.US)"""
+    if ticker.endswith(".US"):
+        return ticker
+    return f"{ticker}.US"
 
-TextLike = Union[str, Dict[str, Any]]  # 뉴스 아이템(dict), 혹은 문자열
-ScoreTuple = Tuple[float, float, float, float]  # (p_neg, p_neu, p_pos, score)
+def get_news_cache_path(ticker: str, start: date, end: date) -> Path:
+    """뉴스 캐시 파일 경로를 한 곳에서만 정의"""
+    news_dir = ROOT / "data" / "raw" / "news"
+    news_dir.mkdir(parents=True, exist_ok=True)
 
-# def _parse_iso_datetime(s):
-#     return _safe_dt(s)
+    symbol = _normalize_symbol(ticker)
+    filename = f"{symbol}_{start:%Y-%%m-%d}_{end:%Y-%m-%d}.json"
+    return news_dir / filename
 
-__all__ = [
-    "FinBertScorer",
-    "score_news_items",
-    "attach_scores_to_items",
-    "compute_finbert_features",
-]
+def load_or_fetch_news(ticker: str, start: date, end: date, api_key: str):
+    cache_path = get_news_cache_path(ticker, start, end)
+    print(f"[FinBERT] 캐시 탐색: {cache_path} (exists={cache_path.exists()})")
 
+    # 1) 캐시 있으면 그대로 사용
+    if cache_path.exists():
+        with cache_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
 
-class FinBertScorer:
-    """
-    간단 감성 점수기 (FinBERT)
-      - 반환: [(p_neg, p_neu, p_pos, score), ...]
-      - score = p_pos - p_neg  ∈ [-1, 1]
-    """
-    def __init__(
-        self,
-        device: Optional[str] = None,
-        model_id: Optional[str] = None,
-        cache_dir: Optional[str] = None,
-    ):
-        model_id = model_id or _FINBERT_MODEL_ID
+    # 2) 없으면 폴백: 같은 심볼의 최신 캐시라도 있으면 사용
+    news_dir = cache_path.parent
+    symbol = _normalize_symbol(ticker)
+    candidates = sorted(news_dir.glob(f"{symbol}_*.json"))
+    if candidates:
+        latest = candidates[-1]
+        print(f"[FinBERT] 기존 다른 기간 캐시 사용: {latest.name}")
+        with latest.open("r", encoding="utf-8") as f:
+            return json.load(f)
 
-        # 1) 우선순위: 인자로 들어온 cache_dir > 환경변수 기반 > 프로젝트 기본 폴더
-        cache_dir = cache_dir or _HF_CACHE_DIR or str(_DEFAULT_HF_CACHE_DIR)
-        os.makedirs(cache_dir, exist_ok=True)
+    # 3) 그래도 없으면 EODHD 호출 후 저장
+    print(f"[FinBERT] 뉴스 캐시 없음: {cache_path}")
+    data = fetch_news_from_eodhd(symbol, start, end, api_key)  # 기존 함수 그대로 사용
 
-        print(f"[FinBERT] using cache_dir: {cache_dir}")  # 디버그용, 나중에 지워도 됨
+    with cache_path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    print(f"[FinBERT] 뉴스 캐시 저장: {cache_path}")
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_id, cache_dir=cache_dir)
-
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.device = torch.device(device)
-        self.model.to(self.device)
-        self.model.eval()
-
-
-# ---------------------------
-# 편의 유틸: 뉴스 아이템 스코어링
-# ---------------------------
-
-def _extract_text(
-    item: TextLike,
-    text_fields: Sequence[str] = ("title", "content", "text", "summary")
-) -> str:
-    """dict/str 혼용 입력에서 텍스트 추출."""
-    if isinstance(item, str):
-        return item
-    if not isinstance(item, dict):
-        return ""
-    parts: List[str] = []
-    for f in text_fields:
-        v = item.get(f)
-        if isinstance(v, str) and v.strip():
-            parts.append(v.strip())
-    return " ".join(parts).strip()
-
-
-def score_news_items(
-    items: Iterable[TextLike],
-    scorer: Optional[FinBertScorer] = None,
-    batch_size: int = 16,
-    max_length: int = 256,
-    text_fields: Sequence[str] = ("title", "content", "text", "summary"),
-    neutral_on_error: bool = True,
-) -> List[ScoreTuple]:
-    """
-    뉴스 아이템(문자열/딕셔너리 혼용) 리스트를 FinBERT로 스코어링.
-    반환: 각 아이템에 대응하는 (p_neg, p_neu, p_pos, score).
-    """
-    items = list(items or [])
-    texts = [_extract_text(x, text_fields=text_fields) for x in items]
-    if scorer is None:
-        scorer = FinBertScorer()
-
-    try:
-        return scorer.score_texts(texts, batch_size=batch_size, max_length=max_length)
-    except Exception as e:
-        if not neutral_on_error:
-            raise
-        # 에러 시 전부 중립으로 복원
-        n = len(texts)
-        return [(0.0, 1.0, 0.0, 0.0) for _ in range(n)]
-
-
-def attach_scores_to_items(
-    items: List[Dict[str, Any]],
-    scores: List[ScoreTuple],
-    out_keys: Sequence[str] = ("p_neg", "p_neu", "p_pos", "sentiment_score")
-) -> List[Dict[str, Any]]:
-    """
-    기존 뉴스 딕셔너리 리스트에 점수 필드를 붙여 반환.
-    """
-    assert len(items) == len(scores), "items와 scores 길이가 다릅니다."
-    out: List[Dict[str, Any]] = []
-    k_neg, k_neu, k_pos, k_score = out_keys
-    for it, (p_neg, p_neu, p_pos, score) in zip(items, scores):
-        new_it = dict(it)
-        new_it[k_neg] = p_neg
-        new_it[k_neu] = p_neu
-        new_it[k_pos] = p_pos
-        new_it[k_score] = score
-        out.append(new_it)
-    return out
-
-
-# ---------------------------
-# 피처 집계(7d/30d 등)
-# ---------------------------
-
-def _parse_iso_datetime(s) -> Optional[datetime]:
-    # 문자열이 아니면 바로 None
-    if not isinstance(s, str):
-        return None
-    s = s.strip()
-    if not s:
-        return None
-    # 'Z' → '+00:00' 보정
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    try:
-        return datetime.fromisoformat(s)
-    except Exception:
-        return None
-
-
-def _to_date_utc(d: Optional[datetime]) -> Optional[date]:
-    return d.date() if d else None
-
-
-def _safe_mean(a: Sequence[float]) -> float:
-    return float(mean(a)) if a else 0.0
-
-
-def _safe_vol(a: Sequence[float]) -> float:
-    if len(a) <= 1:
-        return 0.0
-    try:
-        return float(pstdev(a))
-    except Exception:
-        return 0.0
-
-
-def _ratio(a: Sequence[float], cond) -> float:
-    if not a:
-        return 0.0
-    c = sum(1 for x in a if cond(x))
-    return c / len(a)
-
-
-def compute_finbert_features(
-    items: List[Dict[str, Any]],
-    asof_utc_date: date,
-    score_key: str = "sentiment_score",
-    date_keys: Sequence[str] = ("date", "published_date"),
-) -> Dict[str, Any]:
-    """
-    FinBERT 점수를 부착한 뉴스 리스트에서 기간 통계 피처 생성.
-      - sentiment_summary: mean_7d, mean_30d, pos_ratio_7d, neg_ratio_7d
-      - sentiment_volatility: vol_7d, vol_30d
-      - news_count: count_1d, count_7d
-      - trend_7d: mean_7d - mean_30d
-    """
-    # 날짜/점수 파싱
-    parsed: List[Tuple[date, float]] = []
-    for it in items:
-        d = None
-        for k in date_keys:
-            d = _parse_iso_datetime(it.get(k))
-            if d:
-                break
-        dd = _to_date_utc(d)
-        if dd is None:
-            continue
-        s = it.get(score_key)
-        if s is None:
-            continue
-        try:
-            s = float(s)
-        except Exception:
-            continue
-        parsed.append((dd, s))
-
-    if not parsed:
-        return {
-            "sentiment_summary": {"mean_7d": 0.0, "mean_30d": 0.0, "pos_ratio_7d": 0.0, "neg_ratio_7d": 0.0},
-            "sentiment_volatility": {"vol_7d": 0.0, "vol_30d": 0.0},
-            "news_count": {"count_1d": 0, "count_7d": 0},
-            "trend_7d": 0.0,
-            "has_news": False,
-        }
-
-    d1 = asof_utc_date
-    d7 = d1 - timedelta(days=7)
-    d30 = d1 - timedelta(days=30)
-
-    s1d = [s for (d, s) in parsed if d == d1]
-    s7d = [s for (d, s) in parsed if d7 < d <= d1]
-    s30d = [s for (d, s) in parsed if d30 < d <= d1]
-
-    feat = {
-        "sentiment_summary": {
-            "mean_7d": _safe_mean(s7d),
-            "mean_30d": _safe_mean(s30d),
-            "pos_ratio_7d": _ratio(s7d, lambda x: x > 0),
-            "neg_ratio_7d": _ratio(s7d, lambda x: x < 0),
-        },
-        "sentiment_volatility": {
-            "vol_7d": _safe_vol(s7d),
-            "vol_30d": _safe_vol(s30d),
-        },
-        "news_count": {
-            "count_1d": len(s1d),
-            "count_7d": len(s7d),
-        },
-        "trend_7d": _safe_mean(s7d) - _safe_mean(s30d),
-        "has_news": True,
-    }
-    return feat
+    return data

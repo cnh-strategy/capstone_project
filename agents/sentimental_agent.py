@@ -75,13 +75,42 @@ except Exception:
     OPINION_PROMPTS = REBUTTAL_PROMPTS = REVISION_PROMPTS = None  # type: ignore
 
 # FinBERT 유틸 (단일 경로로 고정)
-from core.sentimental_classes.finbert_utils import (
-    FinBertScorer,
-    score_news_items,
-    attach_scores_to_items,
-    compute_finbert_features,
-)
-from core.sentimental_classes.utils_datetime import safe_parse_iso_datetime as _safe_dt
+# FinBERT 유틸 (단일 경로로 고정)
+try:
+    from core.sentimental_classes.finbert_utils import (
+        FinBertScorer,
+        score_news_items,
+        attach_scores_to_items,
+        compute_finbert_features,
+    )
+except ImportError:
+    # 🔔 FinBERT 관련 심볼이 없을 때: 기능을 비활성화하고, 깨지지 않도록 더미 함수 제공
+    print(
+        "[warn] core.sentimental_classes.finbert_utils 에서 FinBertScorer 등을 찾지 못했습니다. "
+        "SentimentalAgent에서 FinBERT 관련 기능이 비활성화됩니다."
+    )
+
+    FinBertScorer = None  # type: ignore
+
+    def score_news_items(items, *args, **kwargs):
+        """FinBERT가 없을 때는 입력을 그대로 반환."""
+        print("[warn] score_news_items 호출됨 (FinBERT 비활성화) → 입력 그대로 반환")
+        return items
+
+    def attach_scores_to_items(items, scores=None, *args, **kwargs):
+        """점수는 무시하고 items 그대로 반환."""
+        print("[warn] attach_scores_to_items 호출됨 (FinBERT 비활성화) → items 그대로 반환")
+        return items
+
+    def compute_finbert_features(df, *args, **kwargs):
+        """
+        df: 뉴스 데이터프레임
+        반환: (df, features_dict)
+        FinBERT 비활성화 시에는 df와 빈 feature dict를 반환.
+        """
+        print("[warn] compute_finbert_features 호출됨 (FinBERT 비활성화) → 원본 df, 빈 feature dict 반환")
+        return df, {}
+
 
 # ---------------------------------------------------------------
 # 모델 정의: LSTM + Dropout (MC Dropout 지원)
@@ -153,13 +182,11 @@ def build_finbert_news_features(
 ) -> Dict[str, Any]:
     """
     SentimentalAgent 가 사용할 FinBERT 입력용 뉴스 피처 생성.
-    - base_dir 가 상대경로면, 항상 '프로젝트 루트/데이터' 기준으로 해석하도록 수정.
+    - base_dir 가 상대경로면, 항상 '프로젝트 루트/데이터' 기준으로 해석
     """
     fr, to, to_date_utc = _utc_from_kst_asof(asof_kst, lookback_days=40)
     symbol_us = f"{ticker}.US"
 
-    # ✅ 프로젝트 루트 기준으로 절대 경로 만들기
-    #   agents/sentimental_agent.py → capstone_project 폴더
     project_root = Path(__file__).resolve().parent.parent
     base = Path(base_dir)
     if not base.is_absolute():
@@ -217,12 +244,18 @@ def build_finbert_news_features(
 class SentimentalAgent(BaseAgent):  # type: ignore
     agent_id: str = "SentimentalAgent"
 
-    def __init__(self, ticker: str, **kwargs):
-        try:
-            super().__init__(self.agent_id, ticker, **kwargs)  # type: ignore
-        except TypeError:
-            super().__init__(agent_id=self.agent_id, ticker=ticker, **kwargs)  # type: ignore
+    def __init__(
+        self,
+        ticker: str | None = None,
+        agent_id: str = "SentimentalAgent",
+        *args,
+        **kwargs,
+    ):
+        # ✅ BaseAgent 한 번만 초기화
+        agent_id = agent_id or "SentimentalAgent"
+        super().__init__(agent_id=agent_id, ticker=ticker, *args, **kwargs)
 
+        # 티커 정리
         if not getattr(self, "ticker", None):
             self.ticker = ticker
         if self.ticker is None or str(self.ticker).strip() == "":
@@ -230,6 +263,7 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         self.ticker = str(self.ticker).upper()
         setattr(self, "symbol", self.ticker)
 
+        # 설정 로드
         cfg = (agents_info or {}).get(self.agent_id, {})
         if not cfg:
             print("[WARN] agents_info['SentimentalAgent'] 가 없어 기본값 사용")
@@ -250,13 +284,19 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         self.dropout = cfg.get("dropout", 0.2)
 
         self.model: Optional[nn.Module] = None
-        self.feature_cols: List[str] = []  # 👈 ctx에서 써먹을 용도
+        self.feature_cols: List[str] = []  # ctx에서 써먹을 용도
+        self.model_loaded: bool = False
 
+        # ✅ 초기화 시 자동 모델 로드 (있으면)
         try:
             self._load_model_if_exists()
         except Exception as e:
-            print("[SentimentalAgent] 모델 로드 스킵:", e)
+            # 여기서는 조용히 넘기고, 실제 예측 시 BaseAgent.predict에서 다시 처리
+            print(f"[SentimentalAgent] 초기 모델 로드 중 예외 발생 (무시하고 진행): {e}")
 
+    # -----------------------------------------------------------
+    # 모델 관련 유틸
+    # -----------------------------------------------------------
     def _build_model(self) -> nn.Module:
         """
         BaseAgent.pretrain()에서 호출하는 모델 생성 함수.
@@ -292,53 +332,41 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         return net
 
     def model_path(self) -> str:
-        mdir = dir_info.get("model_dir", "models")
-        Path(mdir).mkdir(parents=True, exist_ok=True)
-        return os.path.join(mdir, f"{self.ticker}_{self.agent_id}.pt")
+        try:
+            from config.agents import dir_info  # 재-import 방지용
+            model_dir = dir_info["model_dir"]
+        except Exception:
+            model_dir = "models"
 
-    def _sanitize_state_dict(self, sd: dict, model: nn.Module) -> dict:
-        want = model.state_dict()
-        new_sd = {}
-        for k, v in sd.items():
-            k2 = k
-            if k2.startswith("module."):
-                k2 = k2[len("module."):]
-            if k2.startswith("_orig_mod."):
-                k2 = k2[len("_orig_mod."):]
-            if k2 not in want:
-                continue
-            new_sd[k2] = v
-        return new_sd
+        ticker = getattr(self, "ticker", "UNKNOWN")
+        agent_id = getattr(self, "agent_id", "SentimentalAgent")
+        return os.path.join(model_dir, f"{ticker}_{agent_id}.pt")
 
-    def _load_model_if_exists(self):
-        p = self.model_path()
-        if not os.path.exists(p):
+    def _load_model_if_exists(self) -> None:
+        """
+        TechnicalAgent 와 동일한 전략:
+        - model_path() 기준으로 파일 존재 시 BaseAgent.load_model() 사용
+        - 직접 torch.load / load_state_dict 호출 ❌
+        """
+        model_path = self.model_path()
+
+        if not os.path.exists(model_path):
+            # 모델 파일 없으면 조용히 패스 (경고 X)
+            self.model_loaded = False
             return
 
-        if not self.ticker:
-            raise ValueError("ticker is None in _load_model_if_exists")
+        ok = False
+        try:
+            ok = self.load_model(model_path)
+        except Exception as e:
+            print(f"[SentimentalAgent] 모델 로드 실패: {e}")
+            ok = False
 
-        if self.model is None:
-            self._build_model()
-        net = self.model
-        if net is None:
-            raise RuntimeError("SentimentalAgent._load_model_if_exists: model 초기화 실패")
+        self.model_loaded = bool(ok)
 
-        sd = torch.load(p, map_location="cpu")
-
-        if isinstance(sd, nn.Module):
-            sd = sd.state_dict()
-        elif isinstance(sd, dict) and "model_state_dict" in sd:
-            sd = sd["model_state_dict"]
-        elif not isinstance(sd, dict):
-            raise RuntimeError(f"지원하지 않는 체크포인트 형식: {type(sd)}")
-
-        sd = self._sanitize_state_dict(sd, net)
-        net.load_state_dict(sd, strict=False)
-        net.eval()
-        self.model = net
-        print(f"✅ {self.ticker} {self.agent_id} 모델 로드 완료 ({p})")
-
+    # -----------------------------------------------------------
+    # MC Dropout 기반 helper (기존 기능 유지)
+    # -----------------------------------------------------------
     @torch.inference_mode()
     def _mc_dropout_predict(self, x: torch.Tensor, T: int = 30) -> Tuple[float, float]:
         if self.model is None:
@@ -380,6 +408,9 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         confidence = float(1.0 / (1.0 + max(1e-6, uncertainty_std)))
         return pred_close, uncertainty_std, confidence, cols
 
+    # -----------------------------------------------------------
+    # ctx 생성 (FinBERT + 가격 스냅샷)
+    # -----------------------------------------------------------
     def build_ctx(self, asof_date_kst: Optional[str] = None) -> Dict[str, Any]:
         if asof_date_kst is None:
             asof_date_kst = datetime.now().strftime("%Y-%m-%d")
@@ -449,58 +480,43 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         return ctx
 
     # --------------------------
-    # BaseAgent 규약 충족: LLM(system/user) 메시지 생성 (Opinion)
+    # BaseAgent 규약 충족: Opinion 프롬프트
     # --------------------------
     def _build_messages_opinion(
         self,
         stock_data: "StockData",
         target: "Target",
     ):
-        """
-        SentimentalAgent 전용 Opinion 프롬프트 빌더
-        - self.stockdata.SentimentalAgent 에서 피처 스냅샷을 뽑고
-        - target(next_close, uncertainty, confidence)까지 합쳐 ctx(JSON)을 만든 뒤
-        - OPINION_PROMPTS['SentimentalAgent']에 주입
-        """
         from prompts import OPINION_PROMPTS  # 상단에 이미 있으면 생략 가능
 
-        # 0) stock_data가 None으로 들어오면 self.stockdata 사용
         if stock_data is None:
             stock_data = self.stockdata
 
-        # 1) ctx 기본 구조 만들기 ---------------------------------
         ctx: Dict[str, Any] = {}
 
-        # (1) 기본 메타 정보
         ctx["ticker"] = getattr(stock_data, "ticker", self.ticker)
         ctx["currency"] = getattr(stock_data, "currency", "USD")
         last_close = getattr(stock_data, "last_price", None)
         ctx["last_close"] = last_close
         ctx["next_close"] = float(getattr(target, "next_close", None) or 0.0)
 
-        # (2) 예상 변화율 (있으면)
         change_ratio = None
         if isinstance(last_close, (int, float)) and last_close not in (0, None):
             change_ratio = ctx["next_close"] / float(last_close) - 1.0
         ctx["change_ratio"] = change_ratio
 
-        # (3) 불확실성 / 신뢰도
         ctx["uncertainty_std"] = getattr(target, "uncertainty", None)
         ctx["confidence"] = getattr(target, "confidence", None)
 
-        # (4) SentimentalAgent 피처 스냅샷 (마지막 시점만 추출)
         snap = getattr(stock_data, "SentimentalAgent", {}) or {}
-        # stock_data.SentimentalAgent 는 {컬럼명: [시계열값...]} 구조일 가능성이 높음
         for k, v in snap.items():
             if isinstance(v, (list, tuple)) and len(v) > 0:
                 ctx[k] = v[-1]
             else:
                 ctx[k] = v
 
-        # 2) JSON 문자열로 변환 -----------------------------------
         ctx_json = json.dumps(ctx, ensure_ascii=False, indent=2)
 
-        # 3) 프롬프트 템플릿 적용 ---------------------------------
         prompts = OPINION_PROMPTS.get("SentimentalAgent", {})
         system_text = prompts.get("system", "너는 감성/뉴스 중심의 단기 주가 분석가다.")
         user_tmpl = prompts.get(
@@ -508,35 +524,24 @@ class SentimentalAgent(BaseAgent):  # type: ignore
             "ctx(JSON):\n{}\n\n위 ctx를 바탕으로 reason을 생성하라.",
         )
 
-        # user 텍스트는 {}, {context} 둘 다 안전하게 처리
         try:
-            # 1순위: {context} 사용하는 템플릿
             user_text = user_tmpl.format(context=ctx_json)
         except KeyError:
             try:
-                # 2순위: {} 위치 기반 템플릿
                 user_text = user_tmpl.format(ctx_json)
             except Exception:
-                # 그래도 실패하면 그냥 치환
                 user_text = user_tmpl.replace("{context}", ctx_json)
 
         return system_text, user_text
 
     # --------------------------
-    # BaseAgent 규약 충족: LLM(system/user) 메시지 생성 (Rebuttal)
+    # BaseAgent 규약 충족: Rebuttal 프롬프트
     # --------------------------
     def _build_messages_rebuttal(self, *args, **kwargs) -> Tuple[str, str]:
-        """
-        다양한 호출 시그니처를 안전하게 처리:
-         - (stock_data, target, opponent_opinion)
-         - 키워드: opponent / opponent_opinion / other_opinion / other
-        """
-        # 1) 인자 파싱
         stock_data = args[0] if len(args) > 0 else kwargs.get("stock_data")
         target: Optional[Target] = args[1] if len(args) > 1 else kwargs.get("target")
 
         opponent = None
-        # 우선순위로 opponent 후보를 찾는다
         for key in ("opponent", "opponent_opinion", "other_opinion", "other", "opinion"):
             if key in kwargs:
                 opponent = kwargs[key]
@@ -544,7 +549,6 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         if opponent is None and len(args) > 2:
             opponent = args[2]
 
-        # Opinion or dict or str 모두 수용
         if isinstance(opponent, Opinion):
             opp_agent = getattr(opponent, "agent_id", "UnknownAgent")
             opp_reason = getattr(opponent, "reason", "")
@@ -555,7 +559,6 @@ class SentimentalAgent(BaseAgent):  # type: ignore
             opp_agent = "UnknownAgent"
             opp_reason = str(opponent) if opponent is not None else ""
 
-        # 2) 컨텍스트/값 준비
         ctx = self.build_ctx()
         fi = ctx.get("feature_importance", {})
         sent = fi.get("sentiment_summary", {})
@@ -569,7 +572,6 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         if last_price and last_price == last_price and last_price != 0:
             change_ratio = pred_close / last_price - 1.0
 
-        # 3) 프롬프트 템플릿
         system_tmpl = None
         user_tmpl = None
         if REBUTTAL_PROMPTS and "SentimentalAgent" in REBUTTAL_PROMPTS:
@@ -614,18 +616,13 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         return system_tmpl, user_text
 
     # --------------------------
-    # BaseAgent 규약 충족: LLM(system/user) 메시지 생성 (Revision)
+    # BaseAgent 규약 충족: Revision 프롬프트
     # --------------------------
     def _build_messages_revision(self, *args, **kwargs) -> Tuple[str, str]:
-        """
-        다양한 호출 시그니처를 안전하게 처리:
-         - (stock_data, target, previous_opinion, rebuttals)
-         - 키워드: previous / previous_opinion / draft / rebuttals / replies
-        """
-        # 1) 인자 파싱
         stock_data = args[0] if len(args) > 0 else kwargs.get("stock_data")
         target: Optional[Target] = args[1] if len(args) > 1 else kwargs.get("target")
 
+        # previous opinion 찾기
         prev = None
         rebs = None
         for key in ("previous", "previous_opinion", "draft", "opinion"):
@@ -635,6 +632,7 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         if prev is None and len(args) > 2:
             prev = args[2]
 
+        # rebuttals 찾기
         for key in ("rebuttals", "replies", "responses"):
             if key in kwargs:
                 rebs = kwargs[key]
@@ -642,6 +640,7 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         if rebs is None and len(args) > 3:
             rebs = args[3]
 
+        # Opinion/Dict/str → text
         def _op_text(x: Union[Opinion, Dict[str, Any], str, None]) -> str:
             if isinstance(x, Opinion):
                 return getattr(x, "reason", "")
@@ -651,7 +650,6 @@ class SentimentalAgent(BaseAgent):  # type: ignore
 
         prev_reason = _op_text(prev)
 
-        # rebuttals는 리스트일 수 있음
         reb_texts: List[str] = []
         if isinstance(rebs, list):
             for r in rebs:
@@ -659,13 +657,19 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         elif rebs is not None:
             reb_texts.append(_op_text(rebs))
 
-        # 2) 컨텍스트/값 준비
+        # 공통 ctx 로딩
         ctx = self.build_ctx()
+
         fi = ctx.get("feature_importance", {})
         sent = fi.get("sentiment_summary", {})
         vol7 = fi.get("sentiment_volatility", {}).get("vol_7d", None)
         trend7 = fi.get("trend_7d", None)
         news7 = fi.get("news_count", {}).get("count_7d", None)
+
+        # 불확실성/신뢰도 (Monte Carlo 결과가 ctx에 있다면 사용)
+        uncertainty = ctx.get("uncertainty", {})
+        unc_std = uncertainty.get("std", None)
+        confidence = uncertainty.get("confidence", None)
 
         pred_close = float(target.next_close) if target else float(ctx["prediction"]["pred_next_close"])
         last_price = ctx.get("snapshot", {}).get("last_price")
@@ -673,7 +677,62 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         if last_price and last_price == last_price and last_price != 0:
             change_ratio = pred_close / last_price - 1.0
 
-        # 3) 프롬프트 템플릿
+        # === 감성/예측 요약 context 문자열 생성 ===
+        context_parts: List[str] = []
+
+        if last_price is not None:
+            if change_ratio is not None:
+                context_parts.append(
+                    f"현재 주가는 {last_price:.2f}이고, 모델은 다음 거래일 종가를 {pred_close:.2f}로 예측했습니다 "
+                    f"(변화율 약 {change_ratio*100:.2f}%)."
+                )
+            else:
+                context_parts.append(
+                    f"현재 주가는 {last_price:.2f}이며, 다음 거래일 종가 예측값은 {pred_close:.2f}입니다."
+                )
+        else:
+            context_parts.append(
+                f"다음 거래일 종가 예측값은 {pred_close:.2f}입니다."
+            )
+
+        mean7 = sent.get("mean_7d", None)
+        mean30 = sent.get("mean_30d", None)
+        pos7 = sent.get("pos_ratio_7d", None)
+        neg7 = sent.get("neg_ratio_7d", None)
+
+        if mean7 is not None and mean30 is not None:
+            context_parts.append(
+                f"최근 7일 평균 감성 점수는 {mean7:.3f}, 최근 30일 평균은 {mean30:.3f}입니다."
+            )
+        if pos7 is not None and neg7 is not None:
+            context_parts.append(
+                f"최근 7일 기준 긍정 기사 비율은 {pos7:.2%}, 부정 기사 비율은 {neg7:.2%}입니다."
+            )
+        if vol7 is not None:
+            context_parts.append(
+                f"최근 7일 감성 점수의 변동성(표준편차)은 {vol7:.3f}입니다."
+            )
+        if trend7 is not None:
+            context_parts.append(
+                f"최근 7일 감성 추세(회귀 기울기)는 {trend7:.4f}입니다."
+            )
+        if news7 is not None:
+            context_parts.append(
+                f"최근 7일 동안 수집된 뉴스 개수는 {news7}건입니다."
+            )
+
+        if unc_std is not None and confidence is not None:
+            context_parts.append(
+                f"Monte Carlo Dropout 기반 예측 표준편차는 {unc_std:.4f}, 신뢰도는 {confidence:.3f}입니다."
+            )
+
+        context_str = " ".join(context_parts) if context_parts else (
+            "최근 뉴스 감성 점수, 변동성, 긍·부정 비율, 뉴스 수, 예측 불확실성 등을 종합해 단기 주가를 해석합니다."
+        )
+
+        # ==========================
+        # 프롬프트 템플릿 선택
+        # ==========================
         system_tmpl = None
         user_tmpl = None
         if REVISION_PROMPTS and "SentimentalAgent" in REVISION_PROMPTS:
@@ -689,6 +748,7 @@ class SentimentalAgent(BaseAgent):  # type: ignore
             )
 
         if not user_tmpl:
+            # 기본 템플릿은 context 없이 동작 (기존 형식 유지)
             user_tmpl = (
                 "티커: {ticker}\n"
                 "초안 의견:\n{prev}\n\n"
@@ -702,24 +762,25 @@ class SentimentalAgent(BaseAgent):  # type: ignore
 
         rebuts_joined = "- " + "\n- ".join([s for s in reb_texts if s]) if reb_texts else "(반박 없음)"
 
+        # 🔴 핵심: context를 항상 함께 넘겨줌
         user_text = user_tmpl.format(
             ticker=self.ticker,
             prev=prev_reason if prev_reason else "(초안 없음)",
             rebuts=rebuts_joined,
             pred_close=f"{pred_close:.4f}",
             chg=("NA" if change_ratio is None else f"{change_ratio*100:.2f}%"),
-            mean7=f"{sent.get('mean_7d', 0.0):.4f}",
-            mean30=f"{sent.get('mean_30d', 0.0):.4f}",
-            pos7=f"{sent.get('pos_ratio_7d', 0.0):.4f}",
-            neg7=f"{sent.get('neg_ratio_7d', 0.0):.4f}",
+            mean7=( "NA" if mean7 is None else f"{mean7:.4f}"),
+            mean30=( "NA" if mean30 is None else f"{mean30:.4f}"),
+            pos7=( "NA" if pos7 is None else f"{pos7:.4f}"),
+            neg7=( "NA" if neg7 is None else f"{neg7:.4f}"),
             vol7=("NA" if vol7 is None else f"{vol7:.4f}"),
             trend7=("NA" if trend7 is None else f"{trend7:.4f}"),
             news7=("NA" if news7 is None else f"{news7}"),
+            context=context_str,  # ✅ REVISION_PROMPTS에서 {context}를 써도 안전하게
         )
         return system_tmpl, user_text
 
-    # --------------------------
-    # Opinion 생성
+    # Opinion 생성 (legacy 경로)
     # --------------------------
     def get_opinion(self, idx: int = 0, ticker: Optional[str] = None) -> Opinion:
         if ticker and ticker != self.ticker:
@@ -732,7 +793,6 @@ class SentimentalAgent(BaseAgent):  # type: ignore
             confidence=float(confidence),
         )
 
-        # LLM 경로 시도
         try:
             if hasattr(self, "reviewer_draft"):
                 op = self.reviewer_draft(getattr(self, "stockdata", None), target)
@@ -740,7 +800,6 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         except Exception as e:
             print("[SentimentalAgent] reviewer_draft 사용 실패:", e)
 
-        # fallback (context 반드시 포함)
         ctx = self.build_ctx()
         fi = ctx["feature_importance"]
         sent = fi["sentiment_summary"]
@@ -752,9 +811,9 @@ class SentimentalAgent(BaseAgent):  # type: ignore
             f"감성 추세(trend_7d)={fi['trend_7d']:.3f}입니다."
         )
 
+        # context 필드는 base Opinion에는 없어서 제거
         return Opinion(
             agent_id=self.agent_id,
             target=target,
             reason=reason,
-            context=ctx,      # ★ DebateAgent가 보는 context
         )

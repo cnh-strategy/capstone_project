@@ -28,19 +28,29 @@ from core.macro_classes.macro_llm import (
 )
 
 class DebateAgent(BaseAgent):
-    def __init__(self, rounds: int = 3, ticker: str = None):
+    def __init__(self, rounds: int = 3, ticker: str | None = None):
         self.agents = {
-            "TechnicalAgent": TechnicalAgent(agent_id = "TechnicalAgent", ticker=ticker),
-            "MacroSentiAgent": MacroPredictor(agent_id= "MacroSentiAgent", ticker=ticker,
-                                              base_date=datetime.today(),
-                                              window=40),
+            "TechnicalAgent": TechnicalAgent(agent_id="TechnicalAgent", ticker=ticker),
+            "MacroSentiAgent": MacroPredictor(
+                agent_id="MacroSentiAgent",
+                ticker=ticker,
+                base_date=datetime.today(),
+                window=40,
+            ),
             "SentimentalAgent": SentimentalAgent(ticker=ticker),
         }
         self.rounds = rounds
-        self.opinions = {}
-        self.rebuttals = {}
+        self.opinions: Dict[int, Dict[str, Opinion]] = {}
+        self.rebuttals: Dict[int, List[Rebuttal]] = {}
         self.ticker = ticker
 
+        # 🔹 각 에이전트별로 "있으면" 모델을 사전 로드
+        for agent in self.agents.values():
+            if hasattr(agent, "_load_model_if_exists"):
+                try:
+                    agent._load_model_if_exists()
+                except Exception as e:
+                    print(f"[warn] {agent.__class__.__name__} 초기 모델 로드 실패 (계속 진행): {e}")
 
     def get_opinion(self, round: int, ticker: str = None, rebuild: bool = True, force_pretrain: bool = True):
         """각 agent의 Opinion(주장) 생성"""
