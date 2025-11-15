@@ -548,6 +548,20 @@ class TechnicalBaseAgent:
             )
 
         return result
+    
+    # DebateAgent.get_rebuttal() 호환용 래퍼 (아연 수정)
+    def reviewer_rebuttal(
+        self,
+        my_opinion: Opinion,
+        other_opinion: Opinion,
+        round_index: int,
+    ) -> Rebuttal:
+        return self.reviewer_rebut(
+            my_opinion=my_opinion,
+            other_opinion=other_opinion,
+            round=round_index,
+        )
+    
 
     def reviewer_revise(
         self,
@@ -1032,7 +1046,6 @@ def load_explain_json(ticker, agent_id, path_dir="models/explain"):
         data = json.load(f)
     print(f"■ 설명 JSON 파일 로드 완료: {path}")
     return data
-
 
 
 

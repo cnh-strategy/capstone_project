@@ -209,10 +209,193 @@ class BaseAgent:
 
         return X_tensor
 
-    def predict(self, X, n_samples: int = 30, current_price: float = None):
+    def _infer_current_price(self, X, X_arr, explicit_current_price=None) -> float:
+        """
+        current_price가 None일 때, StockData / snapshot / 배열에서 최대한 추론.
+        실패하면 RuntimeError를 던져서 문제를 명확히 알 수 있게 한다.
+        """
+        # 0) 이미 함수 인자로 들어온 값이 있으면 그대로 사용
+        if explicit_current_price is not None:
+            return float(explicit_current_price)
+
+        sd = None
+        # 1) X가 StockData면 우선 사용
+        try:
+            from agents.base_agent import StockData  # 순환 import 방지용 (이미 있다면 생략 가능)
+        except Exception:
+            StockData = object  # 타입 체크만 우회
+
+        if isinstance(X, StockData):
+            sd = X
+        # 2) 아니면 self.stockdata 사용 (run_dataset() 결과를 보통 여기 저장)
+        elif hasattr(self, "stockdata"):
+            sd = getattr(self, "stockdata", None)
+
+        # 3) snapshot / meta 딕셔너리에서 찾기
+        if sd is not None:
+            snap = getattr(sd, "snapshot", None) or getattr(sd, "meta", None) or {}
+            if isinstance(snap, dict):
+                for key in ("last_price", "current_price", "close", "adj_close"):
+                    v = snap.get(key)
+                    if v is not None:
+                        try:
+                            return float(v)
+                        except Exception:
+                            pass
+
+        # 4) 배열(X_arr)의 마지막 행에서 종가 비슷한 값 추론
+        import numpy as np
+
+        if X_arr is not None and np.ndim(X_arr) >= 2:
+            # 시계열이라면 보통 (T, F) or (N, T, F) 구조
+            last_step = X_arr[-1]
+            # (T, F) 구조일 때: 마지막 타임스텝
+            if np.ndim(last_step) == 2:
+                last_step = last_step[-1]
+            try:
+                # 마지막 컬럼을 현재가로 가정
+                return float(last_step[-1])
+            except Exception:
+                pass
+
+        # 5) 여기까지 왔으면 자동 추론 실패 → 명시적으로 에러
+        raise RuntimeError(
+            "[BaseAgent.predict] current_price를 자동으로 찾지 못했습니다.\n"
+            "- StockData.snapshot 또는 StockData.meta에 'last_price' 또는 'current_price' 키를 넣어주시거나,\n"
+            "- predict(X, current_price=...) 형태로 현재가를 직접 전달해 주세요."
+        )
+
+
+    def predict(self, X, n_samples: int = 30, current_price: float | None = None):
         """
         Monte Carlo Dropout 기반 예측 + 불확실성(σ) 및 confidence 계산 (안정형)
         """
+        import numpy as np
+        import torch
+
+        # 원본 X는 나중에 current_price 추론에 사용
+        X_original = X
+
+        # 0) StockData가 들어온 경우 내부 X로 변환
+        try:
+            from agents.base_agent import StockData as _StockData
+        except Exception:
+            _StockData = None
+
+        if _StockData is not None and isinstance(X, _StockData):
+            # 우선 자주 쓰는 이름들부터 시도
+            for name in ["X", "x", "X_seq", "data", "inputs"]:
+                if hasattr(X, name):
+                    X_arr = getattr(X, name)
+                    break
+            else:
+                # 그래도 못 찾으면 __dict__ 안에서 np.ndarray / torch.Tensor 중 첫 번째를 사용
+                X_arr = None
+                if hasattr(X, "__dict__"):
+                    for name, val in X.__dict__.items():
+                        if isinstance(val, (np.ndarray, torch.Tensor)):
+                            X_arr = val
+                            # print(f"[debug] StockData.{name} 를 입력으로 사용합니다.")
+                            break
+
+                if X_arr is None:
+                    raise AttributeError(
+                        "StockData 안에서 입력 배열(np.ndarray 또는 torch.Tensor) 필드를 찾을 수 없습니다. "
+                        "__dict__ 안에 어떤 필드들이 있는지 확인해보세요."
+                    )
+
+            # 이후 로직은 순수 배열만 다루도록 X를 바꿔줌
+            X = X_arr
+
+        # 1) numpy / tensor 정규화
+        if isinstance(X, torch.Tensor):
+            X_tensor = X.float()
+        else:
+            X_np = np.asarray(X, dtype=np.float32)
+            X_tensor = torch.from_numpy(X_np)
+
+        # 입력 차원: [T, F] -> [1, T, F] 로 맞춰주기
+        if X_tensor.dim() == 2:
+            X_tensor = X_tensor.unsqueeze(0)
+
+        # device 정렬
+        if hasattr(self, "device"):
+            device = self.device
+        else:
+            device = next(self.model.parameters()).device  # type: ignore[attr-defined]
+
+        X_tensor = X_tensor.to(device)
+
+        # 2) Monte Carlo Dropout 실행
+        self.model.train()  # dropout 활성화 (eval()이면 dropout 꺼짐)
+
+        preds = []
+        with torch.no_grad():
+            for _ in range(n_samples):
+                out = self.model(X_tensor)
+                # 모델이 (pred, hidden) 같은 튜플을 리턴하는 경우 대비
+                if isinstance(out, (tuple, list)):
+                    out = out[0]
+                # [B, D] 가정
+                preds.append(out.detach().cpu().numpy())
+
+        preds_arr = np.stack(preds, axis=0)  # [S, B, D]
+        mean_pred = preds_arr.mean(axis=0).squeeze()   # [D]
+        std_pred = preds_arr.std(axis=0).squeeze()     # [D]
+
+        # 불확실성(σ) 및 confidence 계산
+        if np.ndim(std_pred) > 0:
+            sigma = float(std_pred[-1])   # 마지막 출력 차원을 타겟으로 가정
+        else:
+            sigma = float(std_pred)
+
+        # 예: σ가 작을수록 confidence ↑ (0~1 사이 값으로 squash)
+        confidence = float(1.0 / (1.0 + sigma))
+
+        # current_price 추론용 배열 (모델 입력과 동일 스케일)
+        X_arr_for_price = X_tensor.detach().cpu().numpy()
+
+        # 3) 현재가(current_price) 결정
+        current_price_val = self._infer_current_price(
+            X_original,
+            X_arr_for_price,
+            explicit_current_price=current_price,
+        )
+
+        # 4) 수익률 → 종가로 변환
+        # 현재 모델은 "다음날 수익률(return)"을 예측한다고 가정
+
+        # mean_pred가 스칼라인 경우와 벡터인 경우를 모두 처리
+        mean_pred = np.asarray(mean_pred)
+
+        if mean_pred.ndim == 0:
+            # 모델 출력이 스칼라 1개인 경우 (바로 다음날 수익률)
+            predicted_return = float(mean_pred)
+        else:
+            # 시계열 전체를 내보내는 모델인 경우, 마지막 시점 값 사용
+            predicted_return = float(mean_pred[-1])  # 예: 0.012 = +1.2%
+
+        predicted_price = current_price_val * (1.0 + predicted_return)
+
+        # 5) Target 생성 및 반환
+        if std_pred is not None:
+            std_pred = np.asarray(std_pred)
+            if std_pred.ndim == 0:
+                uncertainty = float(std_pred)
+            else:
+                uncertainty = float(std_pred[-1])
+        else:
+            uncertainty = None
+
+        target = Target(
+            next_close=predicted_price,
+            uncertainty=uncertainty,
+            confidence=confidence,
+        )
+        return target
+
+
+
         # -----------------------------
         # 모델 준비 및 스케일러 로드
         # -----------------------------
@@ -301,7 +484,6 @@ class BaseAgent:
         )
         self.targets.append(target)
         return target
-
 
 
     # -----------------------------
