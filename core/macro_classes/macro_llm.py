@@ -7,15 +7,14 @@ import pandas as pd
 import requests
 import shap
 from openai import OpenAI
+from dotenv import load_dotenv
 
-from agents.dump_keys import CAPSTONE_OPENAI_API
 from typing import Dict, List, Optional, Literal, Tuple, Any
 from collections import defaultdict
 import tensorflow as tf
 from config.agents import dir_info
 
-# CAPSTONE_OPENAI_API = os.getenv("CAPSTONE_OPENAI_API")
-
+load_dotenv()
 
 # -----------------------------
 # 데이터 구조 정의
@@ -81,7 +80,11 @@ class LLMExplainer:
                  verbose: bool = False,
                  need_training: bool = True,
                  ):
-        self.client = OpenAI(api_key=CAPSTONE_OPENAI_API)
+
+        self.api_key = os.getenv("CAPSTONE_OPENAI_API")
+        if not self.api_key:
+            raise RuntimeError("환경변수 CAPSTONE_OPENAI_API가 설정되지 않았습니다.")
+        self.client = OpenAI(api_key=self.api_key)
         self.model = model_name
 
         self.agent_id = 'MacroSentiAgent'
@@ -94,12 +97,6 @@ class LLMExplainer:
             self.preferred_models = [model] + [
                 m for m in self.preferred_models if m != model
             ]
-
-
-        # API 키 로드
-        self.api_key = CAPSTONE_OPENAI_API
-        if not self.api_key:
-            raise RuntimeError("환경변수 CAPSTONE_OPENAI_API가 설정되지 않았습니다.")
 
         # 공통 헤더
         self.headers = {
