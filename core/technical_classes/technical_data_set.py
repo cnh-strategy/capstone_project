@@ -3,14 +3,18 @@
 import pandas as pd
 import numpy as np
 import os
+import warnings
 import yfinance as yf
 from config.agents import agents_info, dir_info
 
 import importlib # 아연수정
 
+# yfinance 진행률 바 및 경고 메시지 숨기기
+warnings.filterwarnings('ignore')
+
 # Raw Dataset 생성
 def fetch_ticker_data(ticker: str, period: str = "5y", interval: str = "1d") -> pd.DataFrame: # 아연수정
-    df = yf.download(ticker, period=period, interval=interval, auto_adjust=True)
+    df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
     df.dropna(inplace=True)
 
     # 컬럼명 정리 (튜플 형태를 단순 문자열로 변환)
@@ -27,21 +31,21 @@ def fetch_ticker_data(ticker: str, period: str = "5y", interval: str = "1d") -> 
     # Fundamental Agent용 추가 데이터
     try:
         # 환율 데이터 (USD/KRW)
-        usd_krw = yf.download("USDKRW=X", period=period, interval=interval, auto_adjust=True)
+        usd_krw = yf.download("USDKRW=X", period=period, interval=interval, auto_adjust=True, progress=False)
         if not usd_krw.empty:
             df["USD_KRW"] = usd_krw["Close"].reindex(df.index, method='ffill')
         else:
             df["USD_KRW"] = 1300.0  # 기본값
 
         # 나스닥 지수
-        nasdaq = yf.download("^IXIC", period=period, interval=interval, auto_adjust=True)
+        nasdaq = yf.download("^IXIC", period=period, interval=interval, auto_adjust=True, progress=False)
         if not nasdaq.empty:
             df["NASDAQ"] = nasdaq["Close"].reindex(df.index, method='ffill')
         else:
             df["NASDAQ"] = 15000.0  # 기본값
 
         # VIX 지수
-        vix = yf.download("^VIX", period=period, interval=interval, auto_adjust=True)
+        vix = yf.download("^VIX", period=period, interval=interval, auto_adjust=True, progress=False)
         if not vix.empty:
             df["VIX"] = vix["Close"].reindex(df.index, method='ffill')
         else:
@@ -183,7 +187,7 @@ def get_latest_close_price(ticker, save_dir=dir_info["data_dir"]):
     else:
         # 원본 데이터가 없으면 yfinance로 직접 가져오기
         import yfinance as yf
-        data = yf.download(ticker, period="1d", interval="1d")
+        data = yf.download(ticker, period="1d", interval="1d", progress=False)
         return float(data['Close'].iloc[-1])
 
 

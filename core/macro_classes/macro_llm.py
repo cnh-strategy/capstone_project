@@ -5,13 +5,13 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 import requests
-import shap
+# import shap  # Not used - removed to avoid matplotlib compatibility issues
 from openai import OpenAI
 from dotenv import load_dotenv
 
 from typing import Dict, List, Optional, Literal, Tuple, Any
 from collections import defaultdict
-import tensorflow as tf
+import torch
 from config.agents import dir_info
 
 load_dotenv()
@@ -87,7 +87,7 @@ class LLMExplainer:
         self.client = OpenAI(api_key=self.api_key)
         self.model = model_name
 
-        self.agent_id = 'MacroSentiAgent'
+        self.agent_id = 'MacroAgent'
         self.temperature = temperature # Temperature 설정
         self.verbose = verbose            # 디버깅 모드
         self.need_training = need_training # 모델 학습 필요 여부
@@ -316,7 +316,7 @@ class GradientAnalyzer:
     # ------------------------------------------------------------
     def compute_gradient_x_input(self, x_input: np.ndarray) -> np.ndarray:
         """
-        Gradient × Input 계산
+        Gradient × Input 계산 (PyTorch)
         - 입력 차원을 (batch, time, features) 형태로 강제 정규화
         - (1, 1, 40, 169) 같은 잘못된 입력도 자동 수정
         """
@@ -329,19 +329,25 @@ class GradientAnalyzer:
             # (40, features) -> (1, 40, features)
             x_input = np.expand_dims(x_input, axis=0)
 
-        # ✅ Tensor 변환 및 Gradient 계산
-        x = tf.convert_to_tensor(x_input, dtype=tf.float32)
-        with tf.GradientTape() as tape:
-            tape.watch(x)
-            preds = self.model(x)
+        # ✅ PyTorch Tensor 변환 및 Gradient 계산
+        device = next(self.model.parameters()).device
+        x = torch.FloatTensor(x_input).to(device)
+        x.requires_grad_(True)
+        
+        self.model.eval()
+        preds = self.model(x)
+        
+        # Gradient 계산
+        grads = torch.autograd.grad(
+            outputs=preds.sum(),
+            inputs=x,
+            create_graph=False,
+            retain_graph=False
+        )[0]
+        
+        gx = torch.abs(grads * x)
 
-        grads = tape.gradient(preds, x)
-        gx = tf.abs(grads * x)
-
-        # ✅ 출력 shape 확인
-        print(f"[DEBUG] Gradient × Input output shape: {gx.shape}")
-
-        return gx.numpy()
+        return gx.detach().cpu().numpy()
 
 
     # ------------------------------------------------------------
@@ -371,17 +377,25 @@ class GradientAnalyzer:
         interpolated = np.array(interpolated, dtype=np.float32)  # (steps+1, 1, 40, features) 형태
         interpolated = np.squeeze(interpolated, axis=1)          # ✅ (steps+1, 40, features)
 
-        interpolated_tf = tf.convert_to_tensor(interpolated)
-        with tf.GradientTape() as tape:
-            tape.watch(interpolated_tf)
-            preds = self.model(interpolated_tf)
+        # ✅ PyTorch Tensor 변환 및 Gradient 계산
+        device = next(self.model.parameters()).device
+        interpolated_torch = torch.FloatTensor(interpolated).to(device)
+        interpolated_torch.requires_grad_(True)
+        
+        self.model.eval()
+        preds = self.model(interpolated_torch)
 
-        grads = tape.gradient(preds, interpolated_tf)
-        avg_grads = tf.reduce_mean(grads[:-1], axis=0)
-        ig = (x_input - self.baseline) * avg_grads.numpy()
+        # Gradient 계산
+        grads = torch.autograd.grad(
+            outputs=preds.sum(),
+            inputs=interpolated_torch,
+            create_graph=False,
+            retain_graph=False
+        )[0]
+        
+        avg_grads = torch.mean(grads[:-1], dim=0)
+        ig = (x_input - self.baseline) * avg_grads.detach().cpu().numpy()
 
-        print(f"[DEBUG] x_input shape before IG: {x_input.shape}")
-        print(f"[DEBUG] interpolated shape: {interpolated.shape}")
         return ig
 
     # ------------------------------------------------------------
@@ -393,7 +407,7 @@ class GradientAnalyzer:
         6가지 summary 구조로 feature importance를 반환하는 버전.
         """
 
-        print("[INFO] Running Gradient × Input + Integrated Gradients analysis...")
+        # Gradient analysis 실행 중...
 
         # 1️⃣ Gradient × Input / Integrated Gradients 계산
         gx = self.compute_gradient_x_input(x_input)
@@ -416,7 +430,7 @@ class GradientAnalyzer:
 
         # 3️⃣ 일관성(agreement ratio)
         corr = np.corrcoef(gx_mean, ig_mean)[0, 1]
-        print(f"[INFO] IG–G×I correlation (agreement_ratio): {corr:.4f}")
+        # IG–G×I correlation: {corr:.4f}
 
         # 4️⃣ feature summary (핵심 요약)
         feature_summary = {
@@ -475,6 +489,6 @@ class GradientAnalyzer:
             "stability_summary": stability_summary
         }
 
-        print("[INFO] Gradient analysis completed successfully.")
+        # Gradient analysis 완료
         return (importance_dict, pd.DataFrame(temporal_summary), pd.DataFrame(consistency_summary),
                 pd.DataFrame(sensitivity_summary), grad_results)

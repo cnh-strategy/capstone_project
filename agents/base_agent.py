@@ -61,13 +61,15 @@ class StockData:
     - technical  : 가격/지표 스냅샷
     - last_price : 최신 종가
     - currency   : 통화코드
+    - feature_cols: 피처 컬럼 목록
     """
     SentimentalAgent: Optional[Dict[str, Any]] = field(default_factory=dict)
-    MacroSentiAgent: Optional[Dict[str, Any]] = field(default_factory=dict)
+    MacroAgent: Optional[Dict[str, Any]] = field(default_factory=dict)
     TechnicalAgent: Optional[Dict[str, Any]] = field(default_factory=dict)
     last_price: Optional[float] = None
     currency: Optional[str] = None
     ticker: Optional[str] = None
+    feature_cols: Optional[List[str]] = field(default_factory=list)
 
 
 # ===============================================================
@@ -114,7 +116,7 @@ class BaseAgent:
         # API 키 로드
         self.api_key = os.getenv("CAPSTONE_OPENAI_API")
         if not self.api_key:
-            self.api_key = ""
+            raise RuntimeError("환경변수 CAPSTONE_OPENAI_API가 설정되지 않았습니다.")
 
         # 공통 헤더
         self.headers = {
@@ -205,7 +207,7 @@ class BaseAgent:
             print(f"yfinance 오류 발생, 통화 기본값 사용: {e}")
             self.stockdata.currency = "USD"
 
-        print(f"■ {agent_id} StockData 생성 완료 ({ticker}, {self.stockdata.currency})")
+        # StockData 생성 완료 (로그는 DebateAgent에서 처리)
 
         return X_tensor
 
@@ -404,13 +406,11 @@ class BaseAgent:
         if (self.model is None or not hasattr(self.model, "parameters")) and not already_loaded:
             model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
             if os.path.exists(model_path):
-                print(f"■ {self.agent_id} 모델 자동 로드 시도...")
                 ok = self.load_model(model_path)
                 # 일부 에이전트는 model_loaded 속성이 없을 수 있어서 getattr/hasattr로 방어
                 if hasattr(self, "model_loaded"):
                     self.model_loaded = bool(ok)
             else:
-                print(f"■ {self.agent_id} 모델 없음 → pretrain 수행...")
                 if not self.ticker and getattr(self, "stockdata", None):
                     self.ticker = getattr(self.stockdata, "ticker", None)
                 if not self.ticker:
@@ -721,7 +721,6 @@ class BaseAgent:
             model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
 
         if not os.path.exists(model_path):
-            print(f"■ 모델 파일 없음: {model_path}")
             return False
 
         try:
@@ -731,11 +730,9 @@ class BaseAgent:
             if getattr(self, "model", None) is None:
                 if hasattr(self, "_build_model"):
                     self.model = self._build_model()
-                    print(f"■ {self.agent_id} 모델 새로 생성됨 (로드 전 초기화).")
                 elif hasattr(self, "forward"):
                     # Agent 자체가 nn.Module인 경우
                     self.model = self
-                    print(f"■ {self.agent_id} 모델 직접 self로 설정됨.")
                 else:
                     raise RuntimeError(f"{self.agent_id}에 _build_model()이 정의되어 있지 않음.")
 
@@ -766,13 +763,10 @@ class BaseAgent:
             # 모델이 여전히 None이라면 self 자체를 모델로 설정
             if self.model is None and hasattr(self, "forward"):
                 self.model = self
-                print(f"■ {self.agent_id} 모델 self로 대체됨.")
 
             return True
 
         except Exception as e:
-            print(f"■ 모델 로드 실패: {model_path}")
-            print(f"오류 내용: {e}")
             return False
 
     def pretrain(self):
@@ -810,7 +804,6 @@ class BaseAgent:
             # BaseAgent에 _build_model()이 있다면 호출
             if hasattr(self, "_build_model"):
                 self.model = self._build_model()
-                print(f"■ {self.agent_id} 모델 새로 생성됨.")
             else:
                 raise RuntimeError(f"{self.agent_id}에 _build_model()이 정의되지 않음")
 
@@ -913,7 +906,6 @@ class BaseAgent:
                 # 기타 에러는 즉시 예외
                 r.raise_for_status()
             except Exception as e:
-                print(f"■ {self.agent_id} - 모델 {model} 실패: {e}")
                 last_err = str(e)
                 continue
         raise RuntimeError(f"모든 모델 실패. 마지막 오류: {last_err}")

@@ -43,11 +43,74 @@ def get_news_cache_path(ticker: str, start: date, end: date) -> Path:
 
 def _fetch_news_from_eodhd_stub(symbol: str, start: date, end: date, api_key: str):
     """
-    EODHD 실제 호출은 프로젝트별 구현에 맞게 작성해야 함.
-    지금은 '빈 리스트'를 리턴하는 스텁으로 둔다.
+    EODHD에서 뉴스 데이터를 실제로 가져오는 함수.
+    EODHDNewsClient를 사용하여 뉴스를 수집하고 적절한 형식으로 변환합니다.
+    
+    Args:
+        symbol: 종목 심볼 (예: "NVDA.US")
+        start: 시작 날짜
+        end: 종료 날짜
+        api_key: EODHD API 키 (없으면 환경변수에서 읽음)
+        
+    Returns:
+        List[Dict[str, Any]]: 뉴스 아이템 리스트
     """
-    print("[FinBERT] _fetch_news_from_eodhd_stub 호출됨 → 실제 EODHD 연동은 별도 구현 필요")
-    return []
+    try:
+        from core.sentimental_classes.eodhd_client import EODHDNewsClient
+        
+        # API 키가 없으면 환경변수에서 읽기
+        if not api_key:
+            import os
+            api_key = os.getenv("EODHD_API_KEY")
+        
+        if not api_key:
+            print("[FinBERT] EODHD_API_KEY가 설정되지 않았습니다. 뉴스 수집을 건너뜁니다.")
+            return []
+        
+        # EODHDNewsClient 초기화 및 뉴스 수집
+        client = EODHDNewsClient(api_key=api_key)
+        
+        # 심볼에서 .US 제거 (EODHDNewsClient가 자동으로 처리할 수도 있음)
+        ticker = symbol.replace(".US", "") if symbol.endswith(".US") else symbol
+        
+        # 날짜 형식 변환 (date -> "YYYY-MM-DD")
+        start_str = start.isoformat()
+        end_str = end.isoformat()
+        
+        print(f"[FinBERT] EODHD에서 뉴스 수집 중: {ticker} ({start_str} ~ {end_str})")
+        news_items = client.fetch_company_news(
+            ticker=ticker,
+            from_date=start_str,
+            to_date=end_str,
+            limit=100  # 최대 100개
+        )
+        
+        # NewsItem을 Dict 형식으로 변환
+        result = []
+        for item in news_items:
+            result.append({
+                "date": item.date,
+                "published_date": item.date,
+                "title": item.title,
+                "content": item.content or "",
+                "text": item.content or item.title,
+                "summary": item.title,
+                "tickers": item.tickers or [ticker],
+                "source": item.source or "",
+                "url": item.url or "",
+            })
+        
+        print(f"[FinBERT] 뉴스 수집 완료: {len(result)}건")
+        return result
+        
+    except ImportError as e:
+        print(f"[FinBERT] EODHDNewsClient import 실패: {e}")
+        print("[FinBERT] 뉴스 수집을 건너뜁니다.")
+        return []
+    except Exception as e:
+        print(f"[FinBERT] EODHD 뉴스 수집 중 오류 발생: {e}")
+        print("[FinBERT] 뉴스 수집을 건너뜁니다.")
+        return []
 
 
 def load_or_fetch_news(
@@ -93,9 +156,13 @@ def load_or_fetch_news(
         except Exception as e:
             print(f"[FinBERT] 폴백 캐시 로드 실패: {latest} ({e})")
 
-    # 3) 그래도 없으면 EODHD 호출 후 저장 (현재는 스텁)
+    # 3) 그래도 없으면 EODHD 호출 후 저장
     print(f"[FinBERT] 뉴스 캐시 없음: {cache_path}")
-    data = _fetch_news_from_eodhd_stub(symbol, start, end, api_key="")  # TODO: 실제 구현시 api_key 전달
+    # API 키가 없으면 환경변수에서 읽기
+    if not api_key:
+        import os
+        api_key = os.getenv("EODHD_API_KEY", "")
+    data = _fetch_news_from_eodhd_stub(symbol, start, end, api_key=api_key)
 
     if not isinstance(data, list):
         data = []

@@ -1,12 +1,10 @@
 import os
 import joblib
 import numpy as np
-from keras import Input
-from keras.src.saving.saving_api import save_model
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from tensorflow.keras.optimizers import Adam
 import yfinance as yf
 import pandas as pd
 
@@ -21,6 +19,43 @@ save_dir = dir_info["data_dir"]
 model_dir: str = dir_info["model_dir"]
 data_dir: str = dir_info["data_dir"]
 OUTPUT_DIR = data_dir
+
+
+# PyTorch LSTM 모델 정의
+class MacroLSTM(nn.Module):
+    """
+    MacroAgent용 LSTM 모델
+    - 3층 LSTM (128 → 64 → 32)
+    - 2층 Dense (32 → output_dim)
+    """
+    def __init__(self, input_dim, hidden_dims=[128, 64, 32], output_dim=1, dropout_rates=[0.3, 0.3, 0.2]):
+        super(MacroLSTM, self).__init__()
+        self.lstm1 = nn.LSTM(input_dim, hidden_dims[0], batch_first=True)
+        self.drop1 = nn.Dropout(dropout_rates[0])
+        self.lstm2 = nn.LSTM(hidden_dims[0], hidden_dims[1], batch_first=True)
+        self.drop2 = nn.Dropout(dropout_rates[1])
+        self.lstm3 = nn.LSTM(hidden_dims[1], hidden_dims[2], batch_first=True)
+        self.drop3 = nn.Dropout(dropout_rates[2])
+        self.fc1 = nn.Linear(hidden_dims[2], 32)
+        self.fc2 = nn.Linear(32, output_dim)
+    
+    def forward(self, x):
+        # LSTM layers
+        h1, _ = self.lstm1(x)
+        h1 = self.drop1(h1)
+        h2, _ = self.lstm2(h1)
+        h2 = self.drop2(h2)
+        h3, _ = self.lstm3(h2)
+        h3 = self.drop3(h3)
+        
+        # 마지막 시점만 사용 (batch, seq_len, hidden) -> (batch, hidden)
+        h3_last = h3[:, -1, :]
+        
+        # Dense layers
+        out = torch.relu(self.fc1(h3_last))
+        out = self.fc2(out)
+        return out
+
 
 # 데이터셋과 모델 만드는 클래스
 class MacroAData:
@@ -48,9 +83,9 @@ class MacroAData:
         }
         self.data = None
 
-        self.agent_id = 'MacroSentiAgent'
+        self.agent_id = 'MacroAgent'
         self.ticker=ticker
-        self.model_path = f"{model_dir}/{self.ticker}_{self.agent_id}.keras"
+        self.model_path = f"{model_dir}/{self.ticker}_{self.agent_id}.pt"
         self.scaler_X_path = f"{model_dir}/scalers/{self.ticker}_{self.agent_id}_xscaler.pkl"
         self.scaler_y_path = f"{model_dir}/scalers/{self.ticker}_{self.agent_id}_yscaler.pkl"
 
@@ -105,8 +140,7 @@ class MacroAData:
             )
 
         self.data = df
-        print(f"[TRACE A] add_features() for self.data:{self.data}")
-        print(f"[TRACE A] add_features() for {self.ticker} columns:", df.columns.tolist()[:15])
+        print(f"[INFO] Feature engineering: {df.shape[0]} rows, {df.shape[1]} features")
         return df
 
     def save_csv(self):
@@ -244,47 +278,118 @@ class MacroAData:
         y_train, y_test = y_seq[:split_idx], y_seq[split_idx:]
 
         # -------------------------------------------------------------
-        # 11. 멀티아웃풋 LSTM 모델 정의
+        # 11. PyTorch 모델 정의
         # -------------------------------------------------------------
-        model = Sequential([
-            Input(shape=(X_train.shape[1], X_train.shape[2])),  # 입력 정의
-            LSTM(128, return_sequences=True),
-            Dropout(0.3),
-            LSTM(64, return_sequences=True),
-            Dropout(0.3),
-            LSTM(32, return_sequences=False),
-            Dropout(0.2),
-            Dense(32, activation='relu'),
-            Dense(len([self.ticker]))
-        ])
-
-        optimizer = Adam(learning_rate=0.0005)
-        model.compile(optimizer=optimizer, loss='mae')
+        input_dim = X_train.shape[2]
+        output_dim = len([self.ticker])
+        model = MacroLSTM(input_dim=input_dim, output_dim=output_dim)
+        
+        # 디바이스 설정
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device)
+        
+        # Loss와 Optimizer 설정
+        criterion = nn.L1Loss()  # MAE loss
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 
         # -------------------------------------------------------------
-        # 12. 학습
+        # 12. 데이터를 PyTorch Tensor로 변환
         # -------------------------------------------------------------
-        history = model.fit(
-            X_train, y_train,
-            validation_split=0.1,
-            epochs=60,
-            batch_size=16,
-            verbose=1
-        )
+        X_train_tensor = torch.FloatTensor(X_train).to(device)
+        y_train_tensor = torch.FloatTensor(y_train).to(device)
+        X_test_tensor = torch.FloatTensor(X_test).to(device)
+        y_test_tensor = torch.FloatTensor(y_test).to(device)
+        
+        # Validation split
+        val_size = int(len(X_train_tensor) * 0.1)
+        X_val_tensor = X_train_tensor[-val_size:]
+        y_val_tensor = y_train_tensor[-val_size:]
+        X_train_tensor = X_train_tensor[:-val_size]
+        y_train_tensor = y_train_tensor[:-val_size]
+        
+        # DataLoader 생성
+        train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+        train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+        val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
+        val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
 
         # -------------------------------------------------------------
-        # 13. 예측 및 복원
+        # 13. 학습 루프
         # -------------------------------------------------------------
-        preds_scaled = model.predict(X_test)
+        epochs = 60
+        best_val_loss = float('inf')
+        patience = 10
+        patience_counter = 0
+        
+        for epoch in range(epochs):
+            # Training
+            model.train()
+            train_loss = 0.0
+            for batch_X, batch_y in train_loader:
+                optimizer.zero_grad()
+                outputs = model(batch_X)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item()
+            
+            # Validation
+            model.eval()
+            val_loss = 0.0
+            with torch.no_grad():
+                for batch_X, batch_y in val_loader:
+                    outputs = model(batch_X)
+                    loss = criterion(outputs, batch_y)
+                    val_loss += loss.item()
+            
+            train_loss /= len(train_loader)
+            val_loss /= len(val_loader)
+            
+            if (epoch + 1) % 10 == 0 or epoch == 0:
+                print(f"Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
+            
+            # Early stopping
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print(f"Early stopping at epoch {epoch+1}")
+                    break
+
+        # -------------------------------------------------------------
+        # 14. 예측 및 복원
+        # -------------------------------------------------------------
+        model.eval()
+        with torch.no_grad():
+            preds_scaled = model(X_test_tensor).cpu().numpy()
+        
         preds = scaler_y.inverse_transform(preds_scaled)
-        y_test_inv = scaler_y.inverse_transform(y_test)
+        y_test_inv = scaler_y.inverse_transform(y_test_tensor.cpu().numpy())
 
-
-        # 전체 모델 저장
-        save_model(model, f"{self.model_path}")
-        scaler_X.feature_names_in_ = np.array(X_all.columns)    #로드 시에도 feature_names_in_ 속성이 복원
-        joblib.dump(scaler_X, f"{self.scaler_X_path}")
-        joblib.dump(scaler_y, f"{self.scaler_y_path}")
+        # -------------------------------------------------------------
+        # 15. 모델 및 스케일러 저장
+        # -------------------------------------------------------------
+        # 디렉토리 생성
+        os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.scaler_X_path), exist_ok=True)
+        
+        # 모델 저장
+        torch.save({"model_state_dict": model.state_dict()}, self.model_path)
+        
+        # 스케일러 저장
+        scaler_X.feature_names_in_ = np.array(X_all.columns)  # 로드 시에도 feature_names_in_ 속성이 복원
+        joblib.dump(scaler_X, self.scaler_X_path)
+        joblib.dump(scaler_y, self.scaler_y_path)
+        
+        # 객체 속성으로도 저장 (pretrain에서 사용하기 위해)
+        self.scaler_X = scaler_X
+        self.scaler_y = scaler_y
+        self.X_train = X_train
+        self.y_train = y_train
+        self.X_test = X_test
+        self.y_test = y_test
 
         print("[CHECK] macro_full variance summary:")
         numeric_cols = macro_full.select_dtypes(include=[np.number]).columns

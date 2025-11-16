@@ -119,7 +119,7 @@ def build_dataset(
 ) -> None:
     """
     debate_agent.py에서 agent_id를 넘겨주면, 여기서 분기 처리
-    - agent_id == 'MacroSentiAgent' / '매크로' / 'macro'
+    - agent_id == 'MacroAgent' / '매크로' / 'macro'
     - agent_id == 'SentimentalAgent' / '센티멘탈' / 'sentimental'
     - agent_id == 'TechnicalAgent' / '테크니컬' / 'technical' (추후)
     """
@@ -135,14 +135,14 @@ def build_dataset(
     # Agent별 데이터셋을 CSV로 저장
     for aid, _ in agents_info.items():
         # ---------- macro_agent ----------
-        if aid in {"MacroSentiAgent","macrosentiagent", "macro", "매크로"}:
+        if aid in {"MacroAgent","macroagent", "macro", "매크로"}:
             if not _HAS_MACRO or macro_dataset is None:
                 raise ImportError(
                     "macro_dataset 모듈을 찾을 수 없습니다. core/macro_classes 확인 필요 "
                     f"details={_MACRO_IMPORT_ERROR}"
                 )
             macro_dataset(ticker_name=ticker)
-            print(f"✅ {ticker} MacroSentiAgent dataset saved (macro_dataset 호출 via {_MACRO_SRC})")
+            print(f"✅ {ticker} MacroAgent dataset saved (macro_dataset 호출 via {_MACRO_SRC})")
 
         # ---------- sentimental_agent ----------
         elif aid in {"SentimentalAgent","sentimentalagent", "sentimental", "센티멘탈"}:

@@ -11,7 +11,8 @@ from config.agents import dir_info
 몬테 카를로 생성 함수도 존재함
 '''
 
-warnings.filterwarnings("ignore", category=FutureWarning)
+# yfinance 진행률 바 및 경고 메시지 숨기기
+warnings.filterwarnings("ignore")
 
 model_dir: str = dir_info["model_dir"]
 
@@ -31,7 +32,7 @@ class MakeDatasetMacro:
         self.base_date = base_date
         self.start_date = base_date - timedelta(days=window + 20)
         self.end_date = base_date
-        self.agent_id='MacroSentiAgent'
+        self.agent_id='MacroAgent'
         self.data = None
 
     # -------------------------------------------------------------
@@ -39,14 +40,15 @@ class MakeDatasetMacro:
     # -------------------------------------------------------------
     def fetch_data(self):
         """매크로 자산 + 개별 티커 데이터 다운로드"""
-        print(f"1️⃣ Collecting macro features ({len(self.macro_tickers)} tickers)...")
+        print(f"[INFO] Collecting macro features ({len(self.macro_tickers)} tickers)...")
         df_macro = yf.download(
             tickers=list(self.macro_tickers.values()),
             start=self.start_date,
             end=self.end_date,
             interval="1d",
             group_by="ticker",
-            auto_adjust=False
+            auto_adjust=False,
+            progress=False
         )
 
         # ✅ MultiIndex → 단일 인덱스 변환
@@ -62,10 +64,9 @@ class MakeDatasetMacro:
         # ✅ 개별 주식 데이터 별도 수집
         price_dfs = []
         for t in self.target_tickers:
-            print(f"   ↳ Downloading {t} ...")
             self.ticker = t
             try:
-                df_t = yf.download(t, start=self.start_date, end=self.end_date, interval="1d")
+                df_t = yf.download(t, start=self.start_date, end=self.end_date, interval="1d", progress=False)
                 df_t = df_t.rename(columns={
                     "Open": f"Open_{t}",
                     "High": f"High_{t}",
@@ -147,7 +148,7 @@ class MakeDatasetMacro:
 # -------------------------------------------------------------
 def get_std_pred(model, X_seq, n_samples=30, scaler_y=None, current_price=None, stockdata=None):
     """
-    Monte Carlo Dropout 기반 불확실성 예측 (TensorFlow / Keras 전용)
+    Monte Carlo Dropout 기반 불확실성 예측 (PyTorch 전용)
     --------------------------------------------------
     기능:
     - Dropout을 training=True로 활성화하여 Monte Carlo 추론 수행
@@ -157,8 +158,8 @@ def get_std_pred(model, X_seq, n_samples=30, scaler_y=None, current_price=None, 
     - 현재가 반영한 예측 종가(predicted_price) 계산
     --------------------------------------------------
     Args:
-        model : tf.keras.Model 또는 Sequential
-        X_seq : 입력 시퀀스 (numpy.ndarray)
+        model : torch.nn.Module (PyTorch 모델)
+        X_seq : 입력 시퀀스 (torch.Tensor 또는 numpy.ndarray)
         n_samples : Monte Carlo 반복 횟수
         scaler_y : 출력 스케일러 (MinMaxScaler 또는 StandardScaler)
         current_price : 현재 종가 (float, optional)
@@ -170,19 +171,28 @@ def get_std_pred(model, X_seq, n_samples=30, scaler_y=None, current_price=None, 
         predicted_price (float): 현재가 × (1 + 예측 수익률)
     """
     import numpy as np
-    import tensorflow as tf
+    import torch
+
+    # 입력을 torch.Tensor로 변환
+    if isinstance(X_seq, np.ndarray):
+        device = next(model.parameters()).device
+        X_seq = torch.FloatTensor(X_seq).to(device)
+    elif not isinstance(X_seq, torch.Tensor):
+        raise TypeError(f"X_seq must be numpy.ndarray or torch.Tensor, got {type(X_seq)}")
 
     preds = []
 
     # -------------------------------------------------
     # (1) 모델 예측 (Monte Carlo Dropout)
     # -------------------------------------------------
-    for _ in range(n_samples):
-        # training=True 로 dropout 활성화
-        y_pred = model(X_seq, training=True)
-        if isinstance(y_pred, tf.Tensor):
-            y_pred = y_pred.numpy().flatten()
-        preds.append(y_pred)
+    model.train()  # training 모드로 설정하여 dropout 활성화
+    with torch.no_grad():
+        for _ in range(n_samples):
+            y_pred = model(X_seq)
+            if isinstance(y_pred, torch.Tensor):
+                y_pred = y_pred.cpu().numpy().flatten()
+            preds.append(y_pred)
+    model.eval()  # 다시 eval 모드로
 
     preds = np.stack(preds)  # (n_samples, output_dim)
     mean_pred = preds.mean(axis=0)

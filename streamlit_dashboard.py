@@ -152,9 +152,9 @@ def run_real_debate_with_progress(ticker, rounds):
             st.info("**참여 에이전트:**")
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.write("■ **FundamentalAgent**")
-                st.write("보수적 펀더멘털 분석가")
-                st.write("예측 범위: ±5%")
+                st.write("■ **MacroAgent**")
+                st.write("거시경제 센티멘탈 분석가")
+                st.write("예측 범위: ±12%")
             with col2:
                 st.write("■ **SentimentalAgent**")
                 st.write("중립적 센티멘탈 분석가")
@@ -229,7 +229,7 @@ if st.sidebar.button("■ 토론 시작", type="primary"):
             st.metric("■ 현재가", f"{current_price:.2f}" if current_price else "N/A")
             
             # 예측 범위 계산
-            agent_prices = [final.get(f'{agent}_next_close', 0) for agent in ['SentimentalAgent', 'TechnicalAgent', 'FundamentalAgent']]
+            agent_prices = [final.get(f'{agent}_next_close', 0) for agent in ['SentimentalAgent', 'TechnicalAgent', 'MacroAgent']]
             if any(agent_prices):
                 min_price = min(agent_prices)
                 max_price = max(agent_prices)
@@ -480,7 +480,7 @@ with tab2:
         # 요약 테이블
         st.markdown("### 📋 요약 테이블")
         opinions_data = []
-        agent_order = ['SentimentalAgent', 'TechnicalAgent', 'FundamentalAgent']
+        agent_order = ['SentimentalAgent', 'TechnicalAgent', 'MacroAgent']
         
         for round_no in sorted(debate_agent.opinions.keys()):
             row = {'라운드': f"Round {round_no}"}
@@ -717,7 +717,7 @@ with col2:
     st.markdown("### ■ 주요 지표")
     
     # 에이전트별 예측가 추출
-    agent_prices = [final.get(f'{agent}_next_close', 0) for agent in ['SentimentalAgent', 'TechnicalAgent', 'FundamentalAgent']]
+    agent_prices = [final.get(f'{agent}_next_close', 0) for agent in ['SentimentalAgent', 'TechnicalAgent', 'MacroSentiAgent']]
     agent_prices = [p for p in agent_prices if p > 0]  # 0보다 큰 값만
     
     if agent_prices:

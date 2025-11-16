@@ -65,7 +65,7 @@ OPINION_PROMPTS = {
         ),
     },
 
-    "MacroSentiAgent": {
+    "MacroAgent": {
         "system": (
             "너는 '거시경제 및 시장심리 분석 전문가(Macro Strategist)'다. "
             "Gradient × Input 및 Integrated Gradients 기반의 LSTM 예측 결과를 해석하여 시장의 방향성을 논리적으로 분석하라. "
@@ -243,7 +243,7 @@ REBUTTAL_PROMPTS = {
     )
     },
     
-    "MacroSentiAgent": {
+    "MacroAgent": {
         "system": (
             "너는 '거시경제 및 시장심리 분석 전문가(Macro Strategist)'이다. "
             "각 피처(feature)는 금리, 인플레이션, 실업률, 유동성, 환율, 경기심리지수 등 주요 거시 변수이며, "
@@ -356,7 +356,7 @@ REVISION_PROMPTS = {
             "{context}"
         ),
     },
-    "MacroSentiAgent": {
+    "MacroAgent": {
         "system": (
             "너는 '거시경제 및 시장심리 분석 전문가(Macro Strategist)'다. "
             "너의 기존 예측(next_close, reason)과 동료 에이전트들의 예측 및 반박/지지를 모두 고려하여, "
@@ -416,7 +416,7 @@ DEBATE_PROMPTS = {
 }
 
 SEARCHER_PROMPTS = {
-    "MacroSentiAgent": {
+    "MacroAgent": {
         "system": (
             "너는 ‘거시경제 및 시장심리 분석 전문가(Macro Strategist)’다. "
             "특정 종목을 넘어서 시장 전체의 거시 흐름(금리, 인플레이션, 유동성, 경기선행지수 등)이 "
@@ -464,7 +464,7 @@ SEARCHER_PROMPTS = {
 # 2) Predicter 프롬프트
 # =========================
 PREDICTER_PROMPTS = {
-    "MacroSentiAgent": {
+    "MacroAgent": {
         "system": (
             "너는 '거시경제 및 시장심리 분석 전문가(Macro Strategist)'다. "
             "최근 금리, 인플레이션, 실업률, 유동성, 정책 기조 등의 거시경제 지표와 "
