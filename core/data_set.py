@@ -14,6 +14,7 @@ import yfinance as yf
 
 from config.agents import agents_info, dir_info
 from .technical_classes import technical_data_set as _techds
+from .sentimental_classes.news import merge_price_with_news_features  
 
 _HAS_MACRO = False
 _MACRO_IMPORT_ERROR = ""
@@ -66,13 +67,15 @@ def _save_agent_csv(flattened_rows: List[dict], csv_path: str) -> None:
 # Sentimental
 # -----------------------------
 def _fetch_ticker_data_for_sentimental(ticker: str, period: Optional[str], interval: Optional[str]) -> pd.DataFrame:
+    # ❗ 여기서는 "기본값"만 잡고,
+    #    실제 period/interval은 build_dataset 쪽에서 agents_info를 보고 결정하게 할 거야.
     period = period or "2y"
     interval = interval or "1d"
 
     df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
     df.dropna(inplace=True)
 
-    # 멀티인덱스 컬럼 방어
+    # 멀티인덱스 방어
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
 
@@ -83,7 +86,7 @@ def _fetch_ticker_data_for_sentimental(ticker: str, period: Optional[str], inter
     df["rsi"] = compute_rsi(df["Close"])
     df["volume_z"] = (df["Volume"] - df["Volume"].mean()) / (df["Volume"].std() + 1e-6)
 
-    # Fundamental 보조(USD/KRW, NASDAQ, VIX)
+    # USD/KRW, NASDAQ, VIX
     try:
         usd_krw = yf.download("USDKRW=X", period=period, interval=interval, auto_adjust=True, progress=False)
         df["USD_KRW"] = (usd_krw["Close"].reindex(df.index, method="ffill") if not usd_krw.empty else 1300.0)
@@ -99,9 +102,37 @@ def _fetch_ticker_data_for_sentimental(ticker: str, period: Optional[str], inter
         df["NASDAQ"] = 15000.0
         df["VIX"] = 20.0
 
-    # 감성(placeholder): 초기 코드 그대로
-    df["sentiment_mean"] = df["returns"].rolling(3).mean().fillna(0)
-    df["sentiment_vol"] = df["returns"].rolling(3).std().fillna(0)
+    # === 가격 + 뉴스 피처 병합 ===
+    try:
+        df_reset = df.reset_index()
+        if "Date" not in df_reset.columns:
+            idx_name = df_reset.columns[0]
+            df_reset = df_reset.rename(columns={idx_name: "Date"})
+
+        merged = merge_price_with_news_features(
+            df_price=df_reset,
+            ticker=ticker,
+            window=7,
+            show_tail=False,
+        )
+
+        merged = merged.sort_values("Date").set_index("Date")
+
+        # 뉴스 기반 감성 피처 정의
+        merged["sentiment_mean"] = merged["sentiment_mean_7d"]
+        merged["sentiment_vol"] = (
+            merged["sentiment_mean_1d"]
+            .rolling(window=7, min_periods=1)
+            .std()
+            .fillna(0.0)
+        )
+
+        df = merged
+
+    except Exception as e:
+        print(f"⚠️ 뉴스 피처 병합 실패, placeholder 감성 사용: {e}")
+        df["sentiment_mean"] = df["returns"].rolling(3).mean().fillna(0)
+        df["sentiment_vol"] = df["returns"].rolling(3).std().fillna(0)
 
     df.dropna(inplace=True)
     return df
@@ -145,38 +176,52 @@ def build_dataset(
             print(f"✅ {ticker} MacroSentiAgent dataset saved (macro_dataset 호출 via {_MACRO_SRC})")
 
         # ---------- sentimental_agent ----------
+         # ---------- sentimental_agent ----------
         elif aid in {"SentimentalAgent","sentimentalagent", "sentimental", "센티멘탈"}:
-            df = _fetch_ticker_data_for_sentimental(ticker, period, interval)
+            # 1) 이 에이전트 설정 불러오기
+            senti_cfg = agents_info.get("SentimentalAgent", {})
+
+            # 2) period / interval: (함수 인자) > (config) > fallback
+            senti_period = period or senti_cfg.get("period", "2y")
+            senti_interval = interval or senti_cfg.get("interval", "1d")
+
+            # 3) 가격 + 뉴스 감성 포함된 df 생성
+            df = _fetch_ticker_data_for_sentimental(
+                ticker,
+                period=senti_period,
+                interval=senti_interval,
+            )
 
             # 원본 CSV 저장(후속처리 참고용)
             df.to_csv(os.path.join(save_dir, f"{ticker}_raw_data.csv"), index=True, encoding="utf-8")
 
-            # 사용할 피처 컬럼
-            if agent_id in agents_info and "data_cols" in agents_info[agent_id]:
-                feature_cols = agents_info[agent_id]["data_cols"]
-                window_size = agents_info[agent_id].get("window_size", 14)
+            # 4) 사용할 피처 컬럼 / window_size: config 우선
+            if "SentimentalAgent" in agents_info:
+                cfg = agents_info["SentimentalAgent"]
+                feature_cols = cfg.get("data_cols", [
+                    "returns", "sentiment_mean", "sentiment_vol",
+                    "Close", "Volume", "Open", "High", "Low",
+                ])
+                window_size = cfg.get("window_size", 40)
             else:
-                # fallback: 네 초기 코드 기반으로 합리적 기본 피처
                 feature_cols = [
-                    "returns", "sma_5", "sma_20", "rsi", "volume_z",
-                    "USD_KRW", "NASDAQ", "VIX",
-                    "sentiment_mean", "sentiment_vol",
-                    "Open", "High", "Low", "Close", "Volume",
+                    "returns", "sentiment_mean", "sentiment_vol",
+                    "Close", "Volume", "Open", "High", "Low",
                 ]
-                window_size = 14
+                window_size = 40
 
-            # 타깃: 다음날 수익률
+            # 5) 타깃: 다음날 수익률
             returns = df["Close"].pct_change().shift(-1)
             valid_mask = ~returns.isna()
             y = returns[valid_mask].to_numpy().reshape(-1, 1)
             X = df.loc[valid_mask, feature_cols]
 
-            # 시퀀스 생성
+            # 6) 시퀀스 생성
             X_seq, y_seq = create_sequences(X, y, window_size=window_size)
             samples, time_steps, n_feats = X_seq.shape
             print(f"[SentimentalAgent] X_seq: {X_seq.shape}, y_seq: {y_seq.shape}")
 
-            # 플랫 CSV
+            # 7) 플랫 CSV 저장
             flattened = []
             for sample_idx in range(samples):
                 for time_idx in range(time_steps):
@@ -189,9 +234,9 @@ def build_dataset(
                         row[feat_name] = float(X_seq[sample_idx, time_idx, feat_idx])
                     flattened.append(row)
 
-            csv_path = os.path.join(save_dir, f"{ticker}_{agent_id}_dataset.csv")
+            csv_path = os.path.join(save_dir, f"{ticker}_{aid}_dataset.csv")  # ← 여기서 aid 사용해도 좋음
             _save_agent_csv(flattened, csv_path)
-            print(f"✅ {ticker} {agent_id} dataset saved to CSV ({samples} samples, {len(feature_cols)} features)")
+            print(f"✅ {ticker} {aid} dataset saved to CSV ({samples} samples, {len(feature_cols)} features)")
 
         # ---------- technical_agent ----------
         elif aid in {"TechnicalAgent","technicalagent", "technical", "테크니컬"}:

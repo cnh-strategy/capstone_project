@@ -3,8 +3,6 @@ import os
 from typing import List
 import pandas as pd
 
-if len(news_df) == 0:
-    ctx["news_items"] = []   # 빈 뉴스
 
 def _ensure_date_col(df: pd.DataFrame, col: str = "Date") -> pd.DataFrame:
     """Date 컬럼을 date 타입으로 통일."""
