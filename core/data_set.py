@@ -15,6 +15,8 @@ import yfinance as yf
 from config.agents import agents_info, dir_info
 from .technical_classes import technical_data_set as _techds
 from .sentimental_classes.news import merge_price_with_news_features  
+from dataclasses import dataclass
+from typing import Optional, Dict, Any
 
 _HAS_MACRO = False
 _MACRO_IMPORT_ERROR = ""
@@ -36,6 +38,43 @@ except Exception as e1:
         _HAS_MACRO = False
         _MACRO_IMPORT_ERROR = f"{type(e1).__name__}: {e1} | {type(e2).__name__}: {e2}"
         _MACRO_SRC = "unavailable"
+
+@dataclass
+class StockData:
+    """
+    에이전트 입력 원천 데이터(필요 시 자유 확장)
+    - sentimental: 심리/커뮤니티/뉴스 스냅샷
+    - fundamental: 재무/밸류에이션 요약
+    - technical  : 가격/지표 스냅샷
+    - last_price : 최신 종가
+    - currency   : 통화 단위 (예: 'USD')
+    """
+    ticker: str
+    sentimental: Optional[Dict[str, Any]] = None
+    fundamental: Optional[Dict[str, Any]] = None
+    technical: Optional[Dict[str, Any]] = None
+    last_price: Optional[float] = None
+    currency: str = "USD"
+
+
+@dataclass
+class Target:
+    """
+    에이전트가 예측한 결과를 담는 객체.
+    - current_price: 현재(기준) 종가
+    - next_close   : 예측한 다음날 종가
+    - change_ratio : (next_close / current_price - 1)
+    - uncertainty  : 예측 불확실도(표준편차 등), 없으면 None
+    - confidence   : 신뢰도(0~1), 없으면 None
+    - agent_id     : 이 타겟을 만든 에이전트 ID
+    """
+    ticker: str
+    current_price: float
+    next_close: float
+    change_ratio: float
+    uncertainty: Optional[float] = None
+    confidence: Optional[float] = None
+    agent_id: Optional[str] = None
 
 
 # -----------------------------
@@ -63,12 +102,8 @@ def _save_agent_csv(flattened_rows: List[dict], csv_path: str) -> None:
     agent_df.to_csv(csv_path, index=False, encoding="utf-8")
 
 
-# -----------------------------
 # Sentimental
-# -----------------------------
 def _fetch_ticker_data_for_sentimental(ticker: str, period: Optional[str], interval: Optional[str]) -> pd.DataFrame:
-    # ❗ 여기서는 "기본값"만 잡고,
-    #    실제 period/interval은 build_dataset 쪽에서 agents_info를 보고 결정하게 할 거야.
     period = period or "2y"
     interval = interval or "1d"
 
@@ -174,10 +209,11 @@ def build_dataset(
                 )
             macro_dataset(ticker_name=ticker)
             print(f"✅ {ticker} MacroSentiAgent dataset saved (macro_dataset 호출 via {_MACRO_SRC})")
+            return
 
         # ---------- sentimental_agent ----------
-         # ---------- sentimental_agent ----------
-        elif aid in {"SentimentalAgent","sentimentalagent", "sentimental", "센티멘탈"}:
+        elif aid in {"SentimentalAgent", "sentimentalagent", "sentimental", "센티멘탈"}:
+
             # 1) 이 에이전트 설정 불러오기
             senti_cfg = agents_info.get("SentimentalAgent", {})
 
@@ -193,7 +229,11 @@ def build_dataset(
             )
 
             # 원본 CSV 저장(후속처리 참고용)
-            df.to_csv(os.path.join(save_dir, f"{ticker}_raw_data.csv"), index=True, encoding="utf-8")
+            df.to_csv(
+                os.path.join(save_dir, f"{ticker}_raw_data.csv"),
+                index=True,
+                encoding="utf-8"
+            )
 
             # 4) 사용할 피처 컬럼 / window_size: config 우선
             if "SentimentalAgent" in agents_info:
@@ -234,9 +274,14 @@ def build_dataset(
                         row[feat_name] = float(X_seq[sample_idx, time_idx, feat_idx])
                     flattened.append(row)
 
-            csv_path = os.path.join(save_dir, f"{ticker}_{aid}_dataset.csv")  # ← 여기서 aid 사용해도 좋음
+            csv_path = os.path.join(save_dir, f"{ticker}_{aid}_dataset.csv")
             _save_agent_csv(flattened, csv_path)
-            print(f"✅ {ticker} {aid} dataset saved to CSV ({samples} samples, {len(feature_cols)} features)")
+
+            print(
+                f"✅ {ticker} {aid} dataset saved to CSV "
+                f"({samples} samples, {len(feature_cols)} features)"
+            )
+            return
 
         # ---------- technical_agent ----------
         elif aid in {"TechnicalAgent","technicalagent", "technical", "테크니컬"}:
@@ -247,6 +292,7 @@ def build_dataset(
                 interval=interval or agents_info["TechnicalAgent"].get("interval", "1d"),
             )
             print(f"✅ {ticker} TechnicalAgent dataset saved via technical_data_set")
+            return
 
         else:
             raise ValueError(f"지원하지 않는 agent_id: {agent_id}")

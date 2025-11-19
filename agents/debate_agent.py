@@ -37,7 +37,7 @@ class DebateAgent(BaseAgent):
                 base_date=datetime.today(),
                 window=40,
             ),
-            "SentimentalAgent": SentimentalAgent(ticker=ticker),
+            "SentimentalAgent": SentimentalAgent(agent_id="SentimentalAgent", ticker=ticker),
         }
         self.rounds = rounds
         self.opinions: Dict[int, Dict[str, Opinion]] = {}

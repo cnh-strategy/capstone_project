@@ -7,6 +7,7 @@ import requests
 from dataclasses import dataclass
 from datetime import datetime
 from dotenv import load_dotenv
+from typing import List, Dict, Any, Optional
 
 load_dotenv()
 
@@ -18,6 +19,45 @@ class NewsItem:
     tickers: T.List[str]
     source: T.Optional[str]
     url: T.Optional[str]
+
+
+def fetch_news_from_eodhd(
+    ticker: str,
+    start: date,
+    end: date,
+    api_token: Optional[str] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+
+    if api_token is None:
+        api_token = os.getenv("EODHD_API_KEY")
+
+    if not api_token:
+        raise RuntimeError(
+            "[EODHD] API 토큰이 없습니다. 환경변수 EODHD_API_KEY를 설정하거나 "
+            "fetch_news_from_eodhd(...)에 api_token 인자로 넘겨 주세요."
+        )
+
+    url = "https://eodhd.com/api/news"
+    params = {
+        "s": ticker,                           # 예: 'NVDA.US'
+        "from": start.strftime("%Y-%m-%d"),
+        "to": end.strftime("%Y-%m-%d"),
+        "api_token": api_token,
+        "fmt": "json",
+        "limit": limit,
+    }
+
+    resp = requests.get(url, params=params, timeout=10)
+    resp.raise_for_status()
+
+    data = resp.json()
+    if not isinstance(data, list):
+        # EODHD가 에러 메시지를 dict로 줄 때 대비
+        print("[EODHD] Unexpected response:", data)
+        return []
+
+    return data
 
 class EODHDNewsClient:
     """

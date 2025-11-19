@@ -1,124 +1,157 @@
-# core\sentimental_classes\news.py
+# core/sentimental_classes/news.py
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+from typing import Dict, Any, List
 import os
-from typing import List
+import json
+from typing import Tuple
 import pandas as pd
 
-
-def _ensure_date_col(df: pd.DataFrame, col: str = "Date") -> pd.DataFrame:
-    """Date 컬럼을 date 타입으로 통일."""
-    df = df.copy()
-    df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
-    return df
+from core.sentimental_classes.finbert_utils import FinBertScorer
+from core.sentimental_classes.eodhd_client import fetch_news_from_eodhd
 
 
-def _fill_missing_cols(df: pd.DataFrame, cols: List[str], fill_value=0.0) -> pd.DataFrame:
-    """없는 컬럼은 생성하고, 있는 컬럼은 결측을 채운다."""
-    df = df.copy()
-    for c in cols:
-        if c not in df.columns:
-            df[c] = fill_value
+def build_finbert_news_features(
+    ticker: str,
+    asof_kst: date,
+    base_dir: str = os.path.join("data", "raw", "news"),
+) -> Dict[str, Any]:
+    """
+    특정 종목에 대해 최근 7일간 뉴스 감성 피처를 계산한다.
+
+    반환 예시:
+    {
+        "ticker": "NVDA",
+        "asof": "2025-11-19",
+        "news_count_7d": 23,
+        "sentiment_mean_7d": 0.12,
+        "sentiment_vol_7d": 0.35,
+        "sentiment_trend_7d": -0.05,
+    }
+    """
+
+    scorer = FinBertScorer()
+
+    end_date = asof_kst
+    start_date = asof_kst - timedelta(days=7)
+
+    os.makedirs(base_dir, exist_ok=True)
+    cache_name = f"{ticker}_{start_date:%Y-%m-%d}_{end_date:%Y-%m-%d}.json"
+    cache_path = os.path.join(base_dir, cache_name)
+
+    # 1) 캐시가 있으면 먼저 사용
+    if os.path.exists(cache_path):
+        with open(cache_path, "r", encoding="utf-8") as f:
+            raw_news: List[Dict[str, Any]] = json.load(f)
+    else:
+        # 2) 없으면 EODHD에서 뉴스 수집
+        raw_news = fetch_news_from_eodhd(ticker, start_date, end_date)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(raw_news, f, ensure_ascii=False)
+
+    # 뉴스가 아예 없으면 0 반환 (이 경우만 0 허용)
+    if not raw_news:
+        return {
+            "ticker": ticker,
+            "asof": end_date.isoformat(),
+            "news_count_7d": 0,
+            "sentiment_mean_7d": 0.0,
+            "sentiment_vol_7d": 0.0,
+            "sentiment_trend_7d": 0.0,
+        }
+
+    rows = []
+    for item in raw_news:
+        title = item.get("title") or ""
+        text = item.get("content") or item.get("description") or ""
+
+        scored = scorer.score(title + " " + text)
+
+        # 너가 방금 출력한 형태: [{'pos':..., 'neg':..., 'neu':..., 'score': ...}]
+        if isinstance(scored, list) and scored:
+            s = float(scored[0].get("score", 0.0))
+        elif isinstance(scored, dict):
+            s = float(scored.get("score", 0.0))
         else:
-            df[c] = df[c].fillna(fill_value)
-    return df
+            continue
 
+        # 날짜 파싱 (형식이 다양할 수 있어서 앞 10자리만 쓰는 방식)
+        dt_str = (
+            item.get("date")
+            or item.get("published")
+            or item.get("time")
+            or item.get("datetime")
+        )
+        if dt_str:
+            d = pd.to_datetime(str(dt_str)[:10]).date()
+        else:
+            d = end_date
+
+        rows.append({"date": d, "score": s})
+
+    if not rows:
+        # 뉴스 리스트는 있는데 점수 계산에 실패한 경우 -> 오류로 취급
+        raise RuntimeError(
+            "[FinBERT] 뉴스는 있으나 감성 점수를 계산하지 못했습니다. "
+            "finbert_utils.FinBertScorer.score 반환 형식을 확인해 주세요."
+        )
+
+    df = pd.DataFrame(rows)
+    df = df.sort_values("date")
+
+    news_count = int(df.shape[0])
+    sentiment_mean = float(df["score"].mean())
+    sentiment_vol = float(df["score"].std(ddof=0) or 0.0)
+
+    # 간단한 추세: 앞 절반 평균 vs 뒤 절반 평균 차이
+    mid = max(1, len(df) // 2)
+    early_mean = float(df.iloc[:mid]["score"].mean())
+    late_mean = float(df.iloc[mid:]["score"].mean())
+    sentiment_trend = late_mean - early_mean
+
+    feats = {
+        "ticker": ticker,
+        "asof": end_date.isoformat(),
+        "news_count_7d": news_count,
+        "sentiment_mean_7d": sentiment_mean,
+        "sentiment_vol_7d": sentiment_vol,
+        "sentiment_trend_7d": sentiment_trend,
+    }
+
+    print(
+        f"{ticker}의 최근 7일 감성 평균은 {sentiment_mean:.3f}이며 "
+        f"뉴스 개수(7d)는 {news_count}건입니다. "
+        f"감성 변동성(vol_7d)={sentiment_vol:.3f}, "
+        f"감성 추세(trend_7d)={sentiment_trend:.3f}입니다."
+    )
+
+    return feats
 
 def merge_price_with_news_features(
     df_price: pd.DataFrame,
     ticker: str,
-    *,
-    window: int = 7,
-    show_tail: bool = False,
-    news_features_path: str | None = None,
-) -> pd.DataFrame:
+    asof_kst: date,
+    base_dir: str = os.path.join("data", "raw", "news"),
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
-    가격 데이터(df_price)에 뉴스 피처를 병합하고, 병합 후 '영업일 기준'으로 7일 롤링 지표를 재계산한다.
-
-    Parameters
-    ----------
-    df_price : pd.DataFrame
-        'Date' 컬럼을 가진 일자 단위 가격 데이터프레임.
-    ticker : str
-        예) 'TSLA'
-    window : int, default 7
-        7영업일 롤링 윈도우 길이.
-    show_tail : bool, default False
-        병합/재계산 후 tail(10행)을 콘솔에 출력(디버깅용).
-    news_features_path : str | None
-        수동 경로 지정 (기본: data/features/news/{TICKER}_news_features.csv)
-
-    Returns
-    -------
-    pd.DataFrame
-        뉴스 피처가 결합된 가격 데이터프레임.
+    가격 데이터프레임(df_price)에 FinBERT 기반 뉴스 피처를 붙인다.
+    - df_price: OHLCV 등 가격 시계열 (index: Datetime, columns: open/high/...)
+    - return: (확장된 df_price, news_feats dict)
     """
-    # 0) 파일 경로 확인
-    path = news_features_path or os.path.join(
-        "data", "features", "news", f"{ticker.upper()}_news_features.csv"
+
+    news_feats = build_finbert_news_features(
+        ticker=ticker,
+        asof_kst=asof_kst,
+        base_dir=base_dir,
     )
 
-    base_cols = ["news_count_1d", "news_count_7d", "sentiment_mean_1d", "sentiment_mean_7d"]
+    # df_price에 컬럼으로 브로드캐스트 (최근 7일 요약값이라 모든 행에 동일하게 넣어도 됨)
+    df_price = df_price.copy()
+    df_price["news_count_7d"] = news_feats["news_count_7d"]
+    df_price["sentiment_mean_7d"] = news_feats["sentiment_mean_7d"]
+    df_price["sentiment_vol_7d"] = news_feats["sentiment_vol_7d"]
+    df_price["sentiment_trend_7d"] = news_feats["sentiment_trend_7d"]
 
-    # 1) 파일이 없으면 0으로 채운 컬럼 추가 후 반환
-    if not os.path.exists(path):
-        out = _ensure_date_col(df_price, "Date")
-        out = _fill_missing_cols(out, base_cols, fill_value=0.0)
-        out["news_count_1d"] = out["news_count_1d"].astype("int64")
-        out["news_count_7d"] = out["news_count_7d"].astype("int64")
-
-        if show_tail:
-            print("[after merge] (no news file) tail")
-            print(out.tail(10)[["Date"] + base_cols])
-            print()
-        return out
-
-    # 2) 뉴스 피처 로드
-    news = pd.read_csv(path, encoding="utf-8-sig")
-    news = _ensure_date_col(news, "Date")
-
-    expected_cols = [
-        "news_count_1d",
-        "news_count_7d",
-        "sentiment_sum_1d",
-        "sentiment_sum_7d",
-        "sentiment_mean_1d",
-        "sentiment_mean_7d",
-    ]
-    for c in expected_cols:
-        if c not in news.columns:
-            news[c] = 0.0
-
-    # 3) 가격 데이터와 병합
-    out = _ensure_date_col(df_price, "Date")
-    out = out.merge(news[["Date"] + expected_cols], on="Date", how="left")
-
-    # 4) 타입/결측 정리
-    for c in ["news_count_1d", "news_count_7d", "sentiment_sum_1d", "sentiment_sum_7d"]:
-        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
-    for c in ["sentiment_mean_1d", "sentiment_mean_7d"]:
-        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
-
-    # sum이 0인데 mean과 count가 있으면 sum ≈ mean * count
-    if (out["sentiment_sum_1d"] == 0).all() and (out["sentiment_mean_1d"].abs().sum() > 0) and (out["news_count_1d"].sum() > 0):
-        out["sentiment_sum_1d"] = out["sentiment_mean_1d"] * out["news_count_1d"]
-
-    # 5) 7영업일 롤링 재계산
-    out = out.sort_values("Date").copy()
-    cnt7 = out["news_count_1d"].rolling(window=window, min_periods=1).sum()
-    sum7 = out["sentiment_sum_1d"].rolling(window=window, min_periods=1).sum()
-
-    out["news_count_7d"] = cnt7.astype("int64")
-    out["sentiment_mean_7d"] = (sum7 / cnt7.replace(0, pd.NA)).fillna(0.0)
-
-    # 6) 최종 결측 방지
-    out = _fill_missing_cols(out, base_cols, fill_value=0.0)
-
-    # 7) 디버그 출력
-    if show_tail:
-        try:
-            print("[after merge] tail")
-            print(out.tail(10)[["Date"] + base_cols])
-            print()
-        except Exception:
-            pass
-
-    return out
+    return df_price, news_feats
