@@ -324,7 +324,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         self,
         X_last: torch.Tensor,
         dates: list | None = None,
-        top_k: int = 3,
+        top_k: int = 5,
         use_shap: bool = True, # 기본은 빠르게 off, 필요시 true
         shap_weight_time: float = 0.20,      # 시간 중요도에서 SHAP 가중치(임의설정)
         shap_weight_feat: float = 0.30       # 피처 중요도에서 SHAP 가중치(임의설정)
@@ -555,7 +555,8 @@ class TechnicalAgent(BaseAgent, nn.Module):
         if not isinstance(X_last, torch.Tensor):
           X_last = torch.tensor(X_last, dtype=torch.float32)
         T = X_last.shape[1]
-        dates = getattr(self.stockdata, f"{self.agent_id}_dates", [])[-T:] or [f"t-{T-1-i}" for i in range(T)]
+        # dates 수정
+        dates = getattr(self.stockdata, f"{self.agent_id}_dates", [])
 
         exp = self.explain_last(X_last, dates, top_k=5, use_shap=True)
         idea = self._pack_idea(exp)  # 항상 새로 계산
@@ -732,12 +733,25 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
         # StockData 구성
         self.stockdata = StockData(ticker=ticker)
-        if not hasattr(self.stockdata, "feature_cols"):
-            self.stockdata.feature_cols = feature_cols
+        self.stockdata.feature_cols = feature_cols
+        
+        # dates_all 구조에 따라 "마지막 윈도우" 날짜만 추출
+        if dates_all:
+            if isinstance(dates_all[0], (list, tuple)):
+                # dates_all: [ [윈도우1의 T개 날짜], [윈도우2의 T개 날짜], ... ]
+                last_dates = dates_all[-1]
+            else:
+                # 만약 1차원 리스트라면, 뒤에서 window_size만큼 사용
+                win = int(self.window_size)
+                last_dates = dates_all[-win:]
         else:
-            self.stockdata.feature_cols = feature_cols
-        setattr(self.stockdata, f"{agent_id}_dates", dates_all or [])
-
+            last_dates = []
+        
+        
+        # 전체는 *_dates_all로, 마지막 윈도우는 *_dates로 저장
+        setattr(self.stockdata, f"{agent_id}_dates_all", dates_all or [])
+        setattr(self.stockdata, f"{agent_id}_dates",     last_dates or [])
+        
         # last_price 안전 변환
         try:
             data = yf.download(ticker, period="5y", interval="1d", auto_adjust=True, progress=False)
