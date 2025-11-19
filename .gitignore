@@ -52,3 +52,8 @@ Thumbs.db
 # 노트북은 notebooks/ 폴더에만 보관
 *.ipynb
 !notebooks/*.ipynb
+
+
+# 데이터 파일 제외
+notebooks/data/
+notebooks/models/
