@@ -1,4 +1,6 @@
 import os
+from datetime import datetime
+
 import joblib
 import numpy as np
 import torch
@@ -10,6 +12,7 @@ import pandas as pd
 
 from config.agents import dir_info
 from core.macro_classes.nasdaq_100 import nasdaq100_eng
+from dateutil.relativedelta import relativedelta
 
 # 종목 리스트 (딕셔너리 값 = 티커)
 symbols = list(nasdaq100_eng.values())
@@ -38,7 +41,7 @@ class MacroLSTM(nn.Module):
         self.drop3 = nn.Dropout(dropout_rates[2])
         self.fc1 = nn.Linear(hidden_dims[2], 32)
         self.fc2 = nn.Linear(32, output_dim)
-    
+
     def forward(self, x):
         # LSTM layers
         h1, _ = self.lstm1(x)
@@ -47,10 +50,10 @@ class MacroLSTM(nn.Module):
         h2 = self.drop2(h2)
         h3, _ = self.lstm3(h2)
         h3 = self.drop3(h3)
-        
+
         # 마지막 시점만 사용 (batch, seq_len, hidden) -> (batch, hidden)
         h3_last = h3[:, -1, :]
-        
+
         # Dense layers
         out = torch.relu(self.fc1(h3_last))
         out = self.fc2(out)
@@ -89,12 +92,17 @@ class MacroAData:
         self.scaler_X_path = f"{model_dir}/scalers/{self.ticker}_{self.agent_id}_xscaler.pkl"
         self.scaler_y_path = f"{model_dir}/scalers/{self.ticker}_{self.agent_id}_yscaler.pkl"
 
+        five_years_ago = datetime.today() - relativedelta(years=5)
+        self.start_date = five_years_ago.strftime("%Y-%m-%d"),
+        self.end_date = datetime.today().strftime("%Y-%m-%d")
+
     def fetch_data(self):
         """다중 티커 데이터 다운로드"""
+
         df = yf.download(
             tickers=list(self.macro_tickers.values()),
-            start="2020-01-01",
-            end='2024-12-31',
+            start = self.start_date,
+            end= self.end_date,
             interval="1d",
             group_by="ticker",
             auto_adjust=False
@@ -152,9 +160,9 @@ class MacroAData:
     def make_close_price(self):
         # 여러 종목의 일별 종가 불러오기 (2020-01-01 ~ 2024-12-31)
         df_prices = yf.download(
-            symbols,
-            start="2020-01-01",
-            end="2025-01-03"
+            self.ticker,
+            start=self.start_date,
+            end=self.end_date,
         )["Close"]
 
         # CSV 저장
@@ -283,11 +291,11 @@ class MacroAData:
         input_dim = X_train.shape[2]
         output_dim = len([self.ticker])
         model = MacroLSTM(input_dim=input_dim, output_dim=output_dim)
-        
+
         # 디바이스 설정
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = model.to(device)
-        
+
         # Loss와 Optimizer 설정
         criterion = nn.L1Loss()  # MAE loss
         optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
@@ -299,14 +307,14 @@ class MacroAData:
         y_train_tensor = torch.FloatTensor(y_train).to(device)
         X_test_tensor = torch.FloatTensor(X_test).to(device)
         y_test_tensor = torch.FloatTensor(y_test).to(device)
-        
+
         # Validation split
         val_size = int(len(X_train_tensor) * 0.1)
         X_val_tensor = X_train_tensor[-val_size:]
         y_val_tensor = y_train_tensor[-val_size:]
         X_train_tensor = X_train_tensor[:-val_size]
         y_train_tensor = y_train_tensor[:-val_size]
-        
+
         # DataLoader 생성
         train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
         train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
@@ -320,7 +328,7 @@ class MacroAData:
         best_val_loss = float('inf')
         patience = 10
         patience_counter = 0
-        
+
         for epoch in range(epochs):
             # Training
             model.train()
@@ -332,7 +340,7 @@ class MacroAData:
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item()
-            
+
             # Validation
             model.eval()
             val_loss = 0.0
@@ -341,13 +349,13 @@ class MacroAData:
                     outputs = model(batch_X)
                     loss = criterion(outputs, batch_y)
                     val_loss += loss.item()
-            
+
             train_loss /= len(train_loader)
             val_loss /= len(val_loader)
-            
+
             if (epoch + 1) % 10 == 0 or epoch == 0:
                 print(f"Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
-            
+
             # Early stopping
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
@@ -364,7 +372,7 @@ class MacroAData:
         model.eval()
         with torch.no_grad():
             preds_scaled = model(X_test_tensor).cpu().numpy()
-        
+
         preds = scaler_y.inverse_transform(preds_scaled)
         y_test_inv = scaler_y.inverse_transform(y_test_tensor.cpu().numpy())
 
@@ -374,15 +382,15 @@ class MacroAData:
         # 디렉토리 생성
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
         os.makedirs(os.path.dirname(self.scaler_X_path), exist_ok=True)
-        
+
         # 모델 저장
         torch.save({"model_state_dict": model.state_dict()}, self.model_path)
-        
+
         # 스케일러 저장
         scaler_X.feature_names_in_ = np.array(X_all.columns)  # 로드 시에도 feature_names_in_ 속성이 복원
         joblib.dump(scaler_X, self.scaler_X_path)
         joblib.dump(scaler_y, self.scaler_y_path)
-        
+
         # 객체 속성으로도 저장 (pretrain에서 사용하기 위해)
         self.scaler_X = scaler_X
         self.scaler_y = scaler_y

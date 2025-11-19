@@ -227,7 +227,7 @@ class MacroAgent(BaseAgent, nn.Module):
             )
         
         # 매크로 데이터 수집
-        print("[INFO] MacroSentimentAgent 데이터 수집 중...")
+        print("[INFO] MacroAgent 데이터 수집 중...")
         macro_agent = MakeDatasetMacro(base_date=self.base_date,
                                        window=self.window, target_tickers=self.tickers)
         macro_agent.fetch_data()
