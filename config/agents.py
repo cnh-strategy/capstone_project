@@ -19,7 +19,7 @@ agents_info = {
             "ret_3d","mom_10","ma_200",
             "macd","bbp","adx_14",
             "obv","vol_ma_20","vol_chg","vol_20d"
-        ],
+            ],
         "feature_builder": "core.technical_classes.technical:build_features_technical", # 수정
         "input_dim": 13,
         "window_size": 55,              # lookback
@@ -40,43 +40,42 @@ agents_info = {
     },
 
     # -----------------------------------------------------------
-    # MacroAgent: 거시지표 + 시장심리 조합 모델
+    # MacroSentiAgent: 거시지표 + 시장심리 조합 모델
     #  (매크로 모듈이 없으면 코드에서 자동으로 우회되도록 구성)
     # -----------------------------------------------------------
-    "MacroAgent": {
+    "MacroSentiAgent": {
         "description": "거시경제 데이터 기반 시장 분석 모델",
         # 모델/피처 관련
-        "input_dim": 13,  # 기본값, 실제는 데이터 로드 시 결정
-        "hidden_dims": [128, 64, 32],  # LSTM 3층 hidden dimensions
-        "dropout_rates": [0.3, 0.3, 0.2],  # 각 LSTM 레이어별 dropout
+        "input_dim": 13,
+        "hidden_dim": 64,
+        "num_layers": 2,
+        "dropout": 0.1,
         "data_cols": [
             "Open", "High", "Low", "Close", "Volume",
             "returns", "sma_5", "sma_20", "rsi", "volume_z",
             "USD_KRW", "NASDAQ", "VIX"
         ],
         # 시퀀스/학습 관련
-        "window_size": 40,  # 실제 사용값
-        "epochs": 60,
-        "patience": 10,  # Early stopping patience
-        "learning_rate": 0.0005,  # 5e-4
+        "window_size": 14,
+        "epochs": 50,
+        "learning_rate": 1e-4,      # 0.0001
         "batch_size": 16,
-        "loss_fn": "L1Loss",  # Loss function type
         "period": "2y",
         "interval": "1d",
         # 스케일러
         "x_scaler": "StandardScaler",
-        "y_scaler": "MinMaxScaler",  # 실제 사용값 (feature_range=(-1, 1))
+        "y_scaler": "StandardScaler",
         # 합의/수렴 관련
         "gamma": 0.5,
         "delta_limit": 0.1,
     },
 
     # -----------------------------------------------------------
-    # SentimentalAgent: 뉴스/커뮤니티 감성 + 가격 피처 (Transformer 예시)
+    # SentimentalAgent: 뉴스/커뮤니티 감성 + 가격 피처
     # -----------------------------------------------------------
     "SentimentalAgent": {
-        "description": "투자자 심리 및 뉴스 감성 기반 시장 예측 모델 (Transformer)",
-        # 모델/피처 관련 (Transformer 예시 하이퍼파라미터)
+        "description": "투자자 심리 및 뉴스 감성 기반 시장 예측 모델",
+        # 모델/피처 관련
         "input_dim": 8,
         "d_model": 64,
         "nhead": 4,
@@ -91,14 +90,14 @@ agents_info = {
         "epochs": 50,
         "learning_rate": 5e-4,      # 0.0005
         "batch_size": 32,
-        "period": "2y",
+        "period": "5y",
         "interval": "1d",
         # 스케일러
         "x_scaler": "StandardScaler",
         "y_scaler": "StandardScaler",
         # 합의/수렴 관련
         "gamma": 0.3,               # 수렴율
-        "delta_limit": 0.05,        # (누락되어 있던 값 추가)
+        "delta_limit": 0.05,
     },
 }
 
