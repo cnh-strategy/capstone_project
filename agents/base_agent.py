@@ -8,6 +8,7 @@ from dataclasses import field
 from collections import defaultdict
 import os, json, time, requests, yfinance as yf
 from datetime import datetime
+import pandas as pd
 from dotenv import load_dotenv
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 from config.agents import agents_info, dir_info
@@ -70,6 +71,7 @@ class StockData:
     currency: Optional[str] = None
     ticker: Optional[str] = None
     feature_cols: Optional[List[str]] = field(default_factory=list)
+    macro_df: Optional[pd.DataFrame]= None  #macro X_scaled.copy()
 
 
 # ===============================================================
@@ -104,7 +106,15 @@ class BaseAgent:
         self.data_dir = data_dir
         self.model_dir = model_dir
         self.ticker = ticker
+
+        x_scaler_path = os.path.join(self.model_dir, f"{agent_id}_xscaler.pkl")
+        y_scaler_path = os.path.join(self.model_dir, f"{agent_id}_yscaler.pkl")
+
+        x_scaler = joblib.load(x_scaler_path) if os.path.exists(x_scaler_path) else None
+        y_scaler = joblib.load(y_scaler_path) if os.path.exists(y_scaler_path) else None
+
         self.scaler = DataScaler(agent_id)
+
         self.window_size = agents_info[agent_id]["window_size"]
         # 모델 폴백 우선순위
         self.preferred_models = preferred_models or ["gpt-5-mini", "gpt-4.1-mini"]

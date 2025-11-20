@@ -46,7 +46,7 @@ agents_info = {
     "MacroAgent": {
         "description": "거시경제 데이터 기반 시장 분석 모델",
         # 모델/피처 관련
-        "input_dim": 13,  # 기본값, 실제는 데이터 로드 시 결정
+        "input_dim": 2,  # 기본값, 실제는 데이터 로드 시 결정
         "hidden_dims": [128, 64, 32],  # LSTM 3층 hidden dimensions
         "dropout_rates": [0.3, 0.3, 0.2],  # 각 LSTM 레이어별 dropout
         "data_cols": [
