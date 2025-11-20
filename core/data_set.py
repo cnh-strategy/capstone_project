@@ -111,17 +111,18 @@ def _fetch_ticker_data_for_sentimental(ticker: str, period: Optional[str], inter
 # 공개 API
 # -----------------------------
 def build_dataset(
-    ticker: str,
-    save_dir: str = dir_info["data_dir"],
-    agent_id: Optional[str] = None,
-    period: Optional[str] = None,
-    interval: Optional[str] = None,
+        ticker: str,
+        save_dir: str = dir_info["data_dir"],
+        agent_id: Optional[str] = None,
+        period: Optional[str] = None,
+        interval: Optional[str] = None,
 ) -> None:
     """
-    Agent별 dataset 생성 함수
-    기존 구조 유지하지만 macro_agent 를 최신 구조와 완전 호환되게 재작성
+    debate_agent.py에서 agent_id를 넘겨주면, 여기서 분기 처리
+    - agent_id == 'MacroAgent' / '매크로' / 'macro'
+    - agent_id == 'SentimentalAgent' / '센티멘탈' / 'sentimental'
+    - agent_id == 'TechnicalAgent' / '테크니컬' / 'technical' (추후)
     """
-
     os.makedirs(save_dir, exist_ok=True)
     # 공통 RAW는 테크니컬 전용 fetch로 통일
     raw = _techds.fetch_ticker_data(
@@ -135,42 +136,16 @@ def build_dataset(
     for aid, _ in agents_info.items():
         # ---------- macro_agent ----------
         if aid in {"MacroAgent","macroagent", "macro", "매크로"}:
-            print(f"[DATASET] Building MacroAgent dataset for {ticker}")
+            if not _HAS_MACRO or macro_dataset is None:
+                raise ImportError(
+                    "macro_dataset 모듈을 찾을 수 없습니다. core/macro_classes 확인 필요 "
+                    f"details={_MACRO_IMPORT_ERROR}"
+                )
+            macro_dataset(ticker_name=ticker)
+            print(f"✅ {ticker} MacroAgent dataset saved (macro_dataset 호출 via {_MACRO_SRC})")
 
-            # macro_dataset → (X_seq, y_seq, feature_cols)
-            X_seq, y_seq, feature_cols = macro_dataset(
-                ticker_name=ticker,
-                window=agents_info["MacroAgent"].get("window_size", 40),
-                train_model=True,   # 필요 시 내부에서 학습
-            )
-
-            samples, time_steps, n_feats = X_seq.shape
-
-            # 플랫 CSV 생성
-            flattened = []
-            for sample_idx in range(samples):
-                for time_idx in range(time_steps):
-                    row = {
-                        "sample_id": sample_idx,
-                        "time_step": time_idx,
-                        "target": float(y_seq[sample_idx][0]) if time_idx == time_steps - 1 else np.nan,
-                    }
-                    # feature 컬럼 추가
-                    for feat_idx, feat_name in enumerate(feature_cols):
-                        row[feat_name] = float(X_seq[sample_idx, time_idx, feat_idx])
-                    flattened.append(row)
-
-            csv_path = os.path.join(save_dir, f"{ticker}_MacroAgent_dataset.csv")
-            _save_agent_csv(flattened, csv_path)
-
-            print(f"✅ {ticker} MacroAgent dataset saved to {csv_path}")
-
-        # ==========================================================
-        # SENTIMENTAL AGENT
-        # ==========================================================
-        elif aid.lower() in {"sentimentalagent", "sentimental", "센티멘탈"}:
-            print(f"[DATASET] SentimentalAgent building…")
-
+        # ---------- sentimental_agent ----------
+        elif aid in {"SentimentalAgent","sentimentalagent", "sentimental", "센티멘탈"}:
             df = _fetch_ticker_data_for_sentimental(ticker, period, interval)
 
             # 원본 CSV 저장(후속처리 참고용)
@@ -232,17 +207,13 @@ def build_dataset(
             raise ValueError(f"지원하지 않는 agent_id: {agent_id}")
 
 
-# -------------------------------------------------------------
-# load_dataset — MacroAgent 와 호환되도록 완전 재작성
-# -------------------------------------------------------------
-def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"]):
+def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"]) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
-    MacroAgent dataset loader (시퀀스 완전 복원)
-    - 전체 feature_cols 는 scaler_X.feature_names_in_ 기준
-    - 새 macro 구조와 완전 호환되도록 재설계
+    위에서 저장한 CSV({ticker}_{agent_id}_dataset.csv)를 다시 시퀀스로 복원
+    - 숫자형 컬럼만 사용하도록 안전 가드 추가(날짜/문자열 혼입 방지)
     """
-
-    norm = agent_id.lower()
+    # 1) 테크니컬은 전용 로더로 위임
+    norm = str(agent_id).lower()
     if norm in {"technicalagent", "technical", "테크니컬"}:
         X, y, feature_cols, _dates = _techds.load_dataset(
             ticker=ticker,
@@ -250,7 +221,7 @@ def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"
             save_dir=save_dir,
         )
         return X, y, feature_cols
-    
+
     csv_path = os.path.join(save_dir, f"{ticker}_{agent_id}_dataset.csv")
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Dataset file not found: {csv_path}")
@@ -260,24 +231,48 @@ def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"
     # 후보 피처: 플랫 CSV 기준 기본 제외 컬럼
     candidate_cols = [c for c in df.columns if c not in ["sample_id", "time_step", "target"]]
 
-    samples = df["sample_id"].nunique()
+    unique_samples = df["sample_id"].nunique()
     time_steps = df["time_step"].nunique()
 
-    # 숫자형만 사용 (문자열 방지)
-    first_block = df[df["sample_id"] == df["sample_id"].unique()[0]].sort_values("time_step")[candidate_cols]
-    numeric_feature_cols = [c for c in candidate_cols if pd.api.types.is_numeric_dtype(first_block[c])]
+    # 최초 블록(가장 작은 sample_id)에서 숫자형 컬럼만 확정
+    first_id = sorted(df["sample_id"].unique())[0]
+    first_block = df[df["sample_id"] == first_id].sort_values("time_step")[candidate_cols]
+
+    numeric_feature_cols: List[str] = []
+    for c in candidate_cols:
+        s = first_block[c]
+        if pd.api.types.is_numeric_dtype(s):
+            numeric_feature_cols.append(c)
+
+    dropped = [c for c in candidate_cols if c not in numeric_feature_cols]
+    if dropped:
+        print(f"[warn] Non-numeric features dropped in load_dataset(): {dropped}")
 
     feature_cols = numeric_feature_cols
     n_features = len(feature_cols)
 
-    X = np.zeros((samples, time_steps, n_features), dtype=np.float32)
-    y = np.zeros((samples, 1), dtype=np.float32)
+    if n_features == 0:
+        raise ValueError("No numeric feature columns found after filtering. Check your dataset builder.")
 
-    for i, sid in enumerate(sorted(df["sample_id"].unique())):
-        block = df[df["sample_id"] == sid].sort_values("time_step")
-        block_numeric = block[feature_cols].apply(pd.to_numeric, errors="coerce").fillna(method="ffill").fillna(0.0)
+    X = np.zeros((unique_samples, time_steps, n_features), dtype=np.float32)
+    y = np.zeros((unique_samples, 1), dtype=np.float32)
+
+    for i, sample_id in enumerate(sorted(df["sample_id"].unique())):
+        block = df[df["sample_id"] == sample_id].sort_values("time_step")
+
+        # 안전을 위해 숫자형 변환 강제 시도(실패 시 NaN → 이후 astype에서 에러 방지)
+        block_numeric = block[feature_cols].apply(pd.to_numeric, errors="coerce")
+        if block_numeric.isna().any().any():
+            # 남은 NaN은 직전값 채우고, 그래도 남으면 0으로
+            block_numeric = block_numeric.fillna(method="ffill").fillna(0.0)
+
         X[i] = block_numeric.to_numpy(dtype=np.float32)
-        y_vals = block["target"].drop
+
+        # 마지막 타임스텝에만 target 값이 들어가 있으므로 그 값을 사용
+        y_val = block["target"].dropna()
+        y[i, 0] = float(y_val.iloc[-1]) if not y_val.empty else np.nan
+
+    return X, y, feature_cols
 
 
 def get_latest_close_price(ticker: str, save_dir: str = dir_info["data_dir"]) -> float:

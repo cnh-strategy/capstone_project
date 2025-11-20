@@ -1,3 +1,16 @@
+# agents/debate_agent.py
+"""
+DebateAgent: Multi-Agent Debate System Orchestrator
+
+이 모듈은 여러 에이전트(TechnicalAgent, MacroAgent, SentimentalAgent) 간의
+토론을 조율하고 최종 예측을 생성합니다.
+
+주요 기능:
+- Opinion 수집: 각 에이전트의 초기 예측 수집
+- Rebuttal 생성: 에이전트 간 상호 반박/지지 메시지 생성
+- Revision: 토론 후 예측 수정
+- Ensemble: 최종 통합 예측 생성
+"""
 import os
 from config.agents import dir_info, agents_info
 
@@ -15,7 +28,7 @@ import statistics
 
 # 테크니컬 별칭으로 따로 구분
 from core.technical_classes.technical_data_set import (
-    build_dataset as build_dataset_tech, 
+    build_dataset as build_dataset_tech,
     load_dataset as load_dataset_tech,
 )
 
@@ -29,9 +42,9 @@ from core.macro_classes.macro_llm import (
 class DebateAgent(BaseAgent):
     """
     Multi-Agent Debate System Orchestrator
-    
+
     여러 에이전트 간의 토론을 조율하여 최종 예측을 생성합니다.
-    
+
     Attributes:
         agents: 에이전트 딕셔너리 (TechnicalAgent, MacroAgent, SentimentalAgent)
         rounds: 토론 라운드 수
@@ -40,23 +53,24 @@ class DebateAgent(BaseAgent):
         ticker: 분석 대상 종목 코드
         _data_built: 데이터셋 생성 여부 플래그
     """
-    
+
     def __init__(self, rounds: int = 3, ticker: str | None = None):
         """
         DebateAgent 초기화
-        
+
         Args:
             rounds: 토론 라운드 수 (기본값: 3)
             ticker: 분석 대상 종목 코드
         """
         # Config에서 window_size 가져오기
         macro_window = agents_info.get("MacroAgent", {}).get("window_size", 40)
-        
+
         self.agents = {
             "TechnicalAgent": TechnicalAgent(agent_id="TechnicalAgent", ticker=ticker),
             "MacroAgent": MacroAgent(
                 agent_id="MacroAgent",
                 ticker=ticker,
+                base_date=datetime.today(),
                 window=macro_window,  # Config에서 가져옴
             ),
             "SentimentalAgent": SentimentalAgent(ticker=ticker),
@@ -74,7 +88,7 @@ class DebateAgent(BaseAgent):
                     agent._load_model_if_exists()
                 except Exception as e:
                     print(f"[WARN] {agent.__class__.__name__} 초기 모델 로드 실패 (계속 진행): {e}")
-    
+
     def _check_agent_ready(self, agent_id: str, ticker: str) -> bool:
         """
         에이전트가 준비되었는지 확인 (모델 및 스케일러 파일 존재 여부)
@@ -87,22 +101,22 @@ class DebateAgent(BaseAgent):
             bool: 에이전트가 준비되었으면 True, 아니면 False
         """
         model_path = os.path.join(dir_info["model_dir"], f"{ticker}_{agent_id}.pt")
-        
+
         # 모델 파일 확인
         if not os.path.exists(model_path):
             return False
-        
+
         # MacroAgent는 별도 스케일러 파일 확인
         if agent_id == "MacroAgent":
             scaler_X_path = os.path.join(dir_info["model_dir"], "scalers", f"{ticker}_{agent_id}_xscaler.pkl")
             scaler_y_path = os.path.join(dir_info["model_dir"], "scalers", f"{ticker}_{agent_id}_yscaler.pkl")
             if not os.path.exists(scaler_X_path) or not os.path.exists(scaler_y_path):
                 return False
-        
+
         # 다른 Agent들도 스케일러 확인 (필요시)
         # TechnicalAgent와 SentimentalAgent는 BaseAgent의 scaler를 사용하므로
         # 별도 파일 체크는 선택적
-        
+
         return True
 
     def get_opinion(self, round: int, ticker: str = None, rebuild: bool = False, force_pretrain: bool = False):
@@ -124,7 +138,7 @@ class DebateAgent(BaseAgent):
         ticker = ticker or self.ticker
         if not ticker:
             raise ValueError("ticker가 지정되지 않았습니다.")
-        
+
         opinions = {}
 
         for agent_id, agent in self.agents.items():
@@ -132,14 +146,14 @@ class DebateAgent(BaseAgent):
             # 통일된 체크 메서드 사용
             is_ready = self._check_agent_ready(agent_id, ticker)
             needs_pretrain = force_pretrain or (not is_ready)
-            
+
             if needs_pretrain:
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] pretrain 실행 (모델/스케일러 없음)")
                 agent.pretrain()
             else:
                 model_path = os.path.join(dir_info["model_dir"], f"{ticker}_{agent_id}.pt")
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] 기존 모델 사용: {model_path}")
-            
+
             print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] searcher 실행")
             X = agent.searcher(ticker, rebuild=rebuild)
 
@@ -149,13 +163,13 @@ class DebateAgent(BaseAgent):
             print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] reviewer_draft 실행")
             opinion = agent.reviewer_draft(agent.stockdata, target)
 
-            
+
             opinions[agent_id] = opinion
             try:
                 print(f"  - {agent_id}: next_close={opinion.target.next_close:.4f}")
             except Exception:
-                pass    
-        
+                pass
+
         self.opinions[round] = opinions
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Round {round} 의견 수집 완료 ({len(opinions)} agents)")
         return opinions
@@ -228,7 +242,7 @@ class DebateAgent(BaseAgent):
                 f"get_revise(round={round}) 호출 전에 "
                 f"get_opinion(round={round-1}) 이(가) 먼저 호출되어야 합니다."
             )
-        
+
         round_revises = {}
 
         for agent_id, agent in self.agents.items():
@@ -288,7 +302,7 @@ class DebateAgent(BaseAgent):
             self._data_built = True
         else:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 데이터셋 이미 생성됨, 스킵")
-        
+
         # Round 0: 초기 Opinion 수집
         print(f"\n{'='*80}")
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Round 0: 초기 Opinion 수집 시작")
@@ -300,7 +314,7 @@ class DebateAgent(BaseAgent):
             print(f"\n{'='*80}")
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Round {round} 시작")
             print(f"{'='*80}")
-            
+
             self.get_rebuttal(round)
             self.get_revise(round)
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Round {round} 토론 완료")
@@ -311,7 +325,7 @@ class DebateAgent(BaseAgent):
         print(f"{'='*80}")
         ensemble_result = self.get_ensemble()
         print(ensemble_result)
-        
+
         return ensemble_result
 
 
@@ -337,7 +351,7 @@ class DebateAgent(BaseAgent):
         # 최종 라운드의 의견 가져오기
         final_round = max(self.opinions.keys()) if self.opinions else 0
         final_opinions = self.opinions.get(final_round, {})
-        
+
         if not final_opinions:
             print("[WARN] 최종 의견이 없습니다.")
             return {
@@ -348,10 +362,10 @@ class DebateAgent(BaseAgent):
                 "currency": "USD",
                 "last_price": None,
             }
-        
+
         final_points = [
-            float(op.target.next_close) 
-            for op in final_opinions.values() 
+            float(op.target.next_close)
+            for op in final_opinions.values()
             if op and op.target
         ]
 
