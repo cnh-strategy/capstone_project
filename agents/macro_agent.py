@@ -369,16 +369,7 @@ class MacroAgent(BaseAgent, nn.Module):
 
         # MacroAData를 사용하여 데이터 준비
         macro_data_agent = MacroAData(ticker=self.ticker)
-
-        macro_data_agent.train_only_mode = True
-
-        macro_data_agent.fetch_data()
-        macro_data_agent.add_features()
-        macro_data_agent.save_csv()  # CSV 파일 저장 (model_maker에서 필요)
-        macro_data_agent.make_close_price()  # daily_closePrice.csv 생성 (model_maker에서 필요)
-
-        # model_maker() 호출하여 merged_df 생성 및 스케일러 준비
-        macro_data_agent.model_maker()
+        macro_data_agent.model_maker()  # 학습 전체 파이프라인 실행
 
         # 스케일러 및 데이터 가져오기
         scaler_X = macro_data_agent.scaler_X if hasattr(macro_data_agent, 'scaler_X') else None
