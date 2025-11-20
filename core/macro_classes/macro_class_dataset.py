@@ -11,11 +11,7 @@ import yfinance as yf
 import pandas as pd
 
 from config.agents import dir_info
-from core.macro_classes.nasdaq_100 import nasdaq100_eng
 from dateutil.relativedelta import relativedelta
-
-# 종목 리스트 (딕셔너리 값 = 티커)
-symbols = list(nasdaq100_eng.values())
 
 
 save_dir = dir_info["data_dir"]
@@ -93,7 +89,7 @@ class MacroAData:
         self.scaler_y_path = f"{model_dir}/scalers/{self.ticker}_{self.agent_id}_yscaler.pkl"
 
         five_years_ago = datetime.today() - relativedelta(years=5)
-        self.start_date = five_years_ago.strftime("%Y-%m-%d"),
+        self.start_date = five_years_ago.strftime("%Y-%m-%d")
         self.end_date = datetime.today().strftime("%Y-%m-%d")
 
     def fetch_data(self):
@@ -125,7 +121,7 @@ class MacroAData:
             df.index.name = "Date"
 
         self.data = df
-        print(f"[MacroSentimentAgent] Data shape: {df.shape}, Columns: {len(df.columns)}")
+        print(f"[MacroAgent] Data shape: {df.shape}, Columns: {len(df.columns)}")
         return df
 
     def add_features(self):
@@ -154,7 +150,7 @@ class MacroAData:
     def save_csv(self):
         path = os.path.join(OUTPUT_DIR, f"{self.ticker}_{self.agent_id}.csv")
         self.data.to_csv(path, index=True)
-        print(f"[MacroSentimentAgent] Saved {path}")
+        print(f"[MacroAgent] Saved {path}")
 
 
     def make_close_price(self):
@@ -232,6 +228,16 @@ class MacroAData:
         # -------------------------------------------------------------
         # 4. 날짜 기준 병합
         # -------------------------------------------------------------
+
+        # ★ 추가: 병합 전 shape 출력
+        print("merge 전 price_df:", price_df.shape)
+        print("merge 전 macro_full:", macro_full.shape)
+
+        self.merged_df = pd.merge(price_df, macro_full, on='Date', how='inner').sort_values('Date').reset_index(drop=True)
+
+        # ★ 추가: 병합 후 shape 출력
+        print("merge 후 merged_df:", self.merged_df.shape)
+
         self.merged_df = pd.merge(price_df, macro_full, on='Date', how='inner').sort_values('Date').reset_index(drop=True)
         print(f"[INFO] 병합 후 데이터 shape: {self.merged_df.shape}")
 
@@ -241,6 +247,10 @@ class MacroAData:
         macro_cols = [c for c in macro_full.columns if c != 'Date']
         price_cols = [c for c in self.merged_df.columns if any(t in c for t in [self.ticker]) and ('_ret' in c or '_ma' in c)]
         feature_cols = macro_cols + price_cols
+
+        # ★ 추가: feature 컬럼 수 확인
+        print("feature_cols 개수:", len(feature_cols))
+        print("feature_cols:", feature_cols)
 
         X_all = self.merged_df[feature_cols]
 

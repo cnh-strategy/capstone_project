@@ -59,7 +59,7 @@ class MakeDatasetMacro:
             df_macro.columns = ["_".join(col).strip() for col in df_macro.columns.values]
         df_macro.reset_index(inplace=True)
         df_macro["Date"] = pd.to_datetime(df_macro["Date"])
-        print(f"[MacroSentimentAgent] Macro data: {df_macro.shape}")
+        print(f"[MacroAgent] Macro data: {df_macro.shape}")
 
         # ✅ 개별 주식 데이터 별도 수집
         price_dfs = []
@@ -91,12 +91,12 @@ class MakeDatasetMacro:
         price_df.reset_index(inplace=True)
         price_df = price_df.loc[:, ~price_df.columns.duplicated()]
 
-        print(f"[MacroSentimentAgent] Stock data: {price_df.shape}")
+        print(f"[MacroAgent] Stock data: {price_df.shape}")
 
         # ✅ 매크로 + 주가 병합
         merged_df = pd.merge(df_macro, price_df, on="Date", how="inner").fillna(method="ffill")
         self.data = merged_df
-        print(f"[MacroSentimentAgent] Data shape: {merged_df.shape}")
+        print(f"[MacroAgent] Data shape: {merged_df.shape}")
         return merged_df
 
 
@@ -137,7 +137,7 @@ class MakeDatasetMacro:
 
         df.reset_index(inplace=True)
         self.data = df
-        print(f"[MacroSentimentAgent] Feature engineering complete. Final shape: {df.shape}")
+        print(f"[MacroAgent] Feature engineering complete. Final shape: {df.shape}")
         return self.data
 
 

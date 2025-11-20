@@ -301,7 +301,7 @@ class MacroAgent(BaseAgent, nn.Module):
     # 하위 호환성 유지용 메서드들
     def fetch_macro_data(self):
         """하위 호환성 유지용"""
-        print("[INFO] MacroSentimentAgent 데이터 수집 중...")
+        print("[INFO] MacroAgent 데이터 수집 중...")
         macro_agent = MakeDatasetMacro(base_date=self.base_date,
                                        window=self.window, target_tickers=self.tickers)
         macro_agent.fetch_data()
