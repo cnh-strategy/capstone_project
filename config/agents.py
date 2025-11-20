@@ -71,11 +71,11 @@ agents_info = {
     },
 
     # -----------------------------------------------------------
-    # SentimentalAgent: 뉴스/커뮤니티 감성 + 가격 피처 (Transformer 예시)
+    # SentimentalAgent: 뉴스/커뮤니티 감성 + 가격 피처
     # -----------------------------------------------------------
     "SentimentalAgent": {
-        "description": "투자자 심리 및 뉴스 감성 기반 시장 예측 모델 (Transformer)",
-        # 모델/피처 관련 (Transformer 예시 하이퍼파라미터)
+        "description": "투자자 심리 및 뉴스 감성 기반 시장 예측 모델",
+        # 모델/피처 관련
         "input_dim": 8,
         "d_model": 64,
         "nhead": 4,
@@ -90,14 +90,14 @@ agents_info = {
         "epochs": 50,
         "learning_rate": 5e-4,      # 0.0005
         "batch_size": 32,
-        "period": "2y",
+        "period": "5y",
         "interval": "1d",
         # 스케일러
         "x_scaler": "StandardScaler",
         "y_scaler": "StandardScaler",
         # 합의/수렴 관련
         "gamma": 0.3,               # 수렴율
-        "delta_limit": 0.05,        # (누락되어 있던 값 추가)
+        "delta_limit": 0.05,
     },
 }
 
