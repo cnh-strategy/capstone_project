@@ -1,16 +1,3 @@
-# agents/debate_agent.py
-"""
-DebateAgent: Multi-Agent Debate System Orchestrator
-
-이 모듈은 여러 에이전트(TechnicalAgent, MacroAgent, SentimentalAgent) 간의
-토론을 조율하고 최종 예측을 생성합니다.
-
-주요 기능:
-- Opinion 수집: 각 에이전트의 초기 예측 수집
-- Rebuttal 생성: 에이전트 간 상호 반박/지지 메시지 생성
-- Revision: 토론 후 예측 수정
-- Ensemble: 최종 통합 예측 생성
-"""
 import os
 from config.agents import dir_info, agents_info
 
@@ -70,7 +57,6 @@ class DebateAgent(BaseAgent):
             "MacroAgent": MacroAgent(
                 agent_id="MacroAgent",
                 ticker=ticker,
-                base_date=datetime.today(),
                 window=macro_window,  # Config에서 가져옴
             ),
             "SentimentalAgent": SentimentalAgent(ticker=ticker),
