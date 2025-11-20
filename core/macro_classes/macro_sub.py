@@ -16,88 +16,109 @@ warnings.filterwarnings("ignore")
 
 model_dir: str = dir_info["model_dir"]
 
+
+import os
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import joblib
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+
 class MakeDatasetMacro:
-    def __init__(self, base_date: datetime, window: int = 40, target_tickers=None):
-        self.ticker = None
-        self.macro_df = None
-        self.macro_tickers = {
-            "SPY": "SPY", "QQQ": "QQQ", "^GSPC": "^GSPC", "^DJI": "^DJI", "^IXIC": "^IXIC",
-            "^TNX": "^TNX", "^IRX": "^IRX", "^FVX": "^FVX",
-            "^VIX": "^VIX",
-            "DX-Y.NYB": "DX-Y.NYB",
-            "EURUSD=X": "EURUSD=X", "USDJPY=X": "USDJPY=X",
-            "GC=F": "GC=F", "CL=F": "CL=F", "HG=F": "HG=F"
-        }
-        self.target_tickers = target_tickers #or ["AAPL", "MSFT", "NVDA"]
-        self.base_date = base_date
-        self.start_date = base_date - timedelta(days=window + 20)
-        self.end_date = base_date
-        self.agent_id='MacroAgent'
+    """
+    통합 매크로 데이터 생성 클래스
+    - 기존 MacroAData, MacroData, macro_sub 기능을 완전 통합
+    - 단일 티커(target_ticker) 예측 구조
+    """
+
+    def __init__(self, ticker: str, window: int = 40, model_dir: str = None):
+        self.ticker = ticker
+        self.window = window
+        self.model_dir = model_dir or dir_info["model_dir"]
+        self.scaler_X = None
+        self.scaler_y = None
+        self.agent_id = "MacroAgent"
         self.data = None
 
+        self.macro_tickers = [
+            "SPY", "QQQ", "^GSPC", "^DJI", "^IXIC",
+            "^TNX", "^IRX", "^VIX", "DX-Y.NYB", "EURUSD=X",
+            "USDJPY=X", "GC=F", "CL=F", "HG=F"
+        ]
+        self.x_scaler_path = f"{self.model_dir}/scalers/{ticker}_{self.agent_id}_xscaler.pkl"
+        self.y_scaler_path = f"{self.model_dir}/scalers/{ticker}_{self.agent_id}_yscaler.pkl"
+
+        if os.path.exists(self.x_scaler_path):
+            self.scaler_X = joblib.load(self.x_scaler_path)
+        if os.path.exists(self.y_scaler_path):
+            self.scaler_y = joblib.load(self.y_scaler_path)
+
     # -------------------------------------------------------------
-    # 1. 데이터 수집
+    # 1. 매크로 + 개별 티커 데이터 수집
     # -------------------------------------------------------------
     def fetch_data(self):
-        """매크로 자산 + 개별 티커 데이터 다운로드"""
-        print(f"[INFO] Collecting macro features ({len(self.macro_tickers)} tickers)...")
+        print(f"[INFO] Fetching macro & {self.ticker} data...")
+
+        start_date = datetime.now() - timedelta(days=5*365)
+        end_date = datetime.now()
+
+        # (1) 매크로 데이터 다운로드
         df_macro = yf.download(
-            tickers=list(self.macro_tickers.values()),
-            start=self.start_date,
-            end=self.end_date,
+            tickers=self.macro_tickers,
+            start=start_date,
+            end=end_date,
             interval="1d",
             group_by="ticker",
-            auto_adjust=False,
+            auto_adjust=True,
             progress=False
         )
 
-        # ✅ MultiIndex → 단일 인덱스 변환
+        # ✅ MultiIndex 해제
         if isinstance(df_macro.columns, pd.MultiIndex):
-            df_macro = df_macro.stack(level=0)
-            df_macro.index.names = ["Date", "Ticker"]
-            df_macro = df_macro.unstack(level="Ticker")
-            df_macro.columns = ["_".join(col).strip() for col in df_macro.columns.values]
-        df_macro.reset_index(inplace=True)
-        df_macro["Date"] = pd.to_datetime(df_macro["Date"])
-        print(f"[MacroSentimentAgent] Macro data: {df_macro.shape}")
+            # ('Close', 'SPY') → 'SPY_Close'
+            df_macro.columns = [
+                f"{c}_{t}" if isinstance(t, str) else str(t)
+                for t, c in df_macro.columns
+            ]
+        else:
+            # fallback: 단일 인덱스면 그대로
+            df_macro.columns = [str(c) for c in df_macro.columns]
 
-        # ✅ 개별 주식 데이터 별도 수집
-        price_dfs = []
-        for t in self.target_tickers:
-            self.ticker = t
-            try:
-                df_t = yf.download(t, start=self.start_date, end=self.end_date, interval="1d", progress=False)
-                df_t = df_t.rename(columns={
-                    "Open": f"Open_{t}",
-                    "High": f"High_{t}",
-                    "Low": f"Low_{t}",
-                    "Close": f"Close_{t}",
-                    "Volume": f"Volume_{t}"
-                })
-                df_t[f"{t}_ret1"] = df_t[f"Close_{t}"].pct_change()
-                df_t[f"{t}_ma5"] = df_t[f"Close_{t}"].rolling(5).mean()
-                df_t[f"{t}_ma10"] = df_t[f"Close_{t}"].rolling(10).mean()
-                price_dfs.append(df_t)
-            except Exception as e:
-                print(f"[WARN] {t} 다운로드 실패:", e)
+        # ✅ Close 컬럼만 필터링
+        close_cols = [c for c in df_macro.columns if c.endswith("_Close")]
+        df_macro = df_macro[close_cols].copy()
 
-        # ✅ 주식 데이터 병합
-        price_df = pd.concat(price_dfs, axis=1)
+        # (2) 개별 티커 데이터 다운로드
+        df_stock = yf.download(
+            self.ticker,
+            start=start_date,
+            end=end_date,
+            interval="1d",
+            auto_adjust=True,
+            progress=False
+        )
 
-        # ✅ MultiIndex 평탄화
-        if isinstance(price_df.columns, pd.MultiIndex):
-            price_df.columns = ["_".join([str(c) for c in col if c]) for col in price_df.columns]
+        if isinstance(df_stock, pd.Series):
+            df_stock = df_stock.to_frame(name=self.ticker)
+        elif "Close" in df_stock.columns:
+            df_stock = df_stock[["Close"]].rename(columns={"Close": self.ticker})
+        else:
+            raise ValueError(f"{self.ticker} 데이터에서 'Close' 컬럼을 찾을 수 없습니다.")
 
-        price_df.reset_index(inplace=True)
-        price_df = price_df.loc[:, ~price_df.columns.duplicated()]
+        # ✅ 인덱스 변환
+        df_stock.index = pd.to_datetime(df_stock.index)
+        df_macro.index = pd.to_datetime(df_macro.index)
 
-        print(f"[MacroSentimentAgent] Stock data: {price_df.shape}")
+        # ✅ 병합
+        df = pd.concat([df_stock, df_macro], axis=1)
+        df = df.dropna().fillna(method="ffill").fillna(method="bfill")
 
-        # ✅ 매크로 + 주가 병합
-        merged_df = pd.merge(df_macro, price_df, on="Date", how="inner").fillna(method="ffill")
-        self.data = merged_df
-        print(f"[MacroSentimentAgent] Data shape: {merged_df.shape}")
-        return merged_df
+        # ✅ 검증
+        if self.ticker not in df.columns:
+            raise KeyError(f"[ERROR] '{self.ticker}' 컬럼이 병합 결과에 없습니다. df.columns={df.columns.tolist()}")
+
+        self.data = df
+        return df
 
 
 
@@ -108,37 +129,99 @@ class MakeDatasetMacro:
     # -------------------------------------------------------------
     def add_features(self):
         df = self.data.copy()
-        df.set_index("Date", inplace=True)
 
-        # (1) 매크로 피처
-        for ticker in self.macro_tickers.values():
-            col_name = f"{ticker}_Close"
-            if col_name in df.columns:
-                df[f"{ticker}_ret_1d"] = df[col_name].pct_change()
+        # 수익률, 스프레드, 리스크 피처
+        df["ret_1d"] = df[self.ticker].pct_change()
+        if "^TNX" in df.columns and "^IRX" in df.columns:
+            df["yield_spread"] = df["^TNX"] - df["^IRX"]
+        if "SPY" in df.columns and "DX-Y.NYB" in df.columns and "^VIX" in df.columns:
+            df["risk_sentiment"] = df["SPY"] - df["DX-Y.NYB"] - df["^VIX"]
 
-        if "^TNX_Close" in df.columns and "^IRX_Close" in df.columns:
-            df["Yield_spread"] = df["^TNX_Close"] - df["^IRX_Close"]
+        df = df.dropna().fillna(method="ffill").fillna(method="bfill")
 
-        if "SPY_ret_1d" in df.columns and "DX-Y.NYB_ret_1d" in df.columns and "^VIX_ret_1d" in df.columns:
-            df["Risk_Sentiment"] = df["SPY_ret_1d"] - df["DX-Y.NYB_ret_1d"] - df["^VIX_ret_1d"]
-
-        # (2) 결측치 처리
-        df = df.fillna(method="ffill").fillna(method="bfill")
-
-        # (3) 스케일러 순서 맞추기
-        try:
-            from joblib import load
-            scaler_X = load(f"{model_dir}/scalers/{self.ticker}_{self.agent_id}_xscaler.pkl")
-            feature_order = list(scaler_X.feature_names_in_)
-            df = df.reindex(columns=feature_order, fill_value=0)
-        except Exception as e:
-            print("[WARN] feature order sync skipped:", e)
-            df = df.reindex(sorted(df.columns), axis=1)
-
-        df.reset_index(inplace=True)
         self.data = df
-        print(f"[MacroSentimentAgent] Feature engineering complete. Final shape: {df.shape}")
-        return self.data
+        return df
+
+    # -------------------------------------------------------------
+    # 3. 학습 데이터셋 생성
+    # -------------------------------------------------------------
+    def build_trainset(self):
+        df = self.data.copy()
+
+        # 1️⃣ feature 목록 추출
+        features = [c for c in df.columns if c != self.ticker]
+
+        # 2️⃣ feature 이름 평탄화 (멀티인덱스 → 문자열)
+        clean_features = []
+        for f in features:
+            if isinstance(f, tuple):
+                # ('NVDA', 'ret_1d') → 'NVDA_ret_1d'
+                clean_features.append("_".join([str(x) for x in f if x]))
+            else:
+                clean_features.append(str(f))
+
+        # 3️⃣ 수익률(target)
+        y = df[self.ticker].pct_change().shift(-1)
+        y = y.dropna()
+        df = df.iloc[1:]
+
+        X = df[features].values
+        y = y.values.reshape(-1, 1)
+
+        # ✅ 시퀀스 형태로 변환
+        X_seq, y_seq = [], []
+        for i in range(len(X) - self.window):
+            X_seq.append(X[i:i + self.window])
+            y_seq.append(y[i + self.window])
+        X_seq, y_seq = np.array(X_seq), np.array(y_seq)
+
+        # ✅ DataFrame 기반 스케일링 (feature_names_in_ 유지)
+        feature_df = pd.DataFrame(X.reshape(-1, X.shape[-1]), columns=clean_features)
+
+        # ✅ 스케일러 학습
+        self.scaler_X = StandardScaler().fit(feature_df)
+        self.scaler_y = MinMaxScaler().fit(y)
+
+        # ✅ 스케일러 저장
+        os.makedirs(f"{self.model_dir}/scalers", exist_ok=True)
+        joblib.dump(self.scaler_X, f"{self.model_dir}/scalers/{self.ticker}_{self.agent_id}_xscaler.pkl")
+        joblib.dump(self.scaler_y, f"{self.model_dir}/scalers/{self.ticker}_{self.agent_id}_yscaler.pkl")
+
+        # ✅ 스케일 적용 시에도 동일한 clean_features 사용
+        X_scaled = np.array([
+            self.scaler_X.transform(pd.DataFrame(seq, columns=clean_features)) for seq in X_seq
+        ])
+        y_scaled = self.scaler_y.transform(y_seq)
+
+        return X_scaled, y_scaled, clean_features
+
+
+
+    # -------------------------------------------------------------
+    # 4. 예측용 데이터셋 생성
+    # -------------------------------------------------------------
+    def build_predictset(self):
+        df = self.data.copy()
+        features = [c for c in df.columns if c != self.ticker]
+
+        X = df[features].values[-self.window:]
+
+        # ✅ 스케일러 로드
+        if self.scaler_X is None:
+            if not os.path.exists(self.x_scaler_path):
+                raise FileNotFoundError(f"스케일러 파일을 찾을 수 없습니다: {self.x_scaler_path}")
+            self.scaler_X = joblib.load(self.x_scaler_path)
+
+        if self.scaler_y is None and os.path.exists(self.y_scaler_path):
+            self.scaler_y = joblib.load(self.y_scaler_path)
+
+        # ✅ 스케일링 및 리쉐이프
+        X_scaled = self.scaler_X.transform(X)
+        X_scaled = X_scaled.reshape(1, self.window, -1)
+
+        print(f"[OK] Predictset 생성 완료: X={X_scaled.shape}")
+        return X_scaled, features
+
 
 
 

@@ -16,6 +16,7 @@ from core.macro_classes.macro_llm import LLMExplainer, GradientAnalyzer
 from agents.base_agent import BaseAgent, Target, StockData, Opinion, Rebuttal
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 
+from torch.utils.data import DataLoader, TensorDataset
 
 model_dir: str = dir_info["model_dir"]
 data_dir: str = dir_info["data_dir"]
@@ -80,7 +81,7 @@ class MacroAgent(BaseAgent, nn.Module):
             self.scaler_y_path = None
         
         # 모델 하이퍼파라미터 설정 (Config 기반)
-        self.input_dim = cfg.get("input_dim", 13)  # 기본값, pretrain에서 실제 값으로 업데이트
+        self.input_dim = cfg.get("input_dim", 2)  # 기본값, pretrain에서 실제 값으로 업데이트
         self.output_dim = len(self.tickers) if self.tickers else 1
         hidden_dims = cfg.get("hidden_dims", [128, 64, 32])
         dropout_rates = cfg.get("dropout_rates", [0.3, 0.3, 0.2])
@@ -198,104 +199,94 @@ class MacroAgent(BaseAgent, nn.Module):
     # -----------------------------------------------------------
     # TechnicalAgent 패턴: searcher, pretrain, predict 구현
     # -----------------------------------------------------------
-    def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
-        """MacroAgent 전용 searcher - TechnicalAgent 패턴과 유사하게 파일 기반 독립성 확보"""
-        import yfinance as yf
-        
-        agent_id = self.agent_id
+    # -------------------------------------------------------------
+    # 2. Searcher (MakeDatasetMacro 기반)
+    # -------------------------------------------------------------
+    def searcher(self, ticker=None, rebuild=False):
         ticker = ticker or self.ticker
-        if not ticker:
-            raise ValueError(f"{agent_id}: ticker가 지정되지 않았습니다.")
-        
         self.ticker = ticker
-        if ticker not in self.tickers:
-            self.tickers = [ticker]
-        
-        # 모델 경로 업데이트
-        self.model_path = os.path.join(model_dir, f"{ticker}_{agent_id}.pt")
-        self.scaler_X_path = os.path.join(model_dir, "scalers", f"{ticker}_{agent_id}_xscaler.pkl")
-        self.scaler_y_path = os.path.join(model_dir, "scalers", f"{ticker}_{agent_id}_yscaler.pkl")
-        
-        # 모델 및 스케일러 로드 (파일 기반)
-        if os.path.exists(self.scaler_X_path) and os.path.exists(self.scaler_y_path):
-            self.load_assets()
+        print(f"[INFO] MacroAgent searcher: {ticker}")
+
+        # ✅ 데이터셋 준비
+        macro_data = MakeDatasetMacro(ticker=self.ticker, window=self.window, model_dir=self.model_dir)
+        macro_data.fetch_data()
+        macro_data.add_features()
+        X_scaled, features = macro_data.build_predictset()  # (1, window, features)
+
+        # ✅ 스케일러 로드
+        self.scaler_X = joblib.load(self.scaler_X_path)
+
+        # ✅ 안전한 feature name 추출
+        if hasattr(self.scaler_X, "feature_names_in_"):
+            expected_features = list(self.scaler_X.feature_names_in_)
         else:
-            raise RuntimeError(
-                f"[{agent_id}] 스케일러 파일이 없습니다. "
-                f"pretrain()을 먼저 실행하세요.\n"
-                f"  - 스케일러 경로: {self.scaler_X_path}"
-            )
-        
-        # 매크로 데이터 수집
-        print("[INFO] MacroAgent 데이터 수집 중...")
-        macro_agent = MakeDatasetMacro(base_date=self.base_date,
-                                       window=self.window, target_tickers=self.tickers)
-        macro_agent.fetch_data()
-        macro_agent.add_features()
-        df = macro_agent.data.reset_index()
-        self.macro_df = df.tail(self.window + 5)
-        print(f"[OK] 매크로 데이터 수집 완료: {self.macro_df.shape}")
-        
-        # 피처 정리 및 스케일링
-        print("[INFO] 피처 정리 및 스케일링 중...")
-        macro_full = self.macro_df.copy()
-        feature_cols = [c for c in macro_full.columns if c != "Date"]
-        X_input = macro_full[feature_cols]
-        
-        expected_features = list(self.scaler_X.feature_names_in_)
-        
-        # 누락된 피처는 0으로 채움
-        for col in expected_features:
-            if col not in X_input.columns:
-                X_input[col] = 0
-        
-        # 불필요한 피처 제거
-        X_input = X_input[expected_features]
-        
-        print(f"[Check] 입력 피처 수: {X_input.shape[1]} / 스케일러 기준 피처 수: {len(expected_features)}")
-        
-        X_scaled = self.scaler_X.transform(X_input)
-        X_scaled = pd.DataFrame(X_scaled, columns=expected_features)
-        
-        if len(X_scaled) < self.window:
-            raise ValueError(f"데이터가 {self.window}일보다 적습니다.")
-        
-        X_seq_np = np.expand_dims(X_scaled.tail(self.window).values, axis=0)
-        X_seq = torch.FloatTensor(X_seq_np).to(self.device)
-        print("[OK] 스케일링 및 시퀀스 변환 완료")
-        self.X_scaled = X_scaled
-        
-        # StockData 구성
-        self.stockdata = StockData(ticker=ticker)
-        
-        # last_price 안전 변환
-        try:
-            data = yf.download(ticker, period="5y", interval="1d", auto_adjust=True, progress=False)
-            if data is not None and not data.empty:
-                last_val = data["Close"].iloc[-1]
-                self.stockdata.last_price = float(last_val.item() if hasattr(last_val, "item") else last_val)
-                self.last_price = self.stockdata.last_price
+            feature_path = self.scaler_X_path.replace("_xscaler.pkl", "_features.pkl")
+            if os.path.exists(feature_path):
+                expected_features = joblib.load(feature_path)
             else:
-                self.stockdata.last_price = None
-        except Exception:
-            self.stockdata.last_price = None
-        
-        # 통화코드
+                print("[WARN] feature_names_in_ 속성이 없으므로 features 정보를 직접 지정해야 합니다.")
+                expected_features = features  # fallback
+
+        # ✅ 3D → 2D 변환
+        # (1, window, feature) → (window, feature)
+        if X_scaled.ndim == 3:
+            X_scaled = X_scaled.reshape(X_scaled.shape[1], X_scaled.shape[2])
+
+        # ✅ DataFrame 생성 및 feature align
+        df = pd.DataFrame(X_scaled, columns=features)
+
+        # ✅ Feature 구조 고정 로드 추가
+        feature_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}_features.json")
+
+        if os.path.exists(feature_path):
+            try:
+                with open(feature_path, "r", encoding="utf-8") as f:
+                    saved_features = json.load(f)
+                # 누락된 피처는 0으로 채우고 순서 동일하게 정렬
+                for f_name in saved_features:
+                    if f_name not in df.columns:
+                        df[f_name] = 0.0
+                df = df.reindex(columns=saved_features)
+                print(f"[INFO] Saved feature 구조 적용 완료: {len(saved_features)}개 피처 사용")
+            except Exception as e:
+                print(f"[WARN] Feature 구조 로드 실패: {e}")
+        else:
+            print(f"[WARN] Feature 구조 파일이 없어 현재 구조 그대로 사용 ({len(df.columns)}개)")
+
+        # 누락된 피처 보정
+        for f in expected_features:
+            if f not in df.columns:
+                df[f] = 0.0
+
+        # 불필요한 피처 제거 (scaler 기준)
+        df = df[expected_features]
+
+        # ✅ 다시 3D 복원 (LSTM 입력용)
+        X_seq_np = np.expand_dims(df.values[-self.window:], axis=0)  # (1, window, feature)
+
+        # ✅ 텐서 변환
+        X_seq = torch.FloatTensor(X_seq_np).to(self.device)
+
+        # ✅ 내부 상태 저장
+        self.X_scaled = df
+
+        # ✅ StockData 객체 생성 및 보관 (TechnicalAgent 패턴 통일)
         try:
-            self.stockdata.currency = yf.Ticker(ticker).info.get("currency", "USD")
+            last_close = df.iloc[-1].mean() if not df.empty else 0.0
         except Exception:
-            self.stockdata.currency = "USD"
-        
-        # feature_dict 구성
-        df_latest = pd.DataFrame(X_scaled.tail(self.window).values, columns=expected_features)
-        feature_dict = {col: df_latest[col].tolist() for col in df_latest.columns}
-        setattr(self.stockdata, agent_id, feature_dict)
-        
-        # feature_cols도 expected_features로 업데이트
-        self.stockdata.feature_cols = expected_features
-        
-        # StockData 생성 완료 (로그는 DebateAgent에서 처리)
-        
+            last_close = 0.0
+
+        # ✅ DataFrame → dict 변환 (LLM 메시지용 구조)
+        feature_dict = {col: df[col].tolist() for col in df.columns}
+
+        self.stockdata = StockData(
+            MacroAgent=feature_dict,
+            ticker=self.ticker,
+            macro_df=self.X_scaled.copy(),
+            last_price=last_close,
+        )
+
+        print(f"[OK] searcher 완료: X_seq shape={X_seq.shape}, features={len(expected_features)}")
         return X_seq
     
     # 하위 호환성 유지용 메서드들
@@ -342,155 +333,122 @@ class MacroAgent(BaseAgent, nn.Module):
         self.X_scaled = X_scaled
         return X_seq, X_scaled
 
+    # -------------------------------------------------------------
+    # 1. Pretrain (MakeDatasetMacro 기반)
+    # -------------------------------------------------------------
     def pretrain(self):
-        """Agent별 사전학습 루틴 (모델 생성, 학습, 저장, self.model 연결까지 포함)"""
-        from torch.utils.data import DataLoader, TensorDataset
-        from datetime import datetime
-        from core.macro_classes.macro_class_dataset import MacroAData
-        
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
-        
-        # Config에서 하이퍼파라미터 가져오기
+
         cfg = agents_info.get(self.agent_id, {})
         epochs = cfg.get("epochs", 60)
         lr = cfg.get("learning_rate", 0.0005)
         batch_size = cfg.get("batch_size", 16)
         patience = cfg.get("patience", 10)
-        loss_fn_name = cfg.get("loss_fn", "L1Loss")
-        
-        # Loss 함수 선택
-        if loss_fn_name == "L1Loss":
-            loss_fn = nn.L1Loss()
-        elif loss_fn_name == "HuberLoss":
-            loss_fn = nn.HuberLoss(delta=1.0)
-        else:
-            loss_fn = nn.L1Loss()  # 기본값
-        
-        # MacroAData를 사용하여 데이터 준비
-        macro_data_agent = MacroAData(ticker=self.ticker)
-        macro_data_agent.fetch_data()
-        macro_data_agent.add_features()
-        macro_data_agent.save_csv()  # CSV 파일 저장 (model_maker에서 필요)
-        macro_data_agent.make_close_price()  # daily_closePrice.csv 생성 (model_maker에서 필요)
-        
-        # model_maker() 호출하여 merged_df 생성 및 스케일러 준비
-        macro_data_agent.model_maker()
-        
-        # 스케일러 및 데이터 가져오기
-        scaler_X = macro_data_agent.scaler_X if hasattr(macro_data_agent, 'scaler_X') else None
-        scaler_y = macro_data_agent.scaler_y if hasattr(macro_data_agent, 'scaler_y') else None
-        
-        if scaler_X is None or scaler_y is None:
-            raise RuntimeError(f"[{self.agent_id}] model_maker() 실행 후에도 스케일러가 생성되지 않았습니다.")
-        
-        # model_maker()에서 생성된 데이터 사용
-        X_train = macro_data_agent.X_train
-        y_train = macro_data_agent.y_train
-        X_test = macro_data_agent.X_test
-        y_test = macro_data_agent.y_test
-        
-        # 모델 준비 - 이미 __init__에서 생성되었지만, input_dim이 다를 경우 재생성
-        model = self
-        self._modules.pop("model", None)
-        
-        # input_dim이 실제 데이터와 다를 경우 레이어 재생성
-        actual_input_dim = X_train.shape[-1]
-        if actual_input_dim != self.input_dim:
-            print(f"[INFO] input_dim 불일치 감지: {self.input_dim} -> {actual_input_dim}, 레이어 재생성")
-            self.input_dim = actual_input_dim
-            self.output_dim = len(self.tickers)
-            hidden_dims = cfg.get("hidden_dims", [128, 64, 32])
-            dropout_rates = cfg.get("dropout_rates", [0.3, 0.3, 0.2])
-            
-            self.lstm1 = nn.LSTM(self.input_dim, hidden_dims[0], batch_first=True)
-            self.lstm2 = nn.LSTM(hidden_dims[0], hidden_dims[1], batch_first=True)
-            self.lstm3 = nn.LSTM(hidden_dims[1], hidden_dims[2], batch_first=True)
-            self.drop1 = nn.Dropout(dropout_rates[0])
-            self.drop2 = nn.Dropout(dropout_rates[1])
-            self.drop3 = nn.Dropout(dropout_rates[2])
-            self.fc1 = nn.Linear(hidden_dims[2], 32)
-            self.fc2 = nn.Linear(32, self.output_dim)
-        
-        # 스케일러 저장
-        self.scaler_X = scaler_X
-        self.scaler_y = scaler_y
+        loss_fn = nn.L1Loss()
+
+        # ✅ MakeDatasetMacro로 데이터셋 생성
+        macro_data = MakeDatasetMacro(ticker=self.ticker, window=self.window, model_dir=self.model_dir)
+        macro_data.fetch_data()
+        macro_data.add_features()
+        X_scaled, y_scaled, features = macro_data.build_trainset()
+
+        # LSTM 입력 차원은 feature 개수임 (X_scaled.shape[2])
+        self.input_dim = X_scaled.shape[2]
+        self.output_dim = len(self.tickers) if self.tickers else 1
+        hidden_dims = cfg.get("hidden_dims", [128, 64, 32])
+        dropout_rates = cfg.get("dropout_rates", [0.3, 0.3, 0.2])
+
+        # ✅ 레이어 재생성 (기존 구조 유지)
+        self.lstm1 = nn.LSTM(self.input_dim, hidden_dims[0], batch_first=True)
+        self.lstm2 = nn.LSTM(hidden_dims[0], hidden_dims[1], batch_first=True)
+        self.lstm3 = nn.LSTM(hidden_dims[1], hidden_dims[2], batch_first=True)
+        self.drop1 = nn.Dropout(dropout_rates[0])
+        self.drop2 = nn.Dropout(dropout_rates[1])
+        self.drop3 = nn.Dropout(dropout_rates[2])
+        self.fc1 = nn.Linear(hidden_dims[2], 32)
+        self.fc2 = nn.Linear(32, self.output_dim)
+
+        # ✅ 스케일러 저장
+        self.scaler_X = macro_data.scaler_X
+        self.scaler_y = macro_data.scaler_y
         os.makedirs(os.path.dirname(self.scaler_X_path), exist_ok=True)
-        joblib.dump(scaler_X, self.scaler_X_path)
-        joblib.dump(scaler_y, self.scaler_y_path)
-        
-        # 학습
-        model.train()
-        model = model.to(self.device)
-        
+        joblib.dump(self.scaler_X, self.scaler_X_path)
+        joblib.dump(self.scaler_y, self.scaler_y_path)
+
+        # ✅ 학습 루프
+        model = self.to(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        
-        X_train_tensor = torch.FloatTensor(X_train).to(self.device)
-        y_train_tensor = torch.FloatTensor(y_train).to(self.device)
-        
-        # Validation split
-        val_size = int(len(X_train_tensor) * 0.1)
-        X_val_tensor = X_train_tensor[-val_size:]
-        y_val_tensor = y_train_tensor[-val_size:]
-        X_train_tensor = X_train_tensor[:-val_size]
-        y_train_tensor = y_train_tensor[:-val_size]
-        
-        train_loader = DataLoader(TensorDataset(X_train_tensor, y_train_tensor), batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(TensorDataset(X_val_tensor, y_val_tensor), batch_size=batch_size, shuffle=False)
-        
-        # 학습 루프
+        loss_fn = nn.L1Loss()
+
+        X_tensor = torch.FloatTensor(X_scaled).to(self.device)
+        y_tensor = torch.FloatTensor(y_scaled).to(self.device)
+
+        val_size = int(len(X_tensor) * 0.1)
+        X_val, y_val = X_tensor[-val_size:], y_tensor[-val_size:]
+        X_train, y_train = X_tensor[:-val_size], y_tensor[:-val_size]
+
+        train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=batch_size)
+
         best_val_loss = float('inf')
         patience_counter = 0
-        
+
         for epoch in range(epochs):
-            # Training
             model.train()
-            train_loss = 0.0
-            for batch_X, batch_y in train_loader:
+            train_loss = 0
+            for xb, yb in train_loader:
                 optimizer.zero_grad()
-                outputs = model(batch_X)
-                loss = loss_fn(outputs, batch_y)
+                pred = model(xb)
+                loss = loss_fn(pred, yb)
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item()
-            
-            # Validation
+
+            val_loss = 0
             model.eval()
-            val_loss = 0.0
             with torch.no_grad():
-                for batch_X, batch_y in val_loader:
-                    outputs = model(batch_X)
-                    loss = loss_fn(outputs, batch_y)
-                    val_loss += loss.item()
-            
-            train_loss /= len(train_loader)
+                for xb, yb in val_loader:
+                    pred = model(xb)
+                    val_loss += loss_fn(pred, yb).item()
+
             val_loss /= len(val_loader)
-            
-            if (epoch + 1) % 10 == 0 or epoch == 0:
-                print(f"  Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
-            
-            # Early stopping
+            train_loss /= len(train_loader)
+            if (epoch + 1) % 10 == 0:
+                print(f"Epoch {epoch+1}/{epochs} - Train: {train_loss:.6f}, Val: {val_loss:.6f}")
+
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 patience_counter = 0
             else:
                 patience_counter += 1
                 if patience_counter >= patience:
-                    print(f"  Early stopping at epoch {epoch+1}")
+                    print(f"Early stopping at epoch {epoch+1}")
                     break
-        
-        # 모델 저장 및 연결
+
+        # ✅ 모델 저장
+        # ✅ (1) Feature 구조 저장 추가
+        feature_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}_features.json")
+        try:
+            # ✅ MultiIndex → 단일 문자열로 변환 후 저장
+            if hasattr(macro_data, "data"):
+                raw_cols = macro_data.data.columns
+                self.feature_cols = [
+                    c if isinstance(c, str) else "_".join([str(x) for x in c if x])
+                    for c in raw_cols
+                ]
+            else:
+                self.feature_cols = []
+
+                with open(feature_path, "w", encoding="utf-8") as f:
+                    json.dump(self.feature_cols, f, ensure_ascii=False, indent=2)
+                print(f"[OK] Feature 구조 저장 완료 → {feature_path} ({len(self.feature_cols)}개 피처)")
+        except Exception as e:
+            print(f"[WARN] Feature 구조 저장 실패: {e}")
+
+        # ✅ (2) 기존 모델 저장 코드 그대로 유지
         os.makedirs(self.model_dir, exist_ok=True)
-        model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
-        torch.save({"model_state_dict": model.state_dict()}, model_path)
-        
-        # 모델 경로 업데이트
-        self.model_path = model_path
-        
-        # nn.Module 자기 자신이면 self.model에 등록하지 않음
-        if model is not self:
-            self.model = model
-        
-        print(f" {self.agent_id} 모델 학습 및 저장 완료: {model_path}")
+        torch.save({"model_state_dict": model.state_dict()}, self.model_path)
+        print(f"[완료] {self.agent_id} 모델 저장됨: {self.model_path}")
     
     def predict(self, X, n_samples: int = 30, current_price: float = None, X_last: np.ndarray = None):
         """
@@ -576,7 +534,9 @@ class MacroAgent(BaseAgent, nn.Module):
             current_price = getattr(self.stockdata, 'last_price', None) or self.last_price or 100.0
 
         # 예측된 수익률로 종가 계산
+        # 1️⃣ 수익률 예측값 역변환
         predicted_return = float(pred_inv[-1, 0]) if pred_inv.ndim > 1 else float(pred_inv[-1])
+        # 2️⃣ 종가 복원
         predicted_price = current_price * (1 + predicted_return)
 
         # Target 생성 및 반환
@@ -1080,7 +1040,7 @@ class MacroAgent(BaseAgent, nn.Module):
         """
         # 기본 메타데이터
         t = getattr(stock_data, "ticker", "UNKNOWN")
-        ccy = getattr(stock_data, "currency", "USD").upper()
+        ccy = (getattr(stock_data, "currency", None) or "USD").upper()
         agent_data = getattr(stock_data, self.agent_id, None)
         if not agent_data or not isinstance(agent_data, dict):
             raise ValueError(f"{self.agent_id} 데이터 구조 오류: dict형 컬럼 데이터가 필요함")
