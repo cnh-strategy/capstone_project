@@ -827,10 +827,10 @@ class BaseAgent:
                 self.scaler.save(self.ticker)
             X_train, y_train = self.scaler.transform(X_train, y_train)
         else:
-            print(f"[WARN] {self.agent_id}: scaler 없음 → 비스케일링 데이터로 pretrain 진행")
+            pass
 
         X_train = torch.tensor(X_train, dtype=torch.float32)
-        y_train = torch.tensor(y_train, dtype=torch.float32)
+        y_train = torch.tensor(y_train, dtype=torch.float32).view(-1)
 
         # --------------------------
         # 모델 생성

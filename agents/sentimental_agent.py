@@ -97,13 +97,31 @@ class SentimentalAgent(BaseAgent):
         # 6) 사전 학습 weight 로드
         state_path = f"models/{ticker}_SentimentalAgent.pt"
         try:
-            state = torch.load(state_path, map_location=self.device)
-            self.model.load_state_dict(state)
+            ckpt = torch.load(state_path, map_location=self.device)
+
+            # ✅ 새 형식: {"model_state_dict": ..., "feature_cols": ..., "window_size": ...}
+            if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+                state_dict = ckpt["model_state_dict"]
+                missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
+
+                # 메타 정보도 가능하면 반영
+                if "feature_cols" in ckpt:
+                    self.feature_cols = list(ckpt["feature_cols"])
+                if "window_size" in ckpt:
+                    self.window_size = int(ckpt["window_size"])
+
             self.model.eval()
             self.model_loaded = True
             print(f"[SentimentalAgent] 사전 학습 모델 로드: {state_path}")
+
+            if missing or unexpected:
+                print("[SentimentalAgent] state_dict mismatch:",
+                      "missing:", missing, "/ unexpected:", unexpected)
+
         except Exception as e:
             print(f"[SentimentalAgent] 모델 로드 실패: {e}")
+            self.model_loaded = False
+
 
         # 7) 기타 상태 변수
         self.last_price: Optional[float] = None
@@ -115,6 +133,17 @@ class SentimentalAgent(BaseAgent):
         self.batch_size = cfg.get("batch_size", 64)
         self.gamma = cfg.get("gamma", 0.3)
         self.delta_limit = cfg.get("delta_limit", 0.05)
+    
+    def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
+        if ticker and ticker != self.ticker:
+            self.ticker = str(ticker).upper()
+
+        sd = self.run_dataset(days=365)
+        self.stockdata = sd
+
+        X_last = sd.X_seq  # (1, T, F)
+        X_tensor = torch.tensor(X_last, dtype=torch.float32).to(self.device)
+        return X_tensor
 
     def _load_model_only(self) -> None:
         """스케일러는 DataScaler가 관리하니까, 여기선 LSTM 가중치만 로드"""
@@ -383,6 +412,7 @@ class SentimentalAgent(BaseAgent):
         asof_kst: datetime,
         base_dir: str = "data/raw/news",
         days_list = [7, 30],
+        max_news_per_window: int = 500,
     ):
         from core.sentimental_classes.eodhd_client import fetch_news_from_eodhd
         from core.sentimental_classes.finbert_utils import FinBertScorer

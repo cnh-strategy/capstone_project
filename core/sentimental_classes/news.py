@@ -2,156 +2,135 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
-from typing import Dict, Any, List
-import os
-import json
-from typing import Tuple
+from typing import Optional
 import pandas as pd
 
-from core.sentimental_classes.finbert_utils import FinBertScorer
-from core.sentimental_classes.eodhd_client import fetch_news_from_eodhd
-
-
-def build_finbert_news_features(
-    ticker: str,
-    asof_kst: date,
-    base_dir: str = os.path.join("data", "raw", "news"),
-) -> Dict[str, Any]:
-    """
-    특정 종목에 대해 최근 7일간 뉴스 감성 피처를 계산한다.
-
-    반환 예시:
-    {
-        "ticker": "NVDA",
-        "asof": "2025-11-19",
-        "news_count_7d": 23,
-        "sentiment_mean_7d": 0.12,
-        "sentiment_vol_7d": 0.35,
-        "sentiment_trend_7d": -0.05,
-    }
-    """
-
-    scorer = FinBertScorer()
-
-    end_date = asof_kst
-    start_date = asof_kst - timedelta(days=7)
-
-    os.makedirs(base_dir, exist_ok=True)
-    cache_name = f"{ticker}_{start_date:%Y-%m-%d}_{end_date:%Y-%m-%d}.json"
-    cache_path = os.path.join(base_dir, cache_name)
-
-    # 1) 캐시가 있으면 먼저 사용
-    if os.path.exists(cache_path):
-        with open(cache_path, "r", encoding="utf-8") as f:
-            raw_news: List[Dict[str, Any]] = json.load(f)
-    else:
-        # 2) 없으면 EODHD에서 뉴스 수집
-        raw_news = fetch_news_from_eodhd(ticker, start_date, end_date)
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(raw_news, f, ensure_ascii=False)
-
-    # 뉴스가 아예 없으면 0 반환 (이 경우만 0 허용)
-    if not raw_news:
-        return {
-            "ticker": ticker,
-            "asof": end_date.isoformat(),
-            "news_count_7d": 0,
-            "sentiment_mean_7d": 0.0,
-            "sentiment_vol_7d": 0.0,
-            "sentiment_trend_7d": 0.0,
-        }
-
-    rows = []
-    for item in raw_news:
-        title = item.get("title") or ""
-        text = item.get("content") or item.get("description") or ""
-
-        scored = scorer.score(title + " " + text)
-
-        # 너가 방금 출력한 형태: [{'pos':..., 'neg':..., 'neu':..., 'score': ...}]
-        if isinstance(scored, list) and scored:
-            s = float(scored[0].get("score", 0.0))
-        elif isinstance(scored, dict):
-            s = float(scored.get("score", 0.0))
-        else:
-            continue
-
-        # 날짜 파싱 (형식이 다양할 수 있어서 앞 10자리만 쓰는 방식)
-        dt_str = (
-            item.get("date")
-            or item.get("published")
-            or item.get("time")
-            or item.get("datetime")
-        )
-        if dt_str:
-            d = pd.to_datetime(str(dt_str)[:10]).date()
-        else:
-            d = end_date
-
-        rows.append({"date": d, "score": s})
-
-    if not rows:
-        # 뉴스 리스트는 있는데 점수 계산에 실패한 경우 -> 오류로 취급
-        raise RuntimeError(
-            "[FinBERT] 뉴스는 있으나 감성 점수를 계산하지 못했습니다. "
-            "finbert_utils.FinBertScorer.score 반환 형식을 확인해 주세요."
-        )
-
-    df = pd.DataFrame(rows)
-    df = df.sort_values("date")
-
-    news_count = int(df.shape[0])
-    sentiment_mean = float(df["score"].mean())
-    sentiment_vol = float(df["score"].std(ddof=0) or 0.0)
-
-    # 간단한 추세: 앞 절반 평균 vs 뒤 절반 평균 차이
-    mid = max(1, len(df) // 2)
-    early_mean = float(df.iloc[:mid]["score"].mean())
-    late_mean = float(df.iloc[mid:]["score"].mean())
-    sentiment_trend = late_mean - early_mean
-
-    feats = {
-        "ticker": ticker,
-        "asof": end_date.isoformat(),
-        "news_count_7d": news_count,
-        "sentiment_mean_7d": sentiment_mean,
-        "sentiment_vol_7d": sentiment_vol,
-        "sentiment_trend_7d": sentiment_trend,
-    }
-
-    print(
-        f"{ticker}의 최근 7일 감성 평균은 {sentiment_mean:.3f}이며 "
-        f"뉴스 개수(7d)는 {news_count}건입니다. "
-        f"감성 변동성(vol_7d)={sentiment_vol:.3f}, "
-        f"감성 추세(trend_7d)={sentiment_trend:.3f}입니다."
-    )
-
-    return feats
 
 def merge_price_with_news_features(
     df_price: pd.DataFrame,
-    ticker: str,
-    asof_kst: date,
-    base_dir: str = os.path.join("data", "raw", "news"),
-) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    df_news: Optional[pd.DataFrame],
+    tz: str = "Asia/Seoul",
+) -> pd.DataFrame:
     """
-    가격 데이터프레임(df_price)에 FinBERT 기반 뉴스 피처를 붙인다.
-    - df_price: OHLCV 등 가격 시계열 (index: Datetime, columns: open/high/...)
-    - return: (확장된 df_price, news_feats dict)
-    """
+    가격 데이터(df_price)와 FinBERT가 계산된 뉴스 데이터(df_news)를 합쳐서 다음 컬럼을 생성해 붙여준다.
 
-    news_feats = build_finbert_news_features(
-        ticker=ticker,
-        asof_kst=asof_kst,
-        base_dir=base_dir,
+    - news_count_1d : 해당 일자의 뉴스 개수
+    - news_count_7d : 최근 7일(포함) 누적 뉴스 개수
+    - sentiment_mean_1d : 해당 일자의 FinBERT 감성 점수 평균
+    - sentiment_mean_7d : 최근 7일(포함) 감성 평균
+    - sentiment_vol_7d : 최근 7일(포함) 감성 점수 변동성(표준편차)
+
+    """
+    if df_news is None or len(df_news) == 0:
+        raise ValueError(
+            "[merge_price_with_news_features] df_news is empty. "
+            "뉴스가 전혀 없는 상태에서는 피처를 만들지 않습니다."
+        )
+
+    # 1) 가격 데이터 인덱스를 KST 기준 날짜로 정리
+    if not isinstance(df_price.index, pd.DatetimeIndex):
+        raise ValueError("[merge_price_with_news_features] df_price.index must be DatetimeIndex")
+
+    price_index = df_price.index
+
+    # 타임존 정규화 (tz-aware / naive 모두 대응)
+    if price_index.tz is None:
+        price_index_kst = price_index.tz_localize(tz)
+    else:
+        price_index_kst = price_index.tz_convert(tz)
+
+    # 날짜 단위로만 사용 (시·분·초 제거)
+    price_dates = price_index_kst.normalize()
+
+    # 2) 뉴스 데이터에서 날짜·감성 정보 추출
+    if "sentiment" not in df_news.columns:
+        raise ValueError("[merge_price_with_news_features] df_news must contain 'sentiment' column")
+
+    # 날짜 컬럼 후보 찾기
+    date_col = None
+    for cand in ["date", "published_at", "datetime", "time"]:
+        if cand in df_news.columns:
+            date_col = cand
+            break
+
+    if date_col is None:
+        raise ValueError(
+            "[merge_price_with_news_features] df_news must have one of "
+            "['date', 'published_at', 'datetime', 'time'] columns"
+        )
+
+    df_news = df_news.copy()
+    dt = pd.to_datetime(df_news[date_col], errors="coerce")
+
+    if dt.isna().all():
+        raise ValueError(
+            f"[merge_price_with_news_features] cannot parse datetime from df_news['{date_col}']"
+        )
+
+    # 타임존 정리
+    if dt.dt.tz is None:
+        dt_kst = dt.dt.tz_localize(tz)
+    else:
+        dt_kst = dt.dt.tz_convert(tz)
+
+    df_news["_date_kst"] = dt_kst.dt.normalize()
+
+    # 3) 일 단위 집계 (1d 피처)
+    grouped = df_news.groupby("_date_kst")["sentiment"]
+
+    df_daily = pd.DataFrame({
+        "news_count_1d": grouped.size(),
+        "sentiment_mean_1d": grouped.mean(),
+        # 1일 단위 변동성은 거의 의미 없어서 7d 변동성에만 사용할 것.
+    })
+
+    # 변동성은 우선 0으로 초기화 (1일 기준으로는 정의 X)
+    df_daily["sentiment_vol_1d"] = 0.0
+
+    # 4) 가격 날짜 인덱스 기준으로 재인덱싱
+    #    - 뉴스 없는 날은 뉴스 개수 0, 감성 0으로 처리
+    # price_dates: DatetimeIndex (KST, normalized) -> 이를 기준으로 align
+    df_daily = df_daily.reindex(price_dates)
+
+    # 뉴스 없는 날 처리
+    df_daily["news_count_1d"] = df_daily["news_count_1d"].fillna(0).astype(int)
+    df_daily["sentiment_mean_1d"] = df_daily["sentiment_mean_1d"].fillna(0.0)
+    df_daily["sentiment_vol_1d"] = df_daily["sentiment_vol_1d"].fillna(0.0)
+
+    # 5) 7일 롤링 피처 계산
+    # 최근 7일 누적 뉴스 개수
+    df_daily["news_count_7d"] = (
+        df_daily["news_count_1d"]
+        .rolling(window=7, min_periods=1)
+        .sum()
     )
 
-    # df_price에 컬럼으로 브로드캐스트 (최근 7일 요약값이라 모든 행에 동일하게 넣어도 됨)
-    df_price = df_price.copy()
-    df_price["news_count_7d"] = news_feats["news_count_7d"]
-    df_price["sentiment_mean_7d"] = news_feats["sentiment_mean_7d"]
-    df_price["sentiment_vol_7d"] = news_feats["sentiment_vol_7d"]
-    df_price["sentiment_trend_7d"] = news_feats["sentiment_trend_7d"]
+    # 최근 7일 평균 감성 점수
+    df_daily["sentiment_mean_7d"] = (
+        df_daily["sentiment_mean_1d"]
+        .rolling(window=7, min_periods=1)
+        .mean()
+    )
 
-    return df_price, news_feats
+    # 최근 7일 감성 변동성 (표준편차)
+    df_daily["sentiment_vol_7d"] = (
+        df_daily["sentiment_mean_1d"]
+        .rolling(window=7, min_periods=2)  # 최소 2일 이상 있어야 std 의미 있음
+        .std(ddof=0)
+        .fillna(0.0)
+    )
+
+    # 6) 가격 DF와 합치기 (인덱스: 원래 df_price.index 유지)
+    df_daily.index = price_index  # 원래 인덱스(시간 포함)와 align
+
+    df_merged = df_price.copy()
+    for col in [
+        "news_count_1d",
+        "news_count_7d",
+        "sentiment_mean_1d",
+        "sentiment_mean_7d",
+        "sentiment_vol_7d",
+    ]:
+        df_merged[col] = df_daily[col]
+
+    return df_merged
