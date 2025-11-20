@@ -26,7 +26,7 @@ def fetch_news_from_eodhd(
     start: date,
     end: date,
     api_token: Optional[str] = None,
-    limit: int = 100,
+    limit: int = 500,
 ) -> List[Dict[str, Any]]:
 
     if api_token is None:

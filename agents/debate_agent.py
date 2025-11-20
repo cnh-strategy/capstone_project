@@ -28,22 +28,27 @@ from core.macro_classes.macro_llm import (
 )
 
 class DebateAgent(BaseAgent):
-    def __init__(self, rounds: int = 3, ticker: str | None = None):
-        self.agents = {
-            "TechnicalAgent": TechnicalAgent(agent_id="TechnicalAgent", ticker=ticker),
-            "MacroSentiAgent": MacroPredictor(
-                agent_id="MacroSentiAgent",
-                ticker=ticker,
-                base_date=datetime.today(),
-                window=40,
-            ),
-            "SentimentalAgent": SentimentalAgent(agent_id="SentimentalAgent", ticker=ticker),
-        }
-        self.rounds = rounds
-        self.opinions: Dict[int, Dict[str, Opinion]] = {}
-        self.rebuttals: Dict[int, List[Rebuttal]] = {}
+    def __init__(self, ticker: str, llm_client=None):
         self.ticker = ticker
+        self.llm_client = llm_client
 
+        # ✅ ticker 꼭 넘겨주기
+        self.sentimental_agent = SentimentalAgent(
+            ticker=self.ticker,
+            agent_id="SentimentalAgent",
+        )
+        self.technical_agent = TechnicalAgent(
+            ticker=self.ticker,
+            agent_id="TechnicalAgent",
+        )
+
+        # 공통 루프 돌리기 편하도록 리스트에 모아두기
+        self.agents = [
+            self.sentimental_agent,
+            self.technical_agent,
+            # 나중에 MacroSentiAgent 도 추가
+            # self.macrosenti_agent,
+        ]
         # 🔹 각 에이전트별로 "있으면" 모델을 사전 로드
         for agent in self.agents.values():
             if hasattr(agent, "_load_model_if_exists"):
