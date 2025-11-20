@@ -58,16 +58,6 @@ class MacroLSTM(nn.Module):
 
 # 데이터셋과 모델 만드는 클래스
 class MacroAData:
-    """\
-    macro_agent = MacroAData()
-    macro_agent.fetch_data()
-    macro_agent.add_features()
-    macro_agent.save_csv()
-    macro_agent.make_close_price()
-
-    macro_agent.model_maker()
-    """
-
     def __init__(self,
                  ticker='NVDA'):
         self.merged_df = None
@@ -154,7 +144,7 @@ class MacroAData:
 
 
     def make_close_price(self):
-        # 여러 종목의 일별 종가 불러오기 (2020-01-01 ~ 2024-12-31)
+        # 일별 종가 불러오기
         df_prices = yf.download(
             self.ticker,
             start=self.start_date,
