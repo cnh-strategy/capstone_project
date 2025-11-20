@@ -25,29 +25,6 @@ model_dir: str = dir_info["model_dir"]
 data_dir: str = dir_info["data_dir"]
 
 class MacroAgent(BaseAgent, nn.Module):
-    """
-    MacroAgent: 거시경제 데이터 기반 주가 예측 에이전트
-
-    거시경제 지표(환율, 지수, VIX 등)와 주가 데이터를 결합하여
-    다중 자산 예측을 수행하는 에이전트입니다.
-
-    주요 기능:
-    - 실시간 거시경제 데이터 수집 및 피처 생성
-    - 3층 LSTM 네트워크를 통한 시계열 예측
-    - StandardScaler/MinMaxScaler를 활용한 데이터 정규화
-    - Gradient-based feature importance 분석
-    - LLM을 활용한 Opinion, Rebuttal, Revision 생성
-
-    Attributes:
-        agent_id: 에이전트 식별자 (기본값: "MacroAgent")
-        window: 시계열 윈도우 크기
-        hidden_dims: LSTM 레이어별 hidden dimensions
-        dropout_rates: LSTM 레이어별 dropout 비율
-        input_dim: 입력 feature 차원
-        scaler_X: 입력 데이터 스케일러
-        scaler_y: 출력 데이터 스케일러
-    """
-
     def __init__(self,
                  base_date=datetime.today(),
                  window=None,
