@@ -9,7 +9,11 @@ import joblib
 import torch
 import torch.nn as nn
 from datetime import datetime
+
+from torch.utils.data import TensorDataset, DataLoader
+
 from config.agents import dir_info, agents_info
+from core.macro_classes.macro_class_dataset import MacroAData
 from core.macro_classes.macro_sub import get_std_pred, MakeDatasetMacro
 from core.macro_classes.macro_llm import LLMExplainer, GradientAnalyzer
 # MacroLSTM은 이제 MacroAgent 내부로 통합됨
@@ -344,9 +348,6 @@ class MacroAgent(BaseAgent, nn.Module):
 
     def pretrain(self):
         """Agent별 사전학습 루틴 (모델 생성, 학습, 저장, self.model 연결까지 포함)"""
-        from torch.utils.data import DataLoader, TensorDataset
-        from datetime import datetime
-        from core.macro_classes.macro_class_dataset import MacroAData
 
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
 
@@ -368,6 +369,9 @@ class MacroAgent(BaseAgent, nn.Module):
 
         # MacroAData를 사용하여 데이터 준비
         macro_data_agent = MacroAData(ticker=self.ticker)
+
+        macro_data_agent.train_only_mode = True
+
         macro_data_agent.fetch_data()
         macro_data_agent.add_features()
         macro_data_agent.save_csv()  # CSV 파일 저장 (model_maker에서 필요)
