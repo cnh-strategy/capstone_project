@@ -34,8 +34,6 @@ def r4(x):
     except:
         return x
 
-
-
 class TechnicalAgent(BaseAgent, nn.Module):
     """
     TechnicalAgent: 기술적 분석 기반 주가 예측 에이전트
