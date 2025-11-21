@@ -3,9 +3,6 @@ from datetime import datetime
 
 import joblib
 import numpy as np
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import yfinance as yf
 import pandas as pd
@@ -18,42 +15,6 @@ save_dir = dir_info["data_dir"]
 model_dir: str = dir_info["model_dir"]
 data_dir: str = dir_info["data_dir"]
 OUTPUT_DIR = data_dir
-
-
-# 의문
-class MacroLSTM(nn.Module):
-    """
-    MacroAgent용 LSTM 모델
-    - 3층 LSTM (128 → 64 → 32)
-    - 2층 Dense (32 → output_dim)
-    """
-    def __init__(self, input_dim, hidden_dims=[128, 64, 32], output_dim=1, dropout_rates=[0.3, 0.3, 0.2]):
-        super(MacroLSTM, self).__init__()
-        self.lstm1 = nn.LSTM(input_dim, hidden_dims[0], batch_first=True)
-        self.drop1 = nn.Dropout(dropout_rates[0])
-        self.lstm2 = nn.LSTM(hidden_dims[0], hidden_dims[1], batch_first=True)
-        self.drop2 = nn.Dropout(dropout_rates[1])
-        self.lstm3 = nn.LSTM(hidden_dims[1], hidden_dims[2], batch_first=True)
-        self.drop3 = nn.Dropout(dropout_rates[2])
-        self.fc1 = nn.Linear(hidden_dims[2], 32)
-        self.fc2 = nn.Linear(32, output_dim)
-
-    def forward(self, x):
-        # LSTM layers
-        h1, _ = self.lstm1(x)
-        h1 = self.drop1(h1)
-        h2, _ = self.lstm2(h1)
-        h2 = self.drop2(h2)
-        h3, _ = self.lstm3(h2)
-        h3 = self.drop3(h3)
-
-        # 마지막 시점만 사용 (batch, seq_len, hidden) -> (batch, hidden)
-        h3_last = h3[:, -1, :]
-
-        # Dense layers
-        out = torch.relu(self.fc1(h3_last))
-        out = self.fc2(out)
-        return out
 
 
 # 데이터셋과 모델 만드는 클래스
