@@ -14,9 +14,9 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from config.agents import dir_info, agents_info
 from core.macro_classes.macro_class_dataset import MacroAData
-from core.macro_classes.macro_sub import get_std_pred, MakeDatasetMacro
-from core.macro_classes.macro_llm import LLMExplainer, GradientAnalyzer
-# MacroLSTM은 이제 MacroAgent 내부로 통합됨
+from core.macro_classes.macro_sub import MakeDatasetMacro
+from core.macro_classes.macro_llm import GradientAnalyzer
+
 from agents.base_agent import BaseAgent, Target, StockData, Opinion, Rebuttal
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 
@@ -85,33 +85,8 @@ class MacroAgent(BaseAgent, nn.Module):
         self.last_price = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def _build_model(self):
-        """
-        TechnicalAgent 패턴: nn.Module이면 자기 자신 반환
-        이미 __init__에서 레이어가 정의되어 있으므로 재생성 로직만 처리
-        """
-        # input_dim이 실제 데이터와 다를 경우 레이어 재생성
-        if self.scaler_X_path and os.path.exists(self.scaler_X_path):
-            scaler_X = joblib.load(self.scaler_X_path)
-            actual_input_dim = len(scaler_X.feature_names_in_)
-            if actual_input_dim != self.input_dim:
-                # input_dim이 다르면 레이어 재생성
-                cfg = agents_info.get(self.agent_id, {})
-                hidden_dims = cfg.get("hidden_dims", [128, 64, 32])
-                dropout_rates = cfg.get("dropout_rates", [0.3, 0.3, 0.2])
 
-                self.input_dim = actual_input_dim
-                self.lstm1 = nn.LSTM(self.input_dim, hidden_dims[0], batch_first=True)
-                self.lstm2 = nn.LSTM(hidden_dims[0], hidden_dims[1], batch_first=True)
-                self.lstm3 = nn.LSTM(hidden_dims[1], hidden_dims[2], batch_first=True)
-                self.drop1 = nn.Dropout(dropout_rates[0])
-                self.drop2 = nn.Dropout(dropout_rates[1])
-                self.drop3 = nn.Dropout(dropout_rates[2])
-                self.fc1 = nn.Linear(hidden_dims[2], 32)
-                self.fc2 = nn.Linear(32, self.output_dim)
-
-        return self  # 자기 자신 반환 (TechnicalAgent 패턴)
-
+    # get_opinion - agent.pretrain()에서 사용됨
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         모델 forward pass
@@ -134,8 +109,7 @@ class MacroAgent(BaseAgent, nn.Module):
         out = self.fc2(out)
         return out
 
-    # -------------------------------------------------------------
-    # 1. 모델 및 스케일러 로드 (하위 호환성 유지)
+
     # -------------------------------------------------------------
     def load_assets(self):
         """모델 및 스케일러 로드 (TechnicalAgent 패턴)"""
@@ -176,9 +150,7 @@ class MacroAgent(BaseAgent, nn.Module):
 
         print("[OK] 모델 및 스케일러 로드 완료")
 
-    # -----------------------------------------------------------
-    # TechnicalAgent 패턴: searcher, pretrain, predict 구현
-    # -----------------------------------------------------------
+
     def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
         """MacroAgent 전용 searcher - TechnicalAgent 패턴과 유사하게 파일 기반 독립성 확보"""
         import yfinance as yf
@@ -279,17 +251,6 @@ class MacroAgent(BaseAgent, nn.Module):
 
         return X_seq
 
-    # 하위 호환성 유지용 메서드들
-    def fetch_macro_data(self):
-        """하위 호환성 유지용"""
-        print("[INFO] MacroAgent 데이터 수집 중...")
-        macro_agent = MakeDatasetMacro(base_date=self.base_date,
-                                       window=self.window, target_tickers=self.tickers)
-        macro_agent.fetch_data()
-        macro_agent.add_features()
-        df = macro_agent.data.reset_index()
-        self.macro_df = df.tail(self.window + 5)
-        print(f"[OK] 매크로 데이터 수집 완료: {self.macro_df.shape}")
 
     def prepare_features(self):
         """하위 호환성 유지용"""
@@ -560,83 +521,10 @@ class MacroAgent(BaseAgent, nn.Module):
 
         return target
 
-    # -------------------------------------------------------------
-    # 4. 예측 수행 및 결과 변환 (하위 호환성 유지)
-    # -------------------------------------------------------------
-    def m_predictor(self, X_seq):
-        """하위 호환성 유지용 메서드"""
-        print("[INFO] 예측 수행 중...")
 
-        # 1. 모델 예측 (PyTorch)
-        model = self if isinstance(self, nn.Module) else self.model
-        model.eval()
-        with torch.no_grad():
-            if isinstance(X_seq, np.ndarray):
-                X_seq = torch.FloatTensor(X_seq).to(self.device)
-            pred_scaled = model(X_seq).cpu().numpy()
-        pred_inv = self.scaler_y.inverse_transform(pred_scaled)
 
-        # 2. 종가 추출
-        last_prices = {}
-        for t in self.tickers:
-            close_candidates = [c for c in self.macro_df.columns
-                                if c.startswith(t) and not c.endswith("_ma5") and "ret" not in c]
-            if not close_candidates:
-                raise ValueError(f"{t}의 종가 컬럼을 찾을 수 없습니다.")
-            last_prices[t] = self.macro_df[close_candidates[0]].iloc[-1]
 
-        # 3. 예측 종가 및 수익률 계산
-        records = []
-        pred_prices = {}
-        for i, t in enumerate(self.tickers):
-            pred_ret = float(pred_inv[0][i])
-            self.last_price = float(last_prices[t])
-            next_price = self.last_price * (1 + pred_ret)
-            pred_prices[t] = next_price
 
-            records.append({
-                "Ticker": t,
-                "Last_Close": self.last_price,
-                "Predicted_Close": next_price,
-                "Predicted_Return": pred_ret,
-                "Predicted_%": pred_ret * 100
-            })
-
-            print(f"{t}: 마지막 종가={self.last_price:.2f} → 예측 종가={next_price:.2f} (예상 수익률 {pred_ret*100:.2f}%)")
-
-        # 4. Monte Carlo Dropout 불확실성
-        model = self if isinstance(self, nn.Module) else self.model
-        mean_pred, std_pred, confidence, predicted_price = get_std_pred(
-            model, X_seq, n_samples=30, scaler_y=self.scaler_y)
-        confidence = 1 / (std_pred + 1e-8)
-
-        # 5. 결과 병합
-        for i, r in enumerate(records):
-            r["uncertainty"] = float(std_pred[i]) if len(std_pred) > 1 else float(std_pred[-1])
-            r["confidence"] = float(confidence[i]) if len(confidence) > 1 else float(confidence[-1])
-
-        pred_df = pd.DataFrame(records)
-        self.pred_df = pred_df
-        self.pred_prices = pred_prices
-
-        print("\n================= 예측 결과 (표) =================")
-        print(pred_df)
-
-        print("\n================= 예측 결과 (값) =================")
-        print(pred_prices)
-
-        # 단일 티커일 경우 target 요약 제공
-        target = Target(
-            next_close=float(pred_df["Predicted_Close"].iloc[-1]),
-            uncertainty=float(std_pred[-1]),
-            confidence=float(pred_df["confidence"].iloc[-1])
-        )
-
-        return pred_prices, target
-
-    # -----------------------------------------------------------
-    # TechnicalAgent 패턴: reviewer_draft, reviewer_rebut, reviewer_revise 구현
-    # -----------------------------------------------------------
     def reviewer_draft(self, stock_data: StockData = None, target: Target = None) -> Opinion:
         """(1) searcher → (2) predicter → (3) LLM(JSON Schema)로 reason 생성 → Opinion 반환"""
 
@@ -770,158 +658,7 @@ class MacroAgent(BaseAgent, nn.Module):
             round=round_index,
         )
 
-    #macro_reviewer_draft 역할 (하위 호환성 유지)
-    def macro_reviewer_draft(self, X_scaled, pred_prices, target):
-        """
-        모델 예측 이후 attribution 결과를 요약하는 함수.
-        Gradient 기반 6요약 구조 버전.
-        """
-        # 예측 일자 설정
-        base_date = datetime.today()
 
-        macro_agent = MakeDatasetMacro(base_date=self.base_date,
-                                       window=self.window, target_tickers=self.tickers)
-        macro_agent.fetch_data()
-        feature_df = macro_agent.add_features()
-        feature_df = feature_df.tail(45).reset_index(drop=True)
-
-
-        # -------------------------------------------------
-        # (1) feature 순서 재정렬 (self.scaler_X 기준)
-        # -------------------------------------------------
-        scaler_X = joblib.load(self.scaler_X_path)
-
-        expected_features = list(scaler_X.feature_names_in_)
-        for col in expected_features:
-            if col not in feature_df.columns:
-                feature_df[col] = 0
-        feature_df = feature_df.reindex(columns=expected_features, fill_value=0)
-
-        feature_names = feature_df.columns.tolist()
-
-        # ✅ numpy 변환 추가
-        if isinstance(X_scaled, pd.DataFrame):
-            X_scaled = X_scaled.to_numpy()
-
-        # ✅ LSTM 입력은 3D여야 함 (1, 40, num_features)
-        if X_scaled.ndim == 2:
-            X_scaled = np.expand_dims(X_scaled, axis=0)
-
-
-        # -------------------------------
-        # 3️⃣ Gradient  계산
-        # -------------------------------
-        # --- (run() 안의 안전 처리) ---
-        X_scaled = X_scaled.astype(np.float32)
-        X_scaled = X_scaled[:, :, :300]
-        feature_names = feature_names[:300]
-
-        print("\n3️⃣ Running GradientAnalyzer for interpretability...")
-        model = self if isinstance(self, nn.Module) else self.model
-        gradient_analyzer = GradientAnalyzer(model, feature_names)
-
-        # 변경된 run_all_gradients 리턴 구조 반영
-        importance_dict, temporal_df, consistency_df, sensitivity_df, grad_results = gradient_analyzer.run_all_gradients(X_scaled)
-
-        # stability_summary는 grad_results 내부에 포함되어 있으므로 별도 DataFrame 생성 가능
-        stability_df = pd.DataFrame(grad_results["stability_summary"])
-
-
-        # 요약 데이터 추출
-        temporal_summary = temporal_df.head().to_dict(orient="records") if temporal_df is not None else []
-        consistency_summary = consistency_df.to_dict(orient="records") if consistency_df is not None else []
-        sensitivity_summary = sensitivity_df.to_dict(orient="records") if sensitivity_df is not None else []
-        stability_summary = grad_results["stability_summary"]
-
-        # feature_summary (핵심 상위 구조)
-        feature_summary = grad_results["feature_summary"]
-
-        # -------------------------------
-        # 4️⃣ llm 생성
-        # -------------------------------
-        print("\n4️⃣ Generating explanation using LLM...")
-
-        llm  = LLMExplainer()
-        explanation = llm.generate_explanation(feature_summary, pred_prices, importance_dict,
-                                               temporal_summary, consistency_summary, sensitivity_summary,
-                                               stability_summary)
-
-        print(f"\n================= pred_prices:{pred_prices} =================")
-
-        print("\n================= LLM Explanation =================")
-        print(explanation)
-        print("===================================================")
-
-        total_json = {
-            'agent_id' : self.agent_id,
-            'target' : target,
-            'reason' : explanation
-        }
-
-        self.stockdata = StockData(
-            MacroAgent={                              # ✅ 필드명은 self.agent_id와 동일해야 함
-                'feature_importance': {
-                    'feature_summary': feature_summary,
-                    'importance_dict': importance_dict,
-                    'temporal_summary': temporal_summary,
-                    'consistency_summary': consistency_summary,
-                    'sensitivity_summary': sensitivity_summary,
-                    'stability_summary':stability_summary
-                },
-                'our_prediction': pred_prices,
-                'uncertainty': round(target.uncertainty or 0.0, 8),
-                'confidence': round(target.confidence or 0.0, 8)
-            },
-            last_price=self.last_price,
-            currency="USD"
-        )
-
-
-        # 1) 메시지 생성 (→ 여기서 ctx가 만들어짐)
-        sys_text, user_text = self._build_messages_opinion(self.stockdata, target)
-        msg_sys = self._msg("system", sys_text)
-        msg_user = self._msg("user",   user_text)
-
-        parsed = self._ask_with_fallback(msg_sys, msg_user, self.schema_obj_opinion)
-        prompt_set = OPINION_PROMPTS.get(self.agent_id, OPINION_PROMPTS[self.agent_id])
-
-
-        context = json.dumps({
-            "agent_id": self.agent_id,
-            "next_close": round(target.next_close, 3),
-            "uncertainty_sigma": round(target.uncertainty or 0.0, 8),
-            "confidence_beta": round(target.confidence or 0.0, 8),
-            "latest_data": str(self.stockdata),
-            "feature_importance": {
-                'feature_summary': feature_summary,
-                'importance_dict': importance_dict,
-                'temporal_summary': temporal_summary,
-                'consistency_summary': consistency_summary,
-                'sensitivity_summary': sensitivity_summary,
-                'stability_summary':stability_summary
-            },
-        }, ensure_ascii=False, indent=2)
-
-        sys_text = prompt_set["system"]
-        user_text = prompt_set["user"].format(context=context)
-        print(f"\n sys_text:{sys_text} \n")
-        print(f" user_text:{user_text} \n")
-
-        parsed = self._ask_with_fallback(
-            self._msg("system", sys_text),
-            self._msg("user", user_text),
-            {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}
-        )
-
-        reason = parsed.get("reason", "(사유 생성 실패)")
-
-        # reason = explanation
-
-        # 4) Opinion 기록/반환 (항상 최신 값 append)
-        self.opinions.append(Opinion(agent_id=self.agent_id, target=target, reason=reason))
-
-
-        return total_json, self.opinions[-1]
 
 
     # LLM Reasoning 메시지
@@ -988,9 +725,6 @@ class MacroAgent(BaseAgent, nn.Module):
         # user_text = OPINION_PROMPTS[self.agent_id]["user"].format(**ctx)
 
         return system_text, user_text
-
-
-
 
 
 
@@ -1108,9 +842,6 @@ class MacroAgent(BaseAgent, nn.Module):
         user_text = prompt_set["user"].format(context=json.dumps(ctx, ensure_ascii=False, indent=2))
 
         return system_text, user_text
-
-
-
 
 
 

@@ -142,8 +142,7 @@ class DebateAgent(BaseAgent):
         opinions = {}
 
         for agent_id, agent in self.agents.items():
-            # === 모든 에이전트: (조건부) pretrain → searcher → predict → reviewer_draft ===
-            # 통일된 체크 메서드 사용
+            # === 공통: 모델 준비 (필요시 pretrain) ===
             is_ready = self._check_agent_ready(agent_id, ticker)
             needs_pretrain = force_pretrain or (not is_ready)
 
@@ -154,15 +153,28 @@ class DebateAgent(BaseAgent):
                 model_path = os.path.join(dir_info["model_dir"], f"{ticker}_{agent_id}.pt")
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] 기존 모델 사용: {model_path}")
 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] searcher 실행")
-            X = agent.searcher(ticker, rebuild=rebuild)
+            # === 에이전트별 데이터/예측 파이프라인 분기 ===
+            if agent_id == "SentimentalAgent":
+                # 👉 뉴스 + 가격 기반 run_dataset + MC Dropout predict
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] [SentimentalAgent] run_dataset 실행")
+                sd = agent.run_dataset(days=365)
 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] predict 실행")
-            target = agent.predict(X)
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] [SentimentalAgent] predict 실행 (MC Dropout 포함)")
+                target = agent.predict(sd, n_samples=30)
+
+                # run_dataset에서 self.stockdata를 이미 세팅하지만, 확실하게 다시 넣어줌
+                agent.stockdata = sd
+
+            else:
+                # Technical/Macro 파이프라인 그대로 유지
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] searcher 실행")
+                X = agent.searcher(ticker, rebuild=rebuild)
+
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] predict 실행")
+                target = agent.predict(X)
 
             print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] reviewer_draft 실행")
             opinion = agent.reviewer_draft(agent.stockdata, target)
-
 
             opinions[agent_id] = opinion
             try:
@@ -276,32 +288,50 @@ class DebateAgent(BaseAgent):
 
         return round_revises
 
-    def run_dataset(self):
-        """
-        데이터셋 생성 (테스트용)
-        
-        주의: 이 메서드는 테스트용이며, 일반적으로 run()에서 자동으로 처리됩니다.
-        """
-        build_dataset(self.ticker)
-        self._data_built = True
-
     def run(self):
         """
         전체 디베이트 프로세스 실행
         
         프로세스:
-        1. 데이터셋 생성 (필요시)
+        1. (선택) 공통 데이터셋 생성 – 현재는 각 Agent 내부 pretrain/searcher 에서 처리
         2. Round 0: 초기 Opinion 수집
         3. Round 1~N: Rebuttal → Revise 반복
         4. 최종 Ensemble 예측 생성
         """
-        # 데이터셋 생성 (중복 방지)
+        # 예전에는 core.data_set.build_dataset(self.ticker)를 통해
+        # 모든 에이전트 공통 데이터셋을 한 번에 만들었지만,
+        # 현재 구조에서는 각 Agent의 pretrain()/searcher()가
+        # 개별적으로 데이터셋을 생성하므로 여기서는 스킵해도 된다.
         if not self._data_built:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 데이터셋 생성 중...")
-            build_dataset(self.ticker)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 데이터셋 생성은 각 Agent에서 처리하므로 DebateAgent.run에서는 스킵합니다.")
             self._data_built = True
         else:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 데이터셋 이미 생성됨, 스킵")
+
+        # Round 0: 초기 Opinion 수집
+        print(f"\n{'='*80}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Round 0: 초기 Opinion 수집 시작")
+        print(f"{'='*80}")
+        self.get_opinion(0, self.ticker, rebuild=False, force_pretrain=False)
+
+        # Round 1~N: Rebuttal → Revise 반복
+        for round in range(1, self.rounds + 1):
+            print(f"\n{'='*80}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Round {round} 시작")
+            print(f"{'='*80}")
+
+            self.get_rebuttal(round)
+            self.get_revise(round)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Round {round} 토론 완료")
+
+        # 최종 Ensemble 예측
+        print(f"\n{'='*80}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 최종 Ensemble 예측")
+        print(f"{'='*80}")
+        ensemble_result = self.get_ensemble()
+        print(ensemble_result)
+
+        return ensemble_result
 
         # Round 0: 초기 Opinion 수집
         print(f"\n{'='*80}")
