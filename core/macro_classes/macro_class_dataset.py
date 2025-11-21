@@ -20,7 +20,7 @@ data_dir: str = dir_info["data_dir"]
 OUTPUT_DIR = data_dir
 
 
-# PyTorch LSTM 모델 정의
+# 의문
 class MacroLSTM(nn.Module):
     """
     MacroAgent용 LSTM 모델

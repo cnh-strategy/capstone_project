@@ -85,6 +85,9 @@ class MacroAgent(BaseAgent, nn.Module):
         self.last_price = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
+
+    # 의문
     def _build_model(self):
         """
         TechnicalAgent 패턴: nn.Module이면 자기 자신 반환
@@ -112,6 +115,7 @@ class MacroAgent(BaseAgent, nn.Module):
 
         return self  # 자기 자신 반환 (TechnicalAgent 패턴)
 
+    # 의문
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         모델 forward pass
@@ -279,7 +283,7 @@ class MacroAgent(BaseAgent, nn.Module):
 
         return X_seq
 
-    # 하위 호환성 유지용 메서드들
+    # 의문
     def fetch_macro_data(self):
         """하위 호환성 유지용"""
         print("[INFO] MacroAgent 데이터 수집 중...")
@@ -560,9 +564,7 @@ class MacroAgent(BaseAgent, nn.Module):
 
         return target
 
-    # -------------------------------------------------------------
-    # 4. 예측 수행 및 결과 변환 (하위 호환성 유지)
-    # -------------------------------------------------------------
+    # 의문
     def m_predictor(self, X_seq):
         """하위 호환성 유지용 메서드"""
         print("[INFO] 예측 수행 중...")
@@ -770,7 +772,7 @@ class MacroAgent(BaseAgent, nn.Module):
             round=round_index,
         )
 
-    #macro_reviewer_draft 역할 (하위 호환성 유지)
+    # 의문
     def macro_reviewer_draft(self, X_scaled, pred_prices, target):
         """
         모델 예측 이후 attribution 결과를 요약하는 함수.
