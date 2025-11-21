@@ -1,15 +1,9 @@
-import os
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 import warnings
 
 from config.agents import dir_info
-
-'''
-예측을 위해 최신 매크로 데이터 수집하는 클래스
-몬테 카를로 생성 함수도 존재함
-'''
 
 # yfinance 진행률 바 및 경고 메시지 숨기기
 warnings.filterwarnings("ignore")
@@ -98,9 +92,6 @@ class MakeDatasetMacro:
         self.data = merged_df
         print(f"[MacroAgent] Data shape: {merged_df.shape}")
         return merged_df
-
-
-
 
 
     # -------------------------------------------------------------
