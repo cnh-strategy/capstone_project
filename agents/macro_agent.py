@@ -15,7 +15,7 @@ from torch.utils.data import TensorDataset, DataLoader
 from config.agents import dir_info, agents_info
 from core.macro_classes.macro_class_dataset import MacroAData
 from core.macro_classes.macro_sub import MakeDatasetMacro
-from core.macro_classes.macro_llm import LLMExplainer, GradientAnalyzer
+from core.macro_classes.macro_llm import GradientAnalyzer
 
 from agents.base_agent import BaseAgent, Target, StockData, Opinion, Rebuttal
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
@@ -109,8 +109,7 @@ class MacroAgent(BaseAgent, nn.Module):
         out = self.fc2(out)
         return out
 
-    # -------------------------------------------------------------
-    # 1. 모델 및 스케일러 로드 (하위 호환성 유지)
+
     # -------------------------------------------------------------
     def load_assets(self):
         """모델 및 스케일러 로드 (TechnicalAgent 패턴)"""
@@ -252,17 +251,6 @@ class MacroAgent(BaseAgent, nn.Module):
 
         return X_seq
 
-    # 의문
-    def fetch_macro_data(self):
-        """하위 호환성 유지용"""
-        print("[INFO] MacroAgent 데이터 수집 중...")
-        macro_agent = MakeDatasetMacro(base_date=self.base_date,
-                                       window=self.window, target_tickers=self.tickers)
-        macro_agent.fetch_data()
-        macro_agent.add_features()
-        df = macro_agent.data.reset_index()
-        self.macro_df = df.tail(self.window + 5)
-        print(f"[OK] 매크로 데이터 수집 완료: {self.macro_df.shape}")
 
     def prepare_features(self):
         """하위 호환성 유지용"""
