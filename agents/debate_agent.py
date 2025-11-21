@@ -39,49 +39,60 @@ from core.macro_classes.macro_llm import (
     GradientAnalyzer,
 )
 
-class DebateAgent(BaseAgent):
+class DebateAgent:
     """
     Multi-Agent Debate System Orchestrator
-
     여러 에이전트 간의 토론을 조율하여 최종 예측을 생성합니다.
-
-    Attributes:
-        agents: 에이전트 딕셔너리 (TechnicalAgent, MacroAgent, SentimentalAgent)
-        rounds: 토론 라운드 수
-        opinions: 라운드별 의견 딕셔너리 {round: {agent_id: Opinion}}
-        rebuttals: 라운드별 반박 딕셔너리 {round: [Rebuttal]}
-        ticker: 분석 대상 종목 코드
-        _data_built: 데이터셋 생성 여부 플래그
     """
 
-    def __init__(self, rounds: int = 3, ticker: str | None = None):
+    def __init__(self, ticker: str, rounds: int = 3):
         """
         DebateAgent 초기화
 
         Args:
-            rounds: 토론 라운드 수 (기본값: 3)
-            ticker: 분석 대상 종목 코드
+            ticker: 분석할 티커 예: "NVDA"
+            rounds: 토론 라운드 수
         """
-        # Config에서 window_size 가져오기
-        macro_window = agents_info.get("MacroAgent", {}).get("window_size", 40)
+        if not ticker or str(ticker).strip() == "":
+            raise ValueError("DebateAgent: ticker must not be None or empty")
 
+        # ---- 1) ticker 정리 ----
+        self.ticker = str(ticker).upper()
+        self.symbol = self.ticker
+
+        # ---- 2) config 로부터 window_size 가져오기 ----
+        macro_cfg = agents_info.get("MacroSentiAgent", {})
+        macro_window = macro_cfg.get("window_size", 40)
+
+        # ---- 3) 각 에이전트 생성 ----
         self.agents = {
-            "TechnicalAgent": TechnicalAgent(agent_id="TechnicalAgent", ticker=ticker),
-            "MacroAgent": MacroAgent(
-                agent_id="MacroAgent",
-                ticker=ticker,
-                base_date=datetime.today(),
-                window=macro_window,  # Config에서 가져옴
+            "TechnicalAgent": TechnicalAgent(
+                agent_id="TechnicalAgent",
+                ticker=self.ticker
             ),
-            "SentimentalAgent": SentimentalAgent(ticker=ticker),
+
+            "MacroSentiAgent": MacroAgent(
+                agent_id="MacroSentiAgent",
+                ticker=self.ticker,
+                base_date=datetime.today(),
+                window=macro_window,
+            ),
+
+            "SentimentalAgent": SentimentalAgent(
+                ticker=self.ticker,
+                agent_id="SentimentalAgent"
+            ),
         }
+
+        # ---- 4) Debate metadata ----
         self.rounds = rounds
         self.opinions: Dict[int, Dict[str, Opinion]] = {}
         self.rebuttals: Dict[int, List[Rebuttal]] = {}
-        self.ticker = ticker
-        self._data_built = False  # 데이터셋 생성 여부 플래그
 
-        # 각 에이전트별로 "있으면" 모델을 사전 로드
+        # 데이터셋 생성는 run()에서 Agent들이 자체적으로 함
+        self._data_built = False
+
+        # ---- 5) 각 Agent가 사전 학습된 모델이 있으면 미리 로드 ----
         for agent in self.agents.values():
             if hasattr(agent, "_load_model_if_exists"):
                 try:
@@ -298,10 +309,7 @@ class DebateAgent(BaseAgent):
         3. Round 1~N: Rebuttal → Revise 반복
         4. 최종 Ensemble 예측 생성
         """
-        # 예전에는 core.data_set.build_dataset(self.ticker)를 통해
-        # 모든 에이전트 공통 데이터셋을 한 번에 만들었지만,
-        # 현재 구조에서는 각 Agent의 pretrain()/searcher()가
-        # 개별적으로 데이터셋을 생성하므로 여기서는 스킵해도 된다.
+
         if not self._data_built:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 데이터셋 생성은 각 Agent에서 처리하므로 DebateAgent.run에서는 스킵합니다.")
             self._data_built = True

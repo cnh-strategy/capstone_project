@@ -1,47 +1,37 @@
 # agents/sentimental_agent.py
-# ===============================================================
-# SentimentalAgent: 감성(뉴스/텍스트) + LSTM 기반 예측 에이전트
-#
-# 설계 요약
-# - Pretrain : core.data_set.build_dataset / load_dataset 기반 (버전 B 패턴)
-#              DataScaler + LSTM(return*100) 학습
-# - Inference:
-#     1) run_dataset()  → yfinance + merge_price_with_news_features 로
-#                         최근 days 가격/뉴스 FEATURES_COLS 행렬 생성
-#     2) self.predict(StockData) → MC Dropout + DataScaler 기반
-#     3) build_ctx()    → A 버전 ctx 구조 (뉴스 피처는 run_dataset이 만든 7d 피처 사용)
-# - DebateAgent 호환:
-#     - BaseAgent 규약: reviewer_draft / reviewer_rebut / reviewer_revise
-#     - _build_messages_opinion / _build_messages_rebuttal / _build_messages_revision
-# ===============================================================
 
 from __future__ import annotations
 
 import os
 import json
-from dataclasses import dataclass
 from typing import Optional, Tuple, Dict, Any, List, Union
-from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 import yfinance as yf
-import joblib
 
-from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
+# BaseAgent
 from agents.base_agent import BaseAgent, StockData, Target, Opinion, Rebuttal
-from config.agents import agents_info, dir_info
-from core.data_set import load_dataset
-from core.sentimental_classes.lstm_model import SentimentalLSTM
+
+# 뉴스 병합 / 뉴스 기반 데이터셋
 from core.sentimental_classes.news import merge_price_with_news_features
+from core.sentimental_classes.pretrain_dataset_builder import build_pretrain_dataset
 
-# ===========================
-# SentimentalAgent 설정값
-# ===========================
+# LSTM 모델
+from core.sentimental_classes.lstm_model import SentimentalLSTM
 
+# dataset loader
+from core.data_set import load_dataset, build_dataset
+
+# 프롬프트
+from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
+
+from config.agents import agents_info, dir_info
+
+# ==== SentimentalAgent 전용 하이퍼파라미터 / 피처 정의 (옛 train_sentimental.py 대체) ====
 FEATURE_COLS = [
     "return_1d",
     "hl_range",
@@ -57,82 +47,50 @@ WINDOW_SIZE = 40
 HIDDEN_DIM = 64
 NUM_LAYERS = 2
 DROPOUT = 0.2
+# =============================================================================
 
-# -----------------------------------------------------------
-# dataset 시그니처 호환 유틸 (window_size 이름 차이 방어용으로 남겨둬야 할 듯)
-# -----------------------------------------------------------
-def _load_dataset_compat(ticker: str, agent_id: str, window_size: Optional[int] = None):
-    """core.data_set.load_dataset 시그니처 차이를 흡수하는 래퍼"""
-    if not ticker:
-        raise ValueError("load_dataset_compat: empty ticker")
-    try:
-        return load_dataset(ticker, agent_id, window_size=window_size)
-    except TypeError:
-        pass
-    try:
-        return load_dataset(ticker, agent_id, seq_len=window_size)
-    except TypeError:
-        pass
-    return load_dataset(ticker, agent_id)
-
-
-def _build_dataset_compat(ticker: str, agent_id: str, window_size: Optional[int] = None):
-    """core.data_set.build_dataset 시그니처 차이를 흡수하는 래퍼"""
-    if not ticker:
-        raise ValueError("build_dataset_compat: empty ticker")
-    try:
-        return build_dataset(ticker, agent_id, window_size=window_size)
-    except TypeError:
-        pass
-    try:
-        return build_dataset(ticker, agent_id, seq_len=window_size)
-    except TypeError:
-        pass
-    return build_dataset(ticker, agent_id)
-
-
-# ===========================================================
-# 본체: SentimentalAgent
-#   - BaseAgent + nn.Module
-# ===========================================================
 
 class SentimentalAgent(BaseAgent):
+
     def __init__(self, ticker, agent_id="SentimentalAgent", **kwargs):
+        super().__init__(ticker=ticker, agent_id=agent_id, **kwargs)
 
-        # 1) BaseAgent 먼저 초기화 (ticker 포함)
-        super().__init__(agent_id=agent_id, ticker=ticker, **kwargs)
-
-        # 2) 티커 정리 (필수 + 대문자)
-        if not self.ticker or str(self.ticker).strip() == "":
-            raise ValueError("SentimentalAgent: ticker is None/empty")
-        self.ticker = str(self.ticker).upper()
-        self.symbol = self.ticker
-
-        # 3) 디바이스 설정
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # 4) 버전 A 고정 하이퍼파라미터
         self.window_size = WINDOW_SIZE
         self.hidden_dim = HIDDEN_DIM
         self.num_layers = NUM_LAYERS
         self.dropout = DROPOUT
 
-        # 5) feature_cols는 dataset 로드 이후 자동 업데이트됨
         self.feature_cols = list(FEATURE_COLS)
 
-        # 6) 모델 초기 상태: 아직 생성되지 않음 → pretrain()에서 _build_model() 호출됨
         self.model = None
         self.model_loaded = False
 
+        if not getattr(self, "ticker", None):
+            self.ticker = ticker
+        if not self.ticker:
+            raise ValueError("SentimentalAgent: ticker is None/empty")
+        self.ticker = str(self.ticker).upper()
+        setattr(self, "symbol", self.ticker)
+
     # -------------------------------------------------------
-    # BaseAgent.pretrain 에서 사용할 모델 생성
-    #   - 여기서는 nn.Module 자기 자신(self)을 반환
-    #   - 데이터셋을 한번 읽어서 input_dim, feature_cols 맞춰줌
+    # PRETRAIN
+    # -------------------------------------------------------
+    def pretrain(self):
+        print(f"[SentimentalAgent] Building pretrain dataset with news for {self.ticker}...")
+        build_pretrain_dataset(self.ticker)
+
+        print(f"[SentimentalAgent] Pretraining LSTM for {self.ticker}...")
+        super().pretrain()
+
+    # -------------------------------------------------------
+    # _BUILD_MODEL  ← 반드시 클래스 내부에 존재해야 함!!!
     # -------------------------------------------------------
     def _build_model(self) -> nn.Module:
-        """BaseAgent.pretrain에서 사용할 모델 생성"""
+        """BaseAgent.pretrain에서 사용할 LSTM 모델 생성"""
 
-        # 1) 데이터셋 로드 (없으면 build 후 로드)
+        # dataset 로드 또는 생성
         try:
             X, y, cols = load_dataset(
                 ticker=self.ticker,
@@ -148,262 +106,129 @@ class SentimentalAgent(BaseAgent):
                 agent_id=self.agent_id,
             )
 
-        # 2) input_dim 및 feature_cols 설정
-        input_dim = X.shape[-1]
+        # feature_cols 자동 업데이트
         self.feature_cols = list(cols)
+        input_dim = X.shape[-1]
 
-        # 3) 실제 LSTM 모델 생성
-        net = SentimentalLSTM(
+        model = SentimentalLSTM(
             input_dim=input_dim,
             hidden_dim=self.hidden_dim,
             num_layers=self.num_layers,
             dropout=self.dropout,
         )
 
-        return net
+        return model
 
     # -------------------------------------------------------
-    # nn.Module forward
-    #   입력: x (B, T, F)
-    #   출력: (B, 1)  ← "다음날 수익률(return * 100)" 가정
-    # -------------------------------------------------------
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out, _ = self.lstm(x)           # [B, T, H]
-        out = self.drop(out[:, -1, :])  # 마지막 시점
-        out = self.fc(out)              # [B, 1]
-        return out
-
-    # -------------------------------------------------------
-    # Pretrain (BaseAgent.pretrain override)
-    #   - X, y: dataset → y * 100으로 스케일
-    #   - DataScaler 사용 (BaseAgent에서 만든 self.scaler)
-    # -------------------------------------------------------
-    # def pretrain(self):
-    #     from torch.utils.data import DataLoader, TensorDataset
-    #     from datetime import datetime as dt
-
-    #     epochs = self.epochs
-    #     lr = self.lr
-    #     batch_size = self.batch_size
-
-    #     # 1) 데이터 로드
-    #     X, y, cols = _load_dataset_compat(
-    #         self.ticker,
-    #         self.agent_id,
-    #         window_size=self.window_size,
-    #     )
-    #     print(f"[{dt.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id} ({self.ticker})")
-
-    #     split_idx = int(len(X) * 0.8)
-    #     X_train, X_val = X[:split_idx], X[split_idx:]
-    #     y_train, y_val = y[:split_idx], y[split_idx:]
-
-    #     # 타깃을 100배(%) 스케일링
-    #     y_train *= 100.0
-    #     y_val *= 100.0
-
-    #     # 스케일러 학습/저장 (BaseAgent.DataScaler)
-    #     self.scaler.fit_scalers(X_train, y_train)
-    #     self.scaler.save(self.ticker)
-
-    #     # 스케일링
-    #     X_train_scaled, y_train_scaled = self.scaler.transform(X_train, y_train)
-    #     X_train_t = torch.tensor(X_train_scaled, dtype=torch.float32)
-    #     y_train_t = torch.tensor(y_train_scaled.reshape(-1, 1), dtype=torch.float32)
-
-    #     # 실제 input_dim 확인 후 레이어 재구성
-    #     actual_input_dim = X_train_t.shape[-1]
-    #     if actual_input_dim != self.input_dim:
-    #         print(
-    #             f"[SentimentalAgent] pretrain 시 input_dim 변경: {self.input_dim} → {actual_input_dim}"
-    #         )
-    #         self.input_dim = actual_input_dim
-    #         self.lstm = nn.LSTM(
-    #             input_size=self.input_dim,
-    #             hidden_size=self.hidden_dim,
-    #             num_layers=1,
-    #             batch_first=True,
-    #         )
-    #         self.fc = nn.Linear(self.hidden_dim, 1)
-    #     self.feature_cols = list(cols)
-
-    #     self.to(self.device)
-    #     self.train()
-
-    #     optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-    #     loss_fn = torch.nn.HuberLoss(delta=1.0)
-
-    #     train_loader = DataLoader(
-    #         TensorDataset(X_train_t, y_train_t),
-    #         batch_size=batch_size,
-    #         shuffle=True,
-    #     )
-
-    #     for epoch in range(epochs):
-    #         total_loss = 0.0
-    #         for Xb, yb in train_loader:
-    #             Xb = Xb.to(self.device)
-    #             yb = yb.to(self.device)
-
-    #             y_pred = self(Xb)
-    #             loss = loss_fn(y_pred, yb)
-
-    #             optimizer.zero_grad()
-    #             loss.backward()
-    #             optimizer.step()
-    #             total_loss += loss.item()
-
-    #         if (epoch + 1) % 5 == 0:
-    #             print(
-    #                 f"  Epoch {epoch+1:03d} | Loss: {total_loss/len(train_loader):.6f}"
-    #             )
-
-    #     # 모델 저장
-    #     os.makedirs(self.model_dir, exist_ok=True)
-    #     model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
-    #     torch.save({"model_state_dict": self.state_dict()}, model_path)
-    #     print(f" {self.agent_id} 모델 학습 및 저장 완료: {model_path}")
-
-    #     self.model_loaded = True
-
-    # -------------------------------------------------------
-    # run_dataset
-    #   - yfinance 가격 + merge_price_with_news_features
-    #   - FEATURE_COLS 기준 입력 행렬 생성, (1, T, F) X_seq, StockData 생성
+    # RUN_DATASET
     # -------------------------------------------------------
     def run_dataset(self, days: int = 365) -> StockData:
         """
         최근 days일치 가격 + 뉴스 피처를 기반으로
-        1) FEATURE_COLS 입력 행렬 생성
-        2) LSTM 입력 윈도우(1, T, F) 생성
-        3) StockData 초기 스냅샷 생성 (DebateAgent/프롬프트용)
+        FEATURE_COLS 입력(1, T, F)을 만들고 StockData를 생성
         """
-        # 0) 날짜 범위 설정
+        # 0) 날짜 범위
         end = pd.Timestamp.today().normalize()
         start = end - pd.Timedelta(days=days)
 
         # 1) 가격 데이터 (yfinance)
         df_price = yf.download(self.ticker, start=start, end=end)
-
-        # yfinance MultiIndex column 대응 + 소문자 통일
         if isinstance(df_price.columns, pd.MultiIndex):
             df_price.columns = [c[0].lower() for c in df_price.columns]
         else:
             df_price.columns = [c.lower() for c in df_price.columns]
 
-        df_price = df_price.rename(
-            columns={
-                "open": "open",
-                "high": "high",
-                "low": "low",
-                "close": "close",
-                "volume": "volume",
-            }
-        )
+        df_price = df_price.rename(columns={
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "volume": "volume",
+        })
 
         df_price["date"] = df_price.index
         df_price = df_price.reset_index(drop=True)
 
-        # 2) 뉴스 + 가격 병합 (7일 집계 피처 포함)
+        # 2) 뉴스 + 가격 병합
         df_merged = merge_price_with_news_features(
             df_price=df_price,
             ticker=self.ticker,
             asof_kst=end.date(),
             base_dir=os.path.join("data", "raw", "news"),
         )
-
-        # merge_price_with_news_features 가 (df, meta) 튜플을 반환하는 경우 방어
         if isinstance(df_merged, tuple):
-            df_merged_df = df_merged[0]
+            df_feat = df_merged[0]
         else:
-            df_merged_df = df_merged
+            df_feat = df_merged
 
-        # 3) FEATURE_COLS 누락 자동 보정
-        df_feat = df_merged_df.sort_values("date").reset_index(drop=True)
+        df_feat = df_feat.sort_values("date").reset_index(drop=True)
 
-        required_cols = list(FEATURE_COLS)
-        missing = [c for c in required_cols if c not in df_feat.columns]
-        print("[SentimentalAgent.run_dataset] missing(before):", missing)
+        # ---------------------------------------
+        # FEATURE_COLS 자동 보정
+        # ---------------------------------------
+        required = list(FEATURE_COLS)
+        print("[SentimentalAgent.run_dataset] missing(before):",
+              [c for c in required if c not in df_feat.columns])
 
-        close_col = "close" if "close" in df_feat.columns else None
-        high_col = "high" if "high" in df_feat.columns else None
-        low_col = "low" if "low" in df_feat.columns else None
+        # return_1d
+        if "return_1d" not in df_feat.columns:
+            df_feat["return_1d"] = df_feat["close"].pct_change().fillna(0)
 
-        # --- return_1d: 종가 기준 1일 수익률 ---
-        if "return_1d" in missing:
-            if close_col is not None:
-                df_feat["return_1d"] = df_feat[close_col].pct_change().fillna(0.0)
-            else:
-                print(
-                    "[SentimentalAgent.run_dataset] WARN: close column not found, return_1d filled with 0.0"
-                )
-                df_feat["return_1d"] = 0.0
+        # hl_range
+        if "hl_range" not in df_feat.columns:
+            df_feat["hl_range"] = ((df_feat["high"] - df_feat["low"]) /
+                                   df_feat["close"].replace(0, np.nan)).fillna(0)
 
-        # --- hl_range: (고가-저가)/종가 ---
-        if "hl_range" in missing:
-            if high_col and low_col and close_col:
-                rng = (
-                    df_feat[high_col] - df_feat[low_col]
-                ) / df_feat[close_col].replace(0, np.nan)
-                df_feat["hl_range"] = rng.fillna(0.0)
-            else:
-                print(
-                    "[SentimentalAgent.run_dataset] WARN: high/low/close missing, hl_range filled with 0.0"
-                )
-                df_feat["hl_range"] = 0.0
-
-        # --- Volume: 소문자 volume → 대문자 Volume ---
+        # Volume (대문자)
         if "Volume" not in df_feat.columns:
-            if "volume" in df_feat.columns:
-                df_feat["Volume"] = df_feat["volume"].fillna(0.0)
-            else:
-                df_feat["Volume"] = 0.0
+            df_feat["Volume"] = df_feat["volume"].fillna(0)
 
-        # --- 뉴스 1일 기준 피처(없으면 0으로 채우기) ---
+        # 뉴스 1일 feature (없으면 0)
         for col in ["news_count_1d", "sentiment_mean_1d"]:
             if col not in df_feat.columns:
                 df_feat[col] = 0.0
 
-        # 4) 최종 FEATURE_COLS 검증
-        missing_after = [c for c in required_cols if c not in df_feat.columns]
+        # 마지막 검증
+        missing_after = [c for c in required if c not in df_feat.columns]
         if missing_after:
             raise ValueError(
-                f"[SentimentalAgent.run_dataset] FEATURE_COLS 중 아직 없는 컬럼: {missing_after}\n"
-                f"현재 df_feat.columns = {df_feat.columns.tolist()}"
+                f"[SentimentalAgent.run_dataset] FEATURE_COLS 부족: {missing_after}"
             )
 
         print("[SentimentalAgent.run_dataset] all FEATURE_COLS present.")
 
-        # 5) 시퀀스 입력 행렬 생성
-        feat_values = df_feat[required_cols].values.astype("float32")
+        # ---------------------------------------
+        # 입력 행렬 생성
+        # ---------------------------------------
+        feat_values = df_feat[required].values.astype("float32")
 
-        if len(feat_values) < WINDOW_SIZE:
+        if len(feat_values) < self.window_size:
             raise ValueError(
-                f"윈도우 크기({WINDOW_SIZE})보다 데이터 길이({len(feat_values)})가 짧습니다."
+                f"데이터 길이({len(feat_values)}) < 윈도우({self.window_size})"
             )
 
-        X_last = feat_values[-WINDOW_SIZE:]  # (T, F)
-        X_last = X_last[None, :, :]          # (1, T, F)
+        X_last = feat_values[-self.window_size:]
+        X_last = X_last[None, :, :]  # (1, T, F)
         self._last_input = X_last
 
-        # 6) StockData 생성 + 메타 정보 부착
+        # ---------------------------------------
+        # StockData 생성
+        # ---------------------------------------
         last_row = df_feat.iloc[-1]
-        last_price = float(last_row.get("close", np.nan))
-        self.last_price = last_price
-        currency = "USD"
+        last_price = float(last_row["close"])
 
         sd = StockData()
         sd.ticker = self.ticker
         sd.last_price = last_price
-        sd.currency = currency
-        sd.feature_cols = required_cols
-        sd.window_size = WINDOW_SIZE
+        sd.currency = "USD"
+        sd.feature_cols = required
+        sd.window_size = self.window_size
         sd.raw_df = df_feat
 
         sd.news_feats = {
-            "news_count_7d": float(last_row.get("news_count_7d", 0.0)),
-            "sentiment_mean_7d": float(last_row.get("sentiment_mean_7d", 0.0)),
-            "sentiment_vol_7d": float(last_row.get("sentiment_vol_7d", 0.0)),
+            "news_count_7d": float(last_row.get("news_count_7d", 0)),
+            "sentiment_mean_7d": float(last_row.get("sentiment_mean_7d", 0)),
+            "sentiment_vol_7d": float(last_row.get("sentiment_vol_7d", 0)),
         }
 
         sd.snapshot = {
@@ -414,8 +239,7 @@ class SentimentalAgent(BaseAgent):
             "raw_df": sd.raw_df,
         }
 
-        sd.X_seq = X_last  # (1, T, F)
-        # SentimentalAgent 필드에도 마지막 윈도우를 넣어두면 좋음
+        sd.X_seq = X_last
         sd.SentimentalAgent = {
             "X_seq": X_last,
             "last_price": last_price,
