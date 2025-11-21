@@ -2,9 +2,7 @@
 
 import os
 import json
-import time
-from typing import List, Optional, Tuple
-from collections import defaultdict
+from typing import List, Optional
 from datetime import datetime
 
 import numpy as np
@@ -21,10 +19,6 @@ from agents.base_agent import (
 from core.technical_classes.technical_data_set import (
     build_dataset as build_dataset_tech,
     load_dataset as load_dataset_tech,
-    get_latest_close_price,
-    compute_rsi,
-    create_sequences,
-    fetch_ticker_data,
 )
 
 from config.agents import agents_info, dir_info
@@ -40,9 +34,6 @@ def r4(x):
     except:
         return x
 
-def pct4(x):
-    """비율을 %로 환산해 4자리 반올림"""
-    return float(f"{float(x)*100:.4f}")
 
 
 class TechnicalAgent(BaseAgent, nn.Module):
@@ -116,13 +107,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
         self.last_attn = None  # (아연수정) time-attention 캐시
         self._last_idea = None  # TechnicalAgent 전용 설명 정보 저장용
 
-
-    # (아연수정) 기존 GRU 팩토리 우회 용도
-    def _build_model(self):
-        """TechnicalAgent용 LSTM×2 + time-attention 모델 생성기"""
-        return self  # 이미 __init__에서 모델 구성 완료
-
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # LSTM×2 + time-attention이 있으면 사용 (아연수정)
         """
@@ -139,53 +123,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
         self._last_attn = w.detach()                               # 아연수정
         ctx = (h2 * w.unsqueeze(-1)).sum(dim=1)                    # [B,u2]
         return self.fc(ctx)                                        # [B,1]
-
-
-    # 아연수정
-    # ------------ 설명 유틸 ------------
-    @torch.no_grad()
-    def time_attention_dict(self, dates: list) -> dict:
-        """직전 forward의 softmax 가중치(w)를 날짜와 매핑."""
-        attn = getattr(self, "_last_attn", None)          # [B,T]
-        if attn is None:
-            return {}
-        a = attn[0].detach().cpu().tolist()
-
-        # 날짜 길이와 맞지 않으면 기본 인덱스 사용
-        if not dates or len(dates) != len(a):
-            dates = [f"t-{len(a)-1-i}" for i in range(len(a))]
-        return {str(d): float(w) for d, w in zip(dates, a)}
-
-    def _time_feature_attrib_gradxinput(self, x: torch.Tensor, dates: list, top_k: int = 5) -> dict:
-        """
-        x: [1,T,F] 단일 배치 입력. 날짜 길이=T.
-        반환: {date: {feature: score,...}}  (상위 top_k)
-        """
-        self.eval()
-        with torch.enable_grad():
-            x = x.clone().detach().requires_grad_(True)
-            y = self(x).sum()
-            self.zero_grad(set_to_none=True)
-            y.backward()
-            grads = x.grad.abs()    # [1, T, F]
-            attn = getattr(self, "_last_attn", None)  # [1,T] or None
-            contrib = grads * x.abs()    # [1,T,F]
-
-        # attention 가중치가 있으면 곱하기
-        if attn is not None:
-            contrib = contrib * attn.detach().unsqueeze(-1)
-
-        contrib = contrib[0].detach().cpu().numpy()        # [T,F]
-        cols = list(getattr(self.stockdata, "feature_cols", []))[: self.input_dim] # 아연수정
-        if not dates or len(dates) != contrib.shape[0]: # 아연수정
-            dates = [f"t-{contrib.shape[0] - 1 - i}" for i in range(contrib.shape[0])]
-
-        out = {}
-        for t, d in enumerate(dates):
-            pairs = sorted(
-                zip(cols, contrib[t].tolist()), key=lambda z: z[1], reverse=True)[:top_k]
-            out[str(d)] = {k: float(v) for k, v in pairs}
-        return out
 
     def _safe_names(self, feature_cols, F):
         """
@@ -582,7 +519,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return system_text, user_text
 
 
-    # 수정 완료
     def _build_messages_rebuttal(self,
                                 my_opinion: Opinion,
                                 target_opinion: Opinion,
@@ -628,7 +564,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
     
         return system_text, user_text
 
-    # 추후 수정
+
     def _build_messages_revision(
         self,
         my_opinion: Opinion,
@@ -670,6 +606,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
                     entry["rebuttals_to_me"] = related_rebuts
 
             others_summary.append(entry)
+            
 
         # Context 구성
         ctx = {
@@ -683,7 +620,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 "reason": str(my_opinion.reason)[:1000],
             },
             "others_summary": others_summary,
-            "data_summary": getattr(stock_data, self.agent_id, {}).get("feature_cols", []),
+            "data_summary": getattr(stock_data, "feature_cols", []), # 수정
         }
 
         # 최근 시계열 데이터 포함 (기술/심리적 패턴)
@@ -801,17 +738,10 @@ class TechnicalAgent(BaseAgent, nn.Module):
         X_train, y_train = map(torch.tensor, self.scaler.transform(X_train, y_train))
         X_train, y_train = X_train.float(), y_train.float()
 
-        # 모델 생성 및 초기화 - nn.Module이면 자기 자신 사용
-        if isinstance(self, nn.Module):
-            model = self
-            self._modules.pop("model", None)
-        else:
-            if getattr(self, "model", None) is None:
-                if hasattr(self, "_build_model"):
-                    self.model = self._build_model()
-                else:
-                    raise RuntimeError(f"{self.agent_id}에 _build_model()이 정의되지 않음")
-            model = self.model
+        # 모델 = self (nn.Module)
+        model = self
+        # 혹시 예전에 잘못 등록된 submodule "model"이 있으면 제거
+        self._modules.pop("model", None)
 
         # 학습
         model.train()
@@ -841,108 +771,87 @@ class TechnicalAgent(BaseAgent, nn.Module):
         model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
         torch.save({"model_state_dict": model.state_dict()}, model_path)
 
-        # nn.Module 자기 자신이면 self.model에 등록하지 않음
-        if model is not self:
-            self.model = model
-
         print(f" {self.agent_id} 모델 학습 및 저장 완료: {model_path}")
 
     def predict(self, X, n_samples: int = 30, current_price: float = None, X_last: np.ndarray = None):
         """
         Monte Carlo Dropout 기반 예측 + 불확실성(σ) 및 confidence 계산 (안정형)
         """
-        # 모델 준비 및 스케일러 로드
-        # 과거 자기참조(child) 정리 - RecursionError 방지
-        if isinstance(self, nn.Module):
-            for name, child in list(getattr(self, "_modules", {}).items()):
-                if child is self:
-                    del self._modules[name]
-            if getattr(self, "model", None) is self:
-                self.model = None
-
-        # 이 에이전트가 nn.Module이면 그 자체 사용
-        if isinstance(self, nn.Module) and hasattr(self, "forward"):
-            model = self
-        else:
-            if self.model is None or not hasattr(self.model, "parameters"):
-                model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
-                if os.path.exists(model_path):
-                    self.load_model(model_path)
-                else:
-                    self.pretrain()
-            if self.model is None:
-                raise RuntimeError(f"{self.agent_id} 모델이 초기화되지 않음")
-            model = self.model
-
+        # 1) 모델 및 스케일러 준비
+        model = self  # TechnicalAgent 자체가 nn.Module
         self.scaler.load(self.ticker)
 
-        # 입력 변환
+        # 2) 입력 변환 + 학습과 동일 스케일로 변환
         if isinstance(X, np.ndarray):
             X_raw_np = X.copy()
-            X_scaled, _ = self.scaler.transform(X_raw_np)
-            X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
         elif isinstance(X, torch.Tensor):
             X_raw_np = X.detach().cpu().numpy().copy()
-            X_scaled, _ = self.scaler.transform(X_raw_np)
-            X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
         else:
             raise TypeError(f"Unsupported input type: {type(X)}")
 
+        X_scaled, _ = self.scaler.transform(X_raw_np)
         device = next(model.parameters()).device
-        X_tensor = X_tensor.to(device)
+        X_tensor = torch.tensor(X_scaled, dtype=torch.float32, device=device)
 
-        # Monte Carlo Dropout 추론
-        model.train()
+        # 3) Monte Carlo Dropout 추론
+        model.train()  # dropout 활성화
         preds = []
         with torch.no_grad():
             for _ in range(n_samples):
                 y_pred = model(X_tensor).cpu().numpy().flatten()
                 preds.append(y_pred)
 
-        preds = np.stack(preds)  # (samples, seq)
-        mean_pred = preds.mean(axis=0)
-        std_pred = np.abs(preds.std(axis=0))  # 항상 양수
+        preds = np.stack(preds)              # (n_samples, seq_len or 1)
+        mean_pred = preds.mean(axis=0)       # (seq_len,)
+        std_pred = np.abs(preds.std(axis=0)) # 항상 양수
 
-        # σ 기반 confidence 계산
+        # 4) σ 기반 confidence 계산
         sigma = float(std_pred[-1])
         sigma = max(sigma, 1e-6)
-
-        # 신뢰도: 불확실성 작을수록 1에 가까움
         confidence = 1 / (1 + np.log1p(sigma))
 
-        # 역변환 및 가격 계산
-        if hasattr(self.scaler, 'y_scaler') and self.scaler.y_scaler is not None:
+        # 5) 타깃 역스케일링 및 가격 변환
+        if hasattr(self.scaler, "y_scaler") and self.scaler.y_scaler is not None:
             mean_pred = self.scaler.inverse_y(mean_pred)
             std_pred = self.scaler.inverse_y(std_pred)
 
+        # current_price 결정
         if current_price is None:
-            current_price = getattr(self.stockdata, 'last_price', 100.0)
+            last_price = getattr(getattr(self, "stockdata", None), "last_price", None)
+            current_price = 100.0 if last_price is None else last_price
 
-        # 현재 모델은 "다음날 수익률(return)"을 예측하므로, 종가로 변환 시 (1 + return)
-        predicted_return = float(mean_pred[-1]) / 100.0  # 예측된 상승률 (%)
+        # 학습 타깃은 "다음날 수익률(%)"이므로 100으로 나눠서 사용
+        predicted_return = float(mean_pred[-1]) / 100.0
         predicted_price = current_price * (1 + predicted_return)
 
-        # Target 생성 및 반환 (순수 예측 결과만 포함)
+        # 6) Target 생성
         target = Target(
             next_close=float(predicted_price),
             uncertainty=sigma,
             confidence=float(confidence),
         )
-
-        # idea는 _build_messages_opinion()에서 필요할 때 계산하여 self._last_idea에 저장
-        # (predict()에서는 예측 결과만 반환)
-
         return target
 
     def reviewer_draft(self, stock_data: StockData = None, target: Target = None) -> Opinion:
         """(1) searcher → (2) predicter → (3) LLM(JSON Schema)로 reason 생성 → Opinion 반환"""
 
         # 1) 데이터 수집
-        if stock_data is None:
-            stock_data = getattr(self.stockdata, self.agent_id)
+        if stock_data is not None:
+            self.stockdata = stock_data
+        else:
+        # 내부에 없으면 searcher 한 번 돌려서 만든다
+            if getattr(self, "stockdata", None) is None:
+                if not self.ticker:
+                    raise RuntimeError(
+                        f"[{self.agent_id}] ticker가 설정되지 않았습니다. "
+                        "reviewer_draft 호출 전에 ticker를 지정하거나 searcher(ticker)를 먼저 호출하세요."
+                    )
+                _ = self.searcher(self.ticker)  # self.stockdata 세팅
+            stock_data = self.stockdata
 
         # 2) 예측값 생성
         if target is None:
+            # searcher는 위에서 한 번 돌았으므로, 여기서는 최신 윈도우로 predict만 수행
             X_input = self.searcher(self.ticker)              # (1,T,F)
             target = self.predict(X_input)
 
@@ -952,13 +861,20 @@ class TechnicalAgent(BaseAgent, nn.Module):
         parsed = self._ask_with_fallback(
             self._msg("system", sys_text),
             self._msg("user", user_text),
-            {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"], "additionalProperties": False}
+            {
+                "type": "object", 
+                "properties": {"reason": {"type": "string"}}, 
+                "required": ["reason"], 
+                "additionalProperties": False}
         )
 
         reason = parsed.get("reason", "(사유 생성 실패)")
 
         # 4) Opinion 기록/반환 (항상 최신 값 append)
-        self.opinions.append(Opinion(agent_id=self.agent_id, target=target, reason=reason))
+        self.opinions.append(Opinion(
+                    agent_id=self.agent_id, 
+                    target=target, 
+                    reason=reason))
 
         # 최신 오피니언 반환
         return self.opinions[-1]
@@ -1040,65 +956,72 @@ class TechnicalAgent(BaseAgent, nn.Module):
         """
         gamma = getattr(self, "gamma", 0.3)               # 수렴율 (0~1)
         delta_limit = getattr(self, "delta_limit", 0.05)  # fine-tuning 보정 한계
+        current_price = getattr(self.stockdata, "last_price", 100.0)  # 수정: 항상 초반에 현재가 확보
 
         try:
             # β 계산 (불확실성 작을수록 신뢰 높음)
-            my_price = my_opinion.target.next_close
+            my_price = float(my_opinion.target.next_close)           # 수정: float 캐스팅
             my_sigma = abs(my_opinion.target.uncertainty or 1e-6)
 
-            other_prices = np.array([o.target.next_close for o in others])
-            other_sigmas = np.array([abs(o.target.uncertainty or 1e-6) for o in others])
+            # 수정: others가 없을 때 방어
+            if len(others) == 0:
+                revised_price = my_price
+            else:
+                other_prices = np.array([o.target.next_close for o in others], dtype=float)
+                other_sigmas = np.array([abs(o.target.uncertainty or 1e-6) for o in others], dtype=float)
 
-            all_sigmas = np.concatenate([[my_sigma], other_sigmas])
-            all_prices = np.concatenate([[my_price], other_prices])
+                all_sigmas = np.concatenate([[my_sigma], other_sigmas])
 
-            inv_sigmas = 1 / (all_sigmas + 1e-6)
-            betas = inv_sigmas / inv_sigmas.sum()
+                inv_sigmas = 1 / (all_sigmas + 1e-6)
+                betas = inv_sigmas / inv_sigmas.sum()
 
-            # 논문식 수렴 업데이트
-            # y_i_rev = y_i + γ Σ β_j (y_j - y_i)
-            delta = np.sum(betas[1:] * (other_prices - my_price))
-            revised_price = my_price + gamma * delta
+                # 논문식 수렴 업데이트
+                # y_i_rev = y_i + γ Σ β_j (y_j - y_i)
+                delta = np.sum(betas[1:] * (other_prices - my_price))
+                revised_price = my_price + gamma * delta
 
         except Exception as e:
             print(f"[{self.agent_id}] revised_target 계산 실패: {e}")
-            revised_price = my_opinion.target.next_close
-            current_price = getattr(self.stockdata, "last_price", 100.0)
-            price_uplimit = current_price * (1 + delta_limit)
-            price_downlimit = current_price * (1 - delta_limit)
-            revised_price = min(max(revised_price, price_downlimit), price_uplimit)
+            revised_price = my_opinion.target.next_close  # 수정: 여기서는 가격만 되돌림
+
+        # 수정: 항상 delta_limit로 클램프 (try/except 밖에서 공통 적용)
+        price_uplimit = current_price * (1 + delta_limit)
+        price_downlimit = current_price * (1 - delta_limit)
+        revised_price = float(min(max(revised_price, price_downlimit), price_uplimit))
 
         # Fine-tuning (return 단위)
         loss_value = None
         if fine_tune:
             try:
-                current_price = getattr(self.stockdata, "last_price", 100.0)
-                revised_return = (revised_price / current_price) - 1  # 수익률 변환
+                revised_return = (revised_price / current_price) - 1.0   # 예: 0.012
+                revised_return_scaled = revised_return * 100.0           # 예: 1.2
+
+                # 스케일러 기준에 맞추어 타깃 변환
+                if getattr(self.scaler, "y_scaler", None) is not None:
+                    y_target_scaled = self.scaler.y_scaler.transform(
+                        np.array([[revised_return_scaled]], dtype=float)
+                    )[0, 0]
+                else:
+                    y_target_scaled = revised_return_scaled
 
                 # 최신 입력
-                X_input = self.searcher(self.ticker)
+                X_input = self.searcher(self.ticker)  # (1, T, F)
 
-                # TechnicalAgent(nn.Module) 대응: self 자체를 모델로 사용
-                if isinstance(self, nn.Module) and hasattr(self, "forward"):
-                    model = self
-                else:
-                    model = getattr(self, "model", None)
-                    if model is None:
-                        raise RuntimeError(f"{self.agent_id} 모델이 초기화되지 않음")
-
+                # TechnicalAgent(nn.Module) → self 자체 사용
+                model = self
                 device = next(model.parameters()).device
 
-                # X_input 이 이미 Tensor인 경우 대비
                 if isinstance(X_input, torch.Tensor):
                     X_tensor = X_input.to(device).float()
                 else:
-                    X_tensor = torch.tensor(X_input, dtype=torch.float32).to(device)
+                    X_tensor = torch.tensor(X_input, dtype=torch.float32, device=device)
 
-                y_tensor = torch.tensor([[revised_return]], dtype=torch.float32).to(device)
+                y_tensor = torch.tensor([[y_target_scaled]], dtype=torch.float32, device=device)
 
                 model.train()
                 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-                criterion = torch.nn.MSELoss()
+                # pretrain과 통일: HuberLoss
+                criterion = torch.nn.HuberLoss(delta=1.0)
 
                 for _ in range(epochs):
                     optimizer.zero_grad()
@@ -1169,19 +1092,9 @@ class TechnicalAgent(BaseAgent, nn.Module):
         try:
             checkpoint = torch.load(model_path, map_location=torch.device("cpu"))
 
-            # 모델 인스턴스 선택: nn.Module이면 자기 자신 사용. 아니면 _build_model 사용.
-            if isinstance(self, nn.Module):
-                model = self
-                # 과거에 잘못 등록됐을 수 있는 서브모듈 제거
-                self._modules.pop("model", None)
-            elif getattr(self, "model", None) is None:
-                if hasattr(self, "_build_model"):
-                    self.model = self._build_model()
-                    model = self.model
-                else:
-                    raise RuntimeError(f"{self.agent_id}에 _build_model()이 정의되어 있지 않음")
-            else:
-                model = self.model
+            # 혹시 예전에 잘못 등록된 서브모듈 "model"이 있으면 제거
+            # (self를 서브모듈로 넣어버린 과거 코드 대비용)
+            self._modules.pop("model", None)
 
             # 다양한 저장 포맷 처리
             if isinstance(checkpoint, torch.nn.Module):
@@ -1193,19 +1106,20 @@ class TechnicalAgent(BaseAgent, nn.Module):
                     or checkpoint
                 )
             else:
-                print(f" 알 수 없는 체크포맷: {type(checkpoint)}")
+                print(f"[{self.agent_id}] 알 수 없는 체크포맷: {type(checkpoint)}")
                 return False
 
-            model.load_state_dict(state_dict)
-            model.eval()
+            # 바로 self에 로드
+            self.load_state_dict(state_dict)
+            self.eval()
 
-            # nn.Module 자기 자신이면 self.model에 self를 넣지 않음
-            if model is not self:
-                self.model = model
+            # self.model 에 self를 넣으면 순환 참조(submodule 등록)라서 넣지 않는 게 안전
+            # (TechnicalAgent.predict / pretrain 은 model = self 로 동작하므로 별도 self.model 필요 없음)
 
             return True
 
         except Exception as e:
+            print(f"[{self.agent_id}] load_model 실패: {e}")
             return False
 
     def evaluate(self, ticker: str = None):
@@ -1213,48 +1127,76 @@ class TechnicalAgent(BaseAgent, nn.Module):
         if ticker is None:
             ticker = self.ticker
 
-        # 데이터 로드
-        X, y, feature_cols, _ = load_dataset_tech(ticker, agent_id=self.agent_id, save_dir=self.data_dir)
+        # 1) 데이터 로드
+        X, y, feature_cols, _ = load_dataset_tech(
+            ticker,
+            agent_id=self.agent_id,
+            save_dir=self.data_dir
+        )
 
-        # 시계열 분할 (80% 훈련, 20% 검증)
+        # 2) 시계열 분할 (80% 훈련, 20% 검증)
         split_idx = int(len(X) * 0.8)
         X_val = X[split_idx:]
         y_val = y[split_idx:]
 
-        # 스케일러 로드
+        # 3) 스케일러 로드 + y 스케일(학습과 동일하게 ×100)  # 수정
         self.scaler.load(ticker)
 
-        # 검증 데이터 예측
+        # 🔧 수정: y를 1D로 맞춰줍니다.
+        y_val_scaled = (y_val * 100.0).reshape(-1)
+
+        X_val_scaled, y_val_scaled = self.scaler.transform(
+            X_val,
+            y_val_scaled
+        )
+
+        # 🔧 수정: transform 결과도 확실히 1D로 정리
+        y_val_scaled = np.asarray(y_val_scaled).reshape(-1)
+
+        # 4) 모델 가중치 로드 (없으면 pretrain)                # 수정
+        model_path = os.path.join(self.model_dir, f"{ticker}_{self.agent_id}.pt")
+        if not self.load_model(model_path):                      # 수정
+            self.pretrain()
+            self.load_model(model_path)
+
+        model = self
+        model.eval()                                             # 수정
+
+        # 5) 검증 데이터 예측
         predictions = []
         actual_returns = []
 
-        for i in range(len(X_val)):
-            X_input = X_val[i:i+1]
-            X_tensor = torch.tensor(X_input, dtype=torch.float32)
+        with torch.no_grad():                                    # 수정
+            for i in range(len(X_val_scaled)):
+                X_input = X_val_scaled[i:i+1]   # (1, T, F)
+                X_tensor = torch.tensor(X_input, dtype=torch.float32)
 
-            # 예측
-            with torch.no_grad():
-                pred_return = self(X_tensor).item()
-                predictions.append(pred_return)
-                actual_returns.append(y_val[i, 0])
+                pred_scaled = model(X_tensor).item()             # 예측값 (스케일된 y)
+                predictions.append(pred_scaled)
+                actual_returns.append(float(y_val_scaled[i]))       # 스케일된 타깃
 
         predictions = np.array(predictions)
         actual_returns = np.array(actual_returns)
 
-        # 성능 지표 계산
+        # 6) 성능 지표 계산 (스케일된 수익률 기준)              # 수정
         mae = np.mean(np.abs(predictions - actual_returns))
         rmse = np.sqrt(np.mean((predictions - actual_returns) ** 2))
-        correlation = np.corrcoef(predictions, actual_returns)[0, 1]
 
-        # 방향 정확도
+        # 상관계수 (분산 0 방지)                                 # 수정
+        if np.std(predictions) == 0 or np.std(actual_returns) == 0:
+            correlation = 0.0
+        else:
+            correlation = float(np.corrcoef(predictions, actual_returns)[0, 1])
+
+        # 7) 방향 정확도 (부호 기준 → 상승/하락 일치율)
         pred_direction = np.sign(predictions)
         actual_direction = np.sign(actual_returns)
-        direction_accuracy = np.mean(pred_direction == actual_direction) * 100
+        direction_accuracy = float(np.mean(pred_direction == actual_direction) * 100.0)
 
         return {
-            'mae': mae,
-            'rmse': rmse,
-            'correlation': correlation,
-            'direction_accuracy': direction_accuracy,
-            'n_samples': len(predictions)
+            "mae": mae,
+            "rmse": rmse,
+            "correlation": correlation,
+            "direction_accuracy": direction_accuracy,
+            "n_samples": len(predictions),
         }
