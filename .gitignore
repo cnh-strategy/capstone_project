@@ -56,4 +56,10 @@ Thumbs.db
 
 # 데이터 파일 제외
 notebooks/data/
-notebooks/models/
+notebooks/models/__pycache__/
+SentimentalAgent/
+data/
+models/
+news_data.csv
+*.pyc
+*.npz
