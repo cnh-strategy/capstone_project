@@ -150,7 +150,7 @@ class SentimentalAgent(BaseAgent):
         df_price = df_price.reset_index(drop=True)
 
         # 2) 뉴스 + 가격 병합
-        df_merged = merge_price_with_news_features(
+        df_merged = merge_price_with_news_features( 
             df_price=df_price,
             ticker=self.ticker,
             asof_kst=end.date(),
@@ -645,7 +645,7 @@ class SentimentalAgent(BaseAgent):
             opp_reason=opp_reason if opp_reason else "(상대 의견 내용 없음)",
             pred_close=f"{pred_close:.4f}",
             chg=("NA" if change_ratio is None else f"{change_ratio*100:.2f}%"),
-            mean7=f"{sent.get('mean_7d', 0.0):.4f}",
+            mean7=f"{sent.get("mean_7d", 0.0):.4f}",
             mean30=f"{sent.get("mean_30d", 0.0):.4f}",
             pos7=f"{sent.get("pos_ratio_7d", 0.0):.4f}",
             neg7=f"{sent.get("neg_ratio_7d", 0.0):.4f}",
@@ -719,10 +719,10 @@ class SentimentalAgent(BaseAgent):
                 f"다음 거래일 종가 예측값은 {pred_close:.2f}입니다."
             )
 
-        mean7 = sent.get("mean_7d", None)
-        mean30 = sent.get("mean_30d", None)
-        pos7 = sent.get("pos_ratio_7d", None)
-        neg7 = sent.get("neg_ratio_7d", None)
+        mean7=f"{sent.get('mean_7d', 0.0):.4f}",
+        mean30=f"{sent.get('mean_30d', 0.0):.4f}",
+        pos7=f"{sent.get('pos_ratio_7d', 0.0):.4f}",
+        neg7=f"{sent.get('neg_ratio_7d', 0.0):.4f}",
 
         if mean7 is not None and mean30 is not None:
             context_parts.append(

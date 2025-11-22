@@ -335,31 +335,6 @@ class DebateAgent:
 
         return ensemble_result
 
-        # Round 0: 초기 Opinion 수집
-        print(f"\n{'='*80}")
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Round 0: 초기 Opinion 수집 시작")
-        print(f"{'='*80}")
-        self.get_opinion(0, self.ticker, rebuild=False, force_pretrain=False)
-
-        # Round 1~N: Rebuttal → Revise 반복
-        for round in range(1, self.rounds + 1):
-            print(f"\n{'='*80}")
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Round {round} 시작")
-            print(f"{'='*80}")
-
-            self.get_rebuttal(round)
-            self.get_revise(round)
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Round {round} 토론 완료")
-
-        # 최종 Ensemble 예측
-        print(f"\n{'='*80}")
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 최종 Ensemble 예측")
-        print(f"{'='*80}")
-        ensemble_result = self.get_ensemble()
-        print(ensemble_result)
-
-        return ensemble_result
-
 
     def get_ensemble(self) -> Dict:
         """
