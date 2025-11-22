@@ -173,11 +173,9 @@ class MacroAgent(BaseAgent, nn.Module):
         if os.path.exists(self.scaler_X_path) and os.path.exists(self.scaler_y_path):
             self.load_assets()
         else:
-            raise RuntimeError(
-                f"[{agent_id}] 스케일러 파일이 없습니다. "
-                f"pretrain()을 먼저 실행하세요.\n"
-                f"  - 스케일러 경로: {self.scaler_X_path}"
-            )
+            print(f"[{agent_id}] 스케일러가 없습니다 → pretrain() 자동 실행합니다.")
+            self.pretrain()
+            self.load_assets()
 
         # 매크로 데이터 수집
         print("[INFO] MacroAgent 데이터 수집 중...")
@@ -307,6 +305,10 @@ class MacroAgent(BaseAgent, nn.Module):
 
         # MacroAData를 사용하여 데이터 준비
         macro_data_agent = MacroAData(ticker=self.ticker)
+        macro_data_agent.fetch_data()
+        macro_data_agent.add_features()
+        macro_data_agent.save_csv()
+        macro_data_agent.make_close_price()
         macro_data_agent.model_maker()  # 학습 전체 파이프라인 실행
 
         # 스케일러 및 데이터 가져오기
@@ -322,9 +324,7 @@ class MacroAgent(BaseAgent, nn.Module):
         X_test = macro_data_agent.X_test
         y_test = macro_data_agent.y_test
 
-        # 모델 준비 - 이미 __init__에서 생성되었지만, input_dim이 다를 경우 재생성
-        model = self
-        self._modules.pop("model", None)
+
 
         # input_dim이 실제 데이터와 다를 경우 레이어 재생성
         actual_input_dim = X_train.shape[-1]
@@ -352,6 +352,8 @@ class MacroAgent(BaseAgent, nn.Module):
         joblib.dump(scaler_y, self.scaler_y_path)
 
         # 학습
+        model = self
+
         model.train()
         model = model.to(self.device)
 

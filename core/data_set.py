@@ -13,28 +13,8 @@ import pandas as pd
 import yfinance as yf
 
 from config.agents import agents_info, dir_info
+from .macro_classes.macro_funcs import macro_dataset
 from .technical_classes import technical_data_set as _techds
-
-_HAS_MACRO = False
-_MACRO_IMPORT_ERROR = ""
-try:
-    # 1) 패키지 내부 상대 임포트
-    from .macro_classes.macro_funcs import macro_dataset as _macro_dataset
-    macro_dataset = _macro_dataset
-    _HAS_MACRO = True
-    _MACRO_SRC = "relative: .macro_classes.macro_funcs"
-except Exception as e1:
-    try:
-        # 2) 절대 임포트 (환경에 따라 상대가 막힐 때)
-        from core.macro_classes.macro_funcs import macro_dataset as _macro_dataset
-        macro_dataset = _macro_dataset
-        _HAS_MACRO = True
-        _MACRO_SRC = "absolute: core.macro_classes.macro_funcs"
-    except Exception as e2:
-        macro_dataset = None
-        _HAS_MACRO = False
-        _MACRO_IMPORT_ERROR = f"{type(e1).__name__}: {e1} | {type(e2).__name__}: {e2}"
-        _MACRO_SRC = "unavailable"
 
 
 # -----------------------------
@@ -136,13 +116,9 @@ def build_dataset(
     for aid, _ in agents_info.items():
         # ---------- macro_agent ----------
         if aid in {"MacroAgent","macroagent", "macro", "매크로"}:
-            if not _HAS_MACRO or macro_dataset is None:
-                raise ImportError(
-                    "macro_dataset 모듈을 찾을 수 없습니다. core/macro_classes 확인 필요 "
-                    f"details={_MACRO_IMPORT_ERROR}"
-                )
+
             macro_dataset(ticker_name=ticker)
-            print(f"✅ {ticker} MacroAgent dataset saved (macro_dataset 호출 via {_MACRO_SRC})")
+            print(f"✅ {ticker} MacroAgent dataset saved (macro_dataset 호출 via )")
 
         # ---------- sentimental_agent ----------
         elif aid in {"SentimentalAgent","sentimentalagent", "sentimental", "센티멘탈"}:
