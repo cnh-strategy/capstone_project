@@ -31,7 +31,11 @@ from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 
 from config.agents import agents_info, dir_info
 
-# ==== SentimentalAgent 전용 하이퍼파라미터 / 피처 정의 (옛 train_sentimental.py 대체) ====
+# config
+from config.agents import agents_info, dir_info
+
+CFG_S = agents_info["SentimentalAgent"]
+
 FEATURE_COLS = [
     "return_1d",
     "hl_range",
@@ -43,10 +47,11 @@ FEATURE_COLS = [
     "sentiment_vol_7d",
 ]
 
-WINDOW_SIZE = 40
-HIDDEN_DIM = 64
-NUM_LAYERS = 2
-DROPOUT = 0.2
+# config 값과 동기화
+WINDOW_SIZE = CFG_S["window_size"]
+HIDDEN_DIM = CFG_S.get("d_model", 64)   # d_model을 LSTM hidden_dim으로 재활용
+NUM_LAYERS = CFG_S["num_layers"]
+DROPOUT = CFG_S["dropout"]
 # =============================================================================
 
 
@@ -264,12 +269,12 @@ class SentimentalAgent(BaseAgent):
         return X_tensor
 
     # -------------------------------------------------------
-    # predict (버전 B 스타일 + StockData 입력 허용)
+    # predict
     #   - Monte Carlo Dropout + DataScaler + y*100 스케일 고려
     # -------------------------------------------------------
     def predict(self, X, n_samples: int = 30, current_price: float | None = None):
         """
-        SentimentalAgent 전용 Monte Carlo Dropout 예측 함수.
+        SentimentalAgent 전용 Monte Carlo Dropout 예측 함수
 
         - 입력: StockData 또는 (T, F) / (1, T, F) numpy/tensor
         - self.model(SentimentalLSTM) + self.scaler 로드
