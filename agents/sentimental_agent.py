@@ -85,7 +85,7 @@ class SentimentalAgent(BaseAgent):
         super().pretrain()
 
     # -------------------------------------------------------
-    # _BUILD_MODEL  ← 반드시 클래스 내부에 존재해야 함!!!
+    # _BUILD_MODEL
     # -------------------------------------------------------
     def _build_model(self) -> nn.Module:
         """BaseAgent.pretrain에서 사용할 LSTM 모델 생성"""
@@ -269,15 +269,10 @@ class SentimentalAgent(BaseAgent):
     # -------------------------------------------------------
     def predict(self, X, n_samples: int = 30, current_price: float | None = None):
         """
-        SentimentalAgent 전용 Monte Carlo Dropout 예측 함수
+        SentimentalAgent 전용 Monte Carlo Dropout 예측 함수.
 
-        사용 예:
-            sd = agent.run_dataset()
-            target = agent.predict(sd)
-
-        동작:
         - 입력: StockData 또는 (T, F) / (1, T, F) numpy/tensor
-        - self.model (LSTM) + self.scaler 로드
+        - self.model(SentimentalLSTM) + self.scaler 로드
         - MC Dropout으로 예측 분포 샘플링
         - "수익률 * 100" → 실제 가격(next_close)로 변환
         - Target(next_close, uncertainty, confidence) 반환
@@ -308,7 +303,6 @@ class SentimentalAgent(BaseAgent):
             raise TypeError(f"Unsupported input type for predict: {type(X_in)}")
 
         # run_dataset() 기준: X_seq.shape == (1, T, F)
-        # scaler는 (T, F) 형태를 기대할 가능성이 크므로 batch 축 제거 후 스케일링
         if X_raw_np.ndim == 3 and X_raw_np.shape[0] == 1:
             X_seq_np = X_raw_np[0]        # (T, F)
         elif X_raw_np.ndim == 2:
@@ -317,19 +311,20 @@ class SentimentalAgent(BaseAgent):
             raise ValueError(f"예상하지 못한 입력 shape: {X_raw_np.shape}, (T,F) 또는 (1,T,F)만 지원합니다.")
 
         # -----------------------------
-        # 1) 모델/스케일러 준비
+        # 1) 모델 준비 (load_model()에 의존하지 않음)
         # -----------------------------
-        # self.model 이 없으면 디스크에서 가중치 로드
-        if getattr(self, "model", None) is None:
-            ok = self.load_model()
-            if not ok:
-                raise RuntimeError(
-                    "[SentimentalAgent] 모델 가중치 로드 실패. 먼저 pretrain()을 한 번 실행했는지 확인하세요."
-                )
+        model = getattr(self, "model", None)
+        if model is None:
+            # __init__에서 hidden_dim, num_layers, dropout 세팅해둔 상태라고 가정
+            self.model = SentimentalLSTM(
+                input_dim=len(FEATURE_COLS),
+                hidden_dim=self.hidden_dim,
+                num_layers=self.num_layers,
+                dropout=self.dropout,
+            )
+            model = self.model
 
-        model = self.model  # SentimentalLSTM 인스턴스라고 가정
-
-        # 필요하면 model_dir 에서 직접 state_dict 로드 (중복 로드 방지)
+        # state_dict 직접 로드
         model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
         if os.path.exists(model_path) and not getattr(self, "model_loaded", False):
             try:
@@ -337,11 +332,13 @@ class SentimentalAgent(BaseAgent):
                 state_dict = ckpt.get("model_state_dict", ckpt)
                 model.load_state_dict(state_dict, strict=False)
                 self.model_loaded = True
-                print(f"[SentimentalAgent] 모델 로드: {model_path}")
+                print(f" SentimentalAgent 모델(state_dict) 로드 완료 ({model_path})")
             except Exception as e:
-                print(f"[SentimentalAgent] 모델 로드 실패(무시하고 진행): {e}")
+                print(f"[SentimentalAgent] 모델 state_dict 로드 실패(무시하고 진행): {e}")
 
-        # 스케일러 로드
+        # -----------------------------
+        # 1-1) 스케일러 로드
+        # -----------------------------
         if not hasattr(self, "scaler"):
             raise RuntimeError("[SentimentalAgent] self.scaler가 정의되지 않았습니다.")
         self.scaler.load(self.ticker)
@@ -349,9 +346,8 @@ class SentimentalAgent(BaseAgent):
         # -----------------------------
         # 2) 입력 스케일링
         # -----------------------------
-        # X_seq_np: (T, F)
         X_scaled, _ = self.scaler.transform(X_seq_np)     # (T, F)
-        X_tensor = torch.tensor(X_scaled, dtype=torch.float32)  # (T, F)
+        X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
 
         # [T, F] → [1, T, F]
         if X_tensor.dim() == 2:
@@ -374,7 +370,7 @@ class SentimentalAgent(BaseAgent):
                     y_pred = y_pred[0]
                 preds.append(y_pred.detach().cpu().numpy().flatten())
 
-        preds = np.stack(preds)           # (samples, L)  (L은 seq_len 또는 1)
+        preds = np.stack(preds)           # (samples, L)
         mean_pred = preds.mean(axis=0)    # (L,)
         std_pred = np.abs(preds.std(axis=0))
 
@@ -542,6 +538,19 @@ class SentimentalAgent(BaseAgent):
         }
         return ctx
 
+    def reviewer_rebuttal(
+        self,
+        my_opinion: Opinion,
+        other_opinion: Opinion,
+        round_index: int,
+    ) -> Rebuttal:
+
+        return self.reviewer_rebut(
+            my_opinion=my_opinion,
+            other_opinion=other_opinion,
+            round_index=round_index,
+        )
+
     # -------------------------------------------------------
     # Opinion / Rebuttal / Revision 프롬프트
     # -------------------------------------------------------
@@ -637,9 +646,9 @@ class SentimentalAgent(BaseAgent):
             pred_close=f"{pred_close:.4f}",
             chg=("NA" if change_ratio is None else f"{change_ratio*100:.2f}%"),
             mean7=f"{sent.get('mean_7d', 0.0):.4f}",
-            mean30=f"{sent.get('mean_30d', 0.0):.4f}",
-            pos7=f"{sent.get('pos_ratio_7d', 0.0):.4f}",
-            neg7=f"{sent.get('neg_ratio_7d', 0.0):.4f}",
+            mean30=f"{sent.get("mean_30d", 0.0):.4f}",
+            pos7=f"{sent.get("pos_ratio_7d", 0.0):.4f}",
+            neg7=f"{sent.get("neg_ratio_7d", 0.0):.4f}",
             vol7=("NA" if vol7 is None else f"{vol7:.4f}"),
             trend7=("NA" if trend7 is None else f"{trend7:.4f}"),
             news7=("NA" if news7 is None else f"{news7}"),
