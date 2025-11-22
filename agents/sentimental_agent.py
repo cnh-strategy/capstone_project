@@ -85,6 +85,14 @@ class SentimentalAgent(BaseAgent):
         self.ticker = str(self.ticker).upper()
         setattr(self, "symbol", self.ticker)
 
+    # 숫자 formatting용
+    def _safe_fmt(self, x, fmt: str = ".4f", default: str = "NA") -> str:
+        try:
+            if x is None:
+                return default
+            return format(float(x), fmt)
+        except Exception:
+            return default
 
     # -------------------------------------------------------
     # PRETRAIN
@@ -556,12 +564,8 @@ class SentimentalAgent(BaseAgent):
         other_opinion: Opinion,
         round_index: int,
     ) -> Rebuttal:
+        return self.reviewer_rebut(my_opinion, other_opinion, round_index)
 
-        return self.reviewer_rebut(
-            my_opinion=my_opinion,
-            other_opinion=other_opinion,
-            round_index=round_index,
-        )
 
     # -------------------------------------------------------
     # Opinion / Rebuttal / Revision 프롬프트
@@ -667,6 +671,40 @@ class SentimentalAgent(BaseAgent):
         )
         return system_tmpl, user_text
 
+    def reviewer_revise(
+        self,
+        my_opinion: Opinion,
+        others: List[Opinion],
+        rebuttals: Optional[List[Rebuttal]] = None,
+        stock_data: StockData = None,
+    ) -> Opinion:
+        """
+        SentimentalAgent용 revise:
+        - BaseAgent.reviewer_revise 를 그대로 쓰되,
+        - 가격( next_close / uncertainty / confidence )는 기존 my_opinion 값 유지.
+        즉, 파인튜닝으로 숫자를 바꾸지 않고 설명(Reason)만 업데이트.
+        """
+        # BaseAgent 로직(LLM 호출 등) 먼저 사용
+        revised = super().reviewer_revise(
+            my_opinion=my_opinion,
+            others=others,
+            rebuttals=rebuttals,
+            stock_data=stock_data,
+        )
+
+        # 혹시 BaseAgent 쪽에서 target을 새로 만든 경우라도,
+        # 숫자는 기존 my_opinion의 target을 강제로 유지
+        try:
+            if revised is not None and hasattr(revised, "target") and revised.target is not None:
+                revised.target.next_close = my_opinion.target.next_close
+                revised.target.uncertainty = my_opinion.target.uncertainty
+                revised.target.confidence = my_opinion.target.confidence
+        except Exception as e:
+            print("[SentimentalAgent] reviewer_revise post-fix 실패:", e)
+
+        return revised
+
+
     def _build_messages_revision(
         self,
         my_opinion: Opinion,
@@ -698,8 +736,8 @@ class SentimentalAgent(BaseAgent):
             reb_texts.append(_op_text(rebuttals))
 
         ctx = self.build_ctx()
-        fi = ctx.get("feature_importance", {})
-        sent = fi.get("sentiment_summary", {})
+        fi = ctx.get("feature_importance", {}) or {}
+        sent = fi.get("sentiment_summary", {}) or {}
         vol7 = fi.get("sentiment_volatility", {}).get("vol_7d", None)
         trend7 = fi.get("trend_7d", None)
         news7 = fi.get("news_count", {}).get("count_7d", None)
@@ -709,48 +747,57 @@ class SentimentalAgent(BaseAgent):
         unc_std = unc_dict.get("std", None)
         confidence = pred_info.get("confidence", None)
 
+        # 감성 지표 원시 값 (숫자일 수도, 아닐 수도 있음)
+        mean7 = sent.get("mean_7d", None)
+        mean30 = sent.get("mean_30d", None)
+        pos7 = sent.get("pos_ratio_7d", None)
+        neg7 = sent.get("neg_ratio_7d", None)
+
         pred_close = float(my_opinion.target.next_close)
         last_price = ctx.get("snapshot", {}).get("last_price")
         change_ratio = None
         if last_price and last_price == last_price and last_price != 0:
             change_ratio = pred_close / last_price - 1.0
 
+        # -----------------------------
+        # 컨텍스트 문장 구성 (여기도 안전 포맷 사용)
+        # -----------------------------
         context_parts: List[str] = []
         if last_price is not None:
             if change_ratio is not None:
                 context_parts.append(
-                    f"현재 주가는 {last_price:.2f}이고, 모델은 다음 거래일 종가를 {pred_close:.2f}로 예측했습니다 "
-                    f"(변화율 약 {change_ratio*100:.2f}%)."
+                    f"현재 주가는 {self._safe_fmt(last_price, '.2f')}이고, "
+                    f"모델은 다음 거래일 종가를 {self._safe_fmt(pred_close, '.2f')}로 예측했습니다 "
+                    f"(변화율 약 {self._safe_fmt(change_ratio * 100, '.2f')}%)."
                 )
             else:
                 context_parts.append(
-                    f"현재 주가는 {last_price:.2f}이며, 다음 거래일 종가 예측값은 {pred_close:.2f}입니다."
+                    f"현재 주가는 {self._safe_fmt(last_price, '.2f')}이며, "
+                    f"다음 거래일 종가 예측값은 {self._safe_fmt(pred_close, '.2f')}입니다."
                 )
         else:
             context_parts.append(
-                f"다음 거래일 종가 예측값은 {pred_close:.2f}입니다."
+                f"다음 거래일 종가 예측값은 {self._safe_fmt(pred_close, '.2f')}입니다."
             )
-
-        mean7=f"{sent.get('mean_7d', 0.0):.4f}",
-        mean30=f"{sent.get('mean_30d', 0.0):.4f}",
-        pos7=f"{sent.get('pos_ratio_7d', 0.0):.4f}",
-        neg7=f"{sent.get('neg_ratio_7d', 0.0):.4f}",
 
         if mean7 is not None and mean30 is not None:
             context_parts.append(
-                f"최근 7일 평균 감성 점수는 {mean7:.3f}, 최근 30일 평균은 {mean30:.3f}입니다."
+                f"최근 7일 평균 감성 점수는 {self._safe_fmt(mean7, '.3f')}, "
+                f"최근 30일 평균은 {self._safe_fmt(mean30, '.3f')}입니다."
             )
         if pos7 is not None and neg7 is not None:
+            # 비율 그대로 보여주기 (0~1 값이라고 가정)
             context_parts.append(
-                f"최근 7일 기준 긍정 기사 비율은 {pos7:.2%}, 부정 기사 비율은 {neg7:.2%}입니다."
+                f"최근 7일 기준 긍정 기사 비율은 {self._safe_fmt(pos7, '.4f')}, "
+                f"부정 기사 비율은 {self._safe_fmt(neg7, '.4f')}입니다."
             )
         if vol7 is not None:
             context_parts.append(
-                f"최근 7일 감성 점수의 변동성(표준편차)은 {vol7:.3f}입니다."
+                f"최근 7일 감성 점수의 변동성(표준편차)은 {self._safe_fmt(vol7, '.3f')}입니다."
             )
         if trend7 is not None:
             context_parts.append(
-                f"최근 7일 감성 추세(회귀 기울기)는 {trend7:.4f}입니다."
+                f"최근 7일 감성 추세(회귀 기울기)는 {self._safe_fmt(trend7, '.4f')}입니다."
             )
         if news7 is not None:
             context_parts.append(
@@ -759,7 +806,8 @@ class SentimentalAgent(BaseAgent):
 
         if unc_std is not None and confidence is not None:
             context_parts.append(
-                f"예측 표준편차는 {unc_std:.4f}, 신뢰도는 {confidence:.3f}입니다."
+                f"예측 표준편차는 {self._safe_fmt(unc_std, '.4f')}, "
+                f"신뢰도는 {self._safe_fmt(confidence, '.3f')}입니다."
             )
 
         context_str = " ".join(context_parts) if context_parts else (
@@ -803,12 +851,12 @@ class SentimentalAgent(BaseAgent):
             rebuts=rebuts_joined,
             pred_close=f"{pred_close:.4f}",
             chg=("NA" if change_ratio is None else f"{change_ratio*100:.2f}%"),
-            mean7=("NA" if mean7 is None else f"{mean7:.4f}"),
-            mean30=("NA" if mean30 is None else f"{mean30:.4f}"),
-            pos7=("NA" if pos7 is None else f"{pos7:.4f}"),
-            neg7=("NA" if neg7 is None else f"{neg7:.4f}"),
-            vol7=("NA" if vol7 is None else f"{vol7:.4f}"),
-            trend7=("NA" if trend7 is None else f"{trend7:.4f}"),
+            mean7=self._safe_fmt(mean7, ".4f"),
+            mean30=self._safe_fmt(mean30, ".4f"),
+            pos7=self._safe_fmt(pos7, ".4f"),
+            neg7=self._safe_fmt(neg7, ".4f"),
+            vol7=self._safe_fmt(vol7, ".4f"),
+            trend7=self._safe_fmt(trend7, ".4f"),
             news7=("NA" if news7 is None else f"{news7}"),
             context=context_str,
         )
