@@ -62,11 +62,17 @@ class SentimentalAgent(BaseAgent):
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.window_size = WINDOW_SIZE
-        self.hidden_dim = HIDDEN_DIM
-        self.num_layers = NUM_LAYERS
-        self.dropout = DROPOUT
+        cfg = agents_info[self.agent_id]
 
+        # BaseAgent에서도 window_size를 세팅하지만, 여기서도 명시적으로 맞춰둠
+        self.window_size = cfg["window_size"]
+
+        # LSTM 구조 관련 하이퍼파라미터
+        self.hidden_dim = HIDDEN_DIM          # = cfg.get("d_model", 64)
+        self.num_layers = NUM_LAYERS          # = cfg["num_layers"]
+        self.dropout = DROPOUT                # = cfg["dropout"]
+
+        # 피처 목록 (실제는 FEATURE_COLS 기준)
         self.feature_cols = list(FEATURE_COLS)
 
         self.model = None
@@ -78,6 +84,7 @@ class SentimentalAgent(BaseAgent):
             raise ValueError("SentimentalAgent: ticker is None/empty")
         self.ticker = str(self.ticker).upper()
         setattr(self, "symbol", self.ticker)
+
 
     # -------------------------------------------------------
     # PRETRAIN
