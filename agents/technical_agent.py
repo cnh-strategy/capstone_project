@@ -718,6 +718,19 @@ class TechnicalAgent(BaseAgent, nn.Module):
         lr = agents_info[self.agent_id]["learning_rate"]
         batch_size = agents_info[self.agent_id]["batch_size"]
 
+        # (추가) 데이터셋 없으면 먼저 생성
+        dataset_path = os.path.join(self.data_dir, f"{self.ticker}_{self.agent_id}_dataset.csv")
+        cfg = agents_info.get(self.agent_id, {})
+
+        if not os.path.exists(dataset_path):
+            print(f"⚙️ {self.ticker} {self.agent_id} dataset not found in {self.data_dir}. Building dataset for pretrain...")
+            build_dataset_tech(
+                ticker=self.ticker,
+                save_dir=self.data_dir,
+                period=cfg.get("period", "5y"),
+                interval=cfg.get("interval", "1d"),
+            )
+            
         # 데이터 로드
         X, y, cols, _ = load_dataset_tech(self.ticker, self.agent_id, save_dir=self.data_dir)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
