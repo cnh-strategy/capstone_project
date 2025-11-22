@@ -26,17 +26,11 @@ from agents.sentimental_agent import SentimentalAgent
 import yfinance as yf
 import statistics
 
-# 테크니컬 별칭으로 따로 구분
-from core.technical_classes.technical_data_set import (
-    build_dataset as build_dataset_tech,
-    load_dataset as load_dataset_tech,
-)
 
-from core.data_set import build_dataset, load_dataset
+
 # macro_sercher는 더 이상 사용하지 않음 (MacroAgent.searcher()로 대체)
 from core.macro_classes.macro_llm import (
-    LLMExplainer, Opinion, Rebuttal,
-    GradientAnalyzer,
+     Opinion, Rebuttal,
 )
 
 class DebateAgent:
@@ -61,7 +55,7 @@ class DebateAgent:
         self.symbol = self.ticker
 
         # ---- 2) config 로부터 window_size 가져오기 ----
-        macro_cfg = agents_info.get("MacroSentiAgent", {})
+        macro_cfg = agents_info.get("MacroAgent", {})
         macro_window = macro_cfg.get("window_size", 40)
 
         # ---- 3) 각 에이전트 생성 ----
@@ -71,8 +65,8 @@ class DebateAgent:
                 ticker=self.ticker
             ),
 
-            "MacroSentiAgent": MacroAgent(
-                agent_id="MacroSentiAgent",
+            "MacroAgent": MacroAgent(
+                agent_id="MacroAgent",
                 ticker=self.ticker,
                 base_date=datetime.today(),
                 window=macro_window,
