@@ -147,7 +147,19 @@ class DebateAgent:
         opinions = {}
 
         for agent_id, agent in self.agents.items():
-            # === 공통: 모델 준비 (필요시 pretrain) ===
+            # === 1단계: 데이터 수집 (데이터셋 빌드) - pretrain 전에 먼저 실행 ===
+            if agent_id == "SentimentalAgent":
+                # 👉 뉴스 + 가격 기반 run_dataset
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] [SentimentalAgent] run_dataset 실행")
+                sd = agent.run_dataset(days=365)
+                # run_dataset에서 self.stockdata를 이미 세팅하지만, 확실하게 다시 넣어줌
+                agent.stockdata = sd
+            else:
+                # Technical/Macro 파이프라인: searcher 먼저 실행 (데이터셋 빌드)
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] searcher 실행 (데이터셋 준비)")
+                X = agent.searcher(ticker, rebuild=rebuild)
+
+            # === 2단계: 모델 준비 (필요시 pretrain) - 데이터셋이 준비된 후 실행 ===
             is_ready = self._check_agent_ready(agent_id, ticker)
             needs_pretrain = force_pretrain or (not is_ready)
 
@@ -158,23 +170,11 @@ class DebateAgent:
                 model_path = os.path.join(dir_info["model_dir"], f"{ticker}_{agent_id}.pt")
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] 기존 모델 사용: {model_path}")
 
-            # === 에이전트별 데이터/예측 파이프라인 분기 ===
+            # === 3단계: 예측 및 Opinion 생성 ===
             if agent_id == "SentimentalAgent":
-                # 👉 뉴스 + 가격 기반 run_dataset + MC Dropout predict
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] [SentimentalAgent] run_dataset 실행")
-                sd = agent.run_dataset(days=365)
-
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [SentimentalAgent] predict 실행 (MC Dropout 포함)")
                 target = agent.predict(sd, n_samples=30)
-
-                # run_dataset에서 self.stockdata를 이미 세팅하지만, 확실하게 다시 넣어줌
-                agent.stockdata = sd
-
             else:
-                # Technical/Macro 파이프라인 그대로 유지
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] searcher 실행")
-                X = agent.searcher(ticker, rebuild=rebuild)
-
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] predict 실행")
                 target = agent.predict(X)
 
