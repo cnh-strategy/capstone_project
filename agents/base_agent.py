@@ -299,7 +299,7 @@ class BaseAgent:
                             X_arr = val
                             # print(f"[debug] StockData.{name} 를 입력으로 사용합니다.")
                             break
-
+            
                 if X_arr is None:
                     raise AttributeError(
                         "StockData 안에서 입력 배열(np.ndarray 또는 torch.Tensor) 필드를 찾을 수 없습니다. "
@@ -573,6 +573,34 @@ class BaseAgent:
 
         return result
 
+    def _calculate_consensus_price(self, my_opinion: Opinion, others: List[Opinion]) -> float:
+        """
+        공통: 불확실성 기반 가중치(β)를 사용하여 합의된 가격(revised_price) 계산
+        - y_i_rev = y_i + γ Σ β_j (y_j - y_i)
+        """
+        gamma = getattr(self, "gamma", 0.3)
+        try:
+            my_price = float(my_opinion.target.next_close)
+            my_sigma = abs(my_opinion.target.uncertainty or 1e-6)
+
+            if not others:
+                return my_price
+
+            other_prices = np.array([o.target.next_close for o in others], dtype=float)
+            other_sigmas = np.array([abs(o.target.uncertainty or 1e-6) for o in others], dtype=float)
+
+            all_sigmas = np.concatenate([[my_sigma], other_sigmas])
+            inv_sigmas = 1 / (all_sigmas + 1e-6)
+            betas = inv_sigmas / inv_sigmas.sum()
+
+            delta = np.sum(betas[1:] * (other_prices - my_price))
+            revised_price = my_price + gamma * delta
+            return float(revised_price)
+
+        except Exception as e:
+            print(f"[{self.agent_id}] _calculate_consensus_price 실패: {e}")
+            return float(my_opinion.target.next_close)
+
     def reviewer_revise(
             self,
             my_opinion: Opinion,
@@ -581,94 +609,74 @@ class BaseAgent:
             stock_data: StockData,
             fine_tune: bool = True,
             lr: float = 1e-4,
-            epochs: int = 20,
+            epochs: int = 10,
     ):
         """
         Revision 단계 
-        - σ 기반 β-weighted 신뢰도 계산
+        - σ 기반 β-weighted 신뢰도 계산 (공통 메서드 사용)
         - γ 수렴율로 예측값 보정
-        - fine-tuning (수익률 단위)
+        - fine-tuning (HuberLoss 사용)
         - reasoning 생성
         """
-        gamma = getattr(self, "gamma", 0.3)               # 수렴율 (0~1)
-        delta_limit = getattr(self, "delta_limit", 0.05)  # fine-tuning 보정 한계
+        # 1. 신뢰도 기반 가격 계산
+        revised_price = self._calculate_consensus_price(my_opinion, others)
 
-        try:
-            # ===================================
-            # ① β 계산 (불확실성 작을수록 신뢰 높음)
-            # ===================================
-            my_price = my_opinion.target.next_close
-            my_sigma = abs(my_opinion.target.uncertainty or 1e-6)
-
-            other_prices = np.array([o.target.next_close for o in others])
-            other_sigmas = np.array([abs(o.target.uncertainty or 1e-6) for o in others])
-
-            all_sigmas = np.concatenate([[my_sigma], other_sigmas])
-            all_prices = np.concatenate([[my_price], other_prices])
-
-            inv_sigmas = 1 / (all_sigmas + 1e-6)
-            betas = inv_sigmas / inv_sigmas.sum()
-
-            # ===================================
-            # ② 논문식 수렴 업데이트
-            #     y_i_rev = y_i + γ Σ β_j (y_j - y_i)
-            # ===================================
-            delta = np.sum(betas[1:] * (other_prices - my_price))
-            revised_price = my_price + gamma * delta
-
-        except Exception as e:
-            print(f"[{self.agent_id}] revised_target 계산 실패: {e}")
-            revised_price = my_opinion.target.next_close
-            current_price = getattr(self.stockdata, "last_price", 100.0)
-            price_uplimit = current_price * (1 + delta_limit)
-            price_downlimit = current_price * (1 - delta_limit)
-            revised_price = min(max(revised_price, price_downlimit), price_uplimit)
-
-        # ===================================
-        # ③ Fine-tuning (return 단위)
-        # ===================================
+        # 2. Fine-tuning (return 단위, HuberLoss)
         loss_value = None
-        if fine_tune and hasattr(self, "model"):
+        if fine_tune and hasattr(self, "model") and self.model is not None:
             try:
-                current_price = getattr(self.stockdata, "last_price", 100.0)
-                revised_return = (revised_price / current_price) - 1  # 🔹수익률 변환
+                current_price = getattr(stock_data, "last_price", None)
+                if current_price is None:
+                    current_price = getattr(self, "last_price", 100.0)
 
+                revised_return = (revised_price / current_price) - 1.0
+                y_target = revised_return
+
+                # 입력 데이터 준비
                 X_input = self.searcher(self.ticker)
-                device = next(self.model.parameters()).device
-                X_tensor = torch.tensor(X_input, dtype=torch.float32).to(device)
-                y_tensor = torch.tensor([[revised_return]], dtype=torch.float32).to(device)
+                
+                device = next(self.model.parameters()).device if hasattr(self.model, "parameters") else torch.device("cpu")
+                
+                if isinstance(X_input, torch.Tensor):
+                    X_tensor = X_input.to(device).float()
+                else:
+                    X_tensor = torch.tensor(X_input, dtype=torch.float32).to(device)
+                
+                y_tensor = torch.tensor([[y_target]], dtype=torch.float32).to(device)
 
                 self.model.train()
-                optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-                criterion = torch.nn.MSELoss()
+                try:
+                    optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+                    criterion = torch.nn.HuberLoss(delta=1.0)
 
-                for _ in range(epochs):
-                    optimizer.zero_grad()
-                    pred = self.model(X_tensor)
-                    delta_loss = pred - y_tensor
-                    loss = criterion(pred - delta_loss, y_tensor)
-                    loss.backward()
-                    optimizer.step()
+                    for _ in range(epochs):
+                        optimizer.zero_grad()
+                        pred = self.model(X_tensor)
+                        loss = criterion(pred, y_tensor)
+                        loss.backward()
+                        optimizer.step()
 
-                loss_value = float(loss.item())
-                print(f"[{self.agent_id}] fine-tuning 완료: loss={loss_value:.6f}")
+                    loss_value = float(loss.item())
+                    print(f"[{self.agent_id}] fine-tuning 완료: loss={loss_value:.6f}")
+                finally:
+                    self.model.eval()
 
             except Exception as e:
                 print(f"[{self.agent_id}] fine-tuning 실패: {e}")
 
-        # ===================================
-        # ④ fine-tuning 이후 새 예측 생성
-        # ===================================
+        # 3. fine-tuning 이후 새 예측 생성
         try:
             X_latest = self.searcher(self.ticker)
-            new_target = self.predict(X_latest)
+            predicted_target = self.predict(X_latest, current_price=getattr(stock_data, "last_price", None))
         except Exception as e:
-            print(f"[{self.agent_id}] predict 실패: {e}")
-            new_target = my_opinion.target
+            print(f"[{self.agent_id}] 재예측(predict) 실패, 기존 Target 유지: {e}")
+            predicted_target = Target(
+                next_close=float(revised_price),
+                uncertainty=my_opinion.target.uncertainty,
+                confidence=my_opinion.target.confidence
+            )
 
-        # ===================================
-        # ⑤ reasoning 생성
-        # ===================================
+        # 4. LLM reasoning
         try:
             sys_text, user_text = self._build_messages_revision(
                 my_opinion=my_opinion,
@@ -677,7 +685,7 @@ class BaseAgent:
                 stock_data=stock_data,
             )
         except Exception as e:
-            print(f"[{self.agent_id}] _build_messages_revision 실패: {e}")
+            print(f"[{self.agent_id}] revision 메시지 생성 실패: {e}")
             sys_text, user_text = (
                 "너는 금융 분석가다. 간단히 reason만 생성하라.",
                 json.dumps({"reason": "기본 메시지 생성 실패"}),
@@ -697,12 +705,12 @@ class BaseAgent:
         revised_reason = parsed.get("reason", "(수정 사유 생성 실패)")
         revised_opinion = Opinion(
             agent_id=self.agent_id,
-            target=new_target,
+            target=predicted_target,
             reason=revised_reason,
         )
 
         self.opinions.append(revised_opinion)
-        print(f"[{self.agent_id}] revise 완료 → new_close={new_target.next_close:.2f}, loss={loss_value}")
+        print(f"[{self.agent_id}] revise 완료 → new_close={predicted_target.next_close:.2f}, loss={loss_value}")
         return self.opinions[-1]
 
 

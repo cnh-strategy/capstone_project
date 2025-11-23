@@ -485,10 +485,23 @@ class TechnicalAgent(BaseAgent, nn.Module):
         """TechnicalAgent용 LLM 프롬프트 메시지 구성 + 설명값 포함"""
         last = float(getattr(stock_data, "last_price", target.next_close))
 
-        # 최신 윈도우 설명 산출
-        X_last = self.searcher(self.ticker)
-        if not isinstance(X_last, torch.Tensor):
-          X_last = torch.tensor(X_last, dtype=torch.float32)
+        # stockdata에서 이미 저장된 데이터 재사용 (중복 searcher 방지)
+        agent_data = getattr(stock_data, self.agent_id, {})
+        
+        if isinstance(agent_data, dict) and agent_data:
+            # DataFrame으로 복원
+            df = pd.DataFrame(agent_data)
+            X_last = torch.tensor(
+                df.tail(self.window_size).values, 
+                dtype=torch.float32
+            ).unsqueeze(0)  # (1, T, F)
+        else:
+            # 만약 stockdata가 비어있으면 searcher() 재호출
+            print(f"[WARN] {self.agent_id} stockdata가 비어있음, searcher 재호출")
+            X_last = self.searcher(self.ticker)
+            if not isinstance(X_last, torch.Tensor):
+                X_last = torch.tensor(X_last, dtype=torch.float32)
+        
         T = X_last.shape[1]
         # dates 수정
         dates = getattr(self.stockdata, f"{self.agent_id}_dates", [])
@@ -862,8 +875,17 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
         # 2) 예측값 생성
         if target is None:
-            # searcher는 위에서 한 번 돌았으므로, 여기서는 최신 윈도우로 predict만 수행
-            X_input = self.searcher(self.ticker)              # (1,T,F)
+            # stockdata에서 X 재구성 (중복 searcher 방지)
+            agent_data = getattr(stock_data, self.agent_id, {})
+            if isinstance(agent_data, dict) and agent_data:
+                df = pd.DataFrame(agent_data)
+                X_input = torch.tensor(
+                    df.tail(self.window_size).values, 
+                    dtype=torch.float32
+                ).unsqueeze(0)  # (1,T,F)
+            else:
+                # 만약 비어있으면 searcher 재호출
+                X_input = self.searcher(self.ticker)
             target = self.predict(X_input)
 
         # 3) LLM 호출(reason 생성) - 전달받은 stock_data 사용

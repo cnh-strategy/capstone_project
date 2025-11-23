@@ -30,7 +30,7 @@ agents_info = {
         "patience": 8,
         "learning_rate": 4.2471233429729313e-4,
         "batch_size": 64,
-        "period": "5y",
+        "period": "3y",
         "interval": "1d",
         "x_scaler": "MinMaxScaler",
         "y_scaler": "StandardScaler",
@@ -46,7 +46,7 @@ agents_info = {
     "MacroAgent": {
         "description": "거시경제 데이터 기반 시장 분석 모델",
         # 모델/피처 관련
-        "input_dim": 13,  # 기본값, 실제는 데이터 로드 시 결정
+        # "input_dim": 169,  # 제거: 코드에서 자동 계산
         "hidden_dims": [128, 64, 32],  # LSTM 3층 hidden dimensions
         "dropout_rates": [0.3, 0.3, 0.2],  # 각 LSTM 레이어별 dropout
         "data_cols": [
@@ -61,7 +61,7 @@ agents_info = {
         "learning_rate": 0.0005,  # 5e-4
         "batch_size": 16,
         "loss_fn": "L1Loss",  # Loss function type
-        "period": "2y",
+        "period": "3y",
         "interval": "1d",
         # 스케일러
         "x_scaler": "StandardScaler",
@@ -91,7 +91,7 @@ agents_info = {
         "epochs": 50,
         "learning_rate": 5e-4,      # 0.0005
         "batch_size": 32,
-        "period": "5y",
+        "period": "3y",
         "interval": "1d",
         # 스케일러
         "x_scaler": "StandardScaler",

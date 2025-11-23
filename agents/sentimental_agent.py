@@ -134,11 +134,29 @@ class SentimentalAgent(BaseAgent):
     # -------------------------------------------------------
     # RUN_DATASET
     # -------------------------------------------------------
-    def run_dataset(self, days: int = 365) -> StockData:
+    def run_dataset(self, days: int = None) -> StockData:
         """
         최근 days일치 가격 + 뉴스 피처를 기반으로
         FEATURE_COLS 입력(1, T, F)을 만들고 StockData를 생성
         """
+        # Config에서 period 값을 가져와서 일수로 변환
+        if days is None:
+            cfg = agents_info.get(self.agent_id, {})
+            period_str = cfg.get("period", "5y")
+            
+            # period 문자열을 일수로 변환
+            if period_str.endswith("y"):
+                years = int(period_str[:-1])
+                days = years * 365
+            elif period_str.endswith("m"):
+                months = int(period_str[:-1])
+                days = months * 30
+            elif period_str.endswith("d"):
+                days = int(period_str[:-1])
+            else:
+                # 기본값: 5년 (1825일)
+                days = 5 * 365
+        
         # 0) 날짜 범위
         end = pd.Timestamp.today().normalize()
         start = end - pd.Timedelta(days=days)
@@ -402,6 +420,9 @@ class SentimentalAgent(BaseAgent):
             std_pred = self.scaler.inverse_y(std_pred)
 
         predicted_return = float(mean_pred[-1]) / 100.0  # 3.5 → 0.035
+        
+        # 수익률이 비정상적으로 큰 경우 클리핑 (일반적으로 -50% ~ +50% 범위)
+        predicted_return = np.clip(predicted_return, -0.5, 0.5)
 
         # current_price 추론
         if current_price is None:
@@ -560,7 +581,7 @@ class SentimentalAgent(BaseAgent):
         return self.reviewer_rebut(
             my_opinion=my_opinion,
             other_opinion=other_opinion,
-            round_index=round_index,
+            round=round_index,
         )
 
     # -------------------------------------------------------
@@ -576,6 +597,42 @@ class SentimentalAgent(BaseAgent):
 
         # 공통 ctx 사용
         ctx = self.build_ctx()
+        
+        # [New] 최근 뉴스 헤드라인 조회 및 추가 (XAI용)
+        news_summary = []
+        try:
+            db_path = os.path.join("data/raw/news", f"{self.ticker}_news_db.csv")
+            if os.path.exists(db_path):
+                df_news = pd.read_csv(db_path)
+                df_news['date'] = pd.to_datetime(df_news['date'])
+                # 타임존 정보가 있을 경우 제거하여 비교 오류 방지
+                if df_news['date'].dt.tz is not None:
+                    df_news['date'] = df_news['date'].dt.tz_localize(None)
+                
+                # 최근 7일 뉴스 필터링
+                asof_date_str = ctx['snapshot']['asof_date']
+                last_date = pd.to_datetime(asof_date_str)
+                start_date = last_date - pd.Timedelta(days=7)
+                
+                recent_news = df_news[(df_news['date'] >= start_date) & (df_news['date'] <= last_date)]
+                
+                if not recent_news.empty:
+                    # 감성 점수가 극단적인 뉴스 위주로 5개 선정
+                    recent_news = recent_news.copy()
+                    recent_news['abs_score'] = recent_news['sentiment_score'].abs()
+                    top_news = recent_news.sort_values('abs_score', ascending=False).head(5)
+                    
+                    for _, row in top_news.iterrows():
+                        date_str = row['date'].strftime('%Y-%m-%d')
+                        title = str(row['title'])
+                        label = str(row['sentiment_label'])
+                        score = float(row['sentiment_score'])
+                        news_summary.append(f"- {date_str}: {title} ({label}, {score:.2f})")
+        except Exception as e:
+            print(f"[WARN] 뉴스 요약 생성 실패: {e}")
+            
+        ctx['recent_news_headlines'] = news_summary if news_summary else ["(최근 7일간 주요 뉴스 없음)"]
+
         # DebateAgent에서 target이 업데이트됐을 수 있으므로 반영
         ctx["prediction"]["pred_next_close"] = float(getattr(target, "next_close", 0.0))
         ctx["prediction"]["pred_close"] = ctx["prediction"]["pred_next_close"]
@@ -731,19 +788,29 @@ class SentimentalAgent(BaseAgent):
                 f"다음 거래일 종가 예측값은 {pred_close:.2f}입니다."
             )
 
-        mean7=f"{sent.get('mean_7d', 0.0):.4f}",
-        mean30=f"{sent.get('mean_30d', 0.0):.4f}",
-        pos7=f"{sent.get('pos_ratio_7d', 0.0):.4f}",
-        neg7=f"{sent.get('neg_ratio_7d', 0.0):.4f}",
+        mean7_val = sent.get('mean_7d', None)
+        mean30_val = sent.get('mean_30d', None)
+        pos7_val = sent.get('pos_ratio_7d', None)
+        neg7_val = sent.get('neg_ratio_7d', None)
 
-        if mean7 is not None and mean30 is not None:
-            context_parts.append(
-                f"최근 7일 평균 감성 점수는 {mean7:.3f}, 최근 30일 평균은 {mean30:.3f}입니다."
-            )
-        if pos7 is not None and neg7 is not None:
-            context_parts.append(
-                f"최근 7일 기준 긍정 기사 비율은 {pos7:.2%}, 부정 기사 비율은 {neg7:.2%}입니다."
-            )
+        if mean7_val is not None and mean30_val is not None:
+            try:
+                mean7_val = float(mean7_val)
+                mean30_val = float(mean30_val)
+                context_parts.append(
+                    f"최근 7일 평균 감성 점수는 {mean7_val:.3f}, 최근 30일 평균은 {mean30_val:.3f}입니다."
+                )
+            except (ValueError, TypeError):
+                pass
+        if pos7_val is not None and neg7_val is not None:
+            try:
+                pos7_val = float(pos7_val)
+                neg7_val = float(neg7_val)
+                context_parts.append(
+                    f"최근 7일 기준 긍정 기사 비율은 {pos7_val:.2%}, 부정 기사 비율은 {neg7_val:.2%}입니다."
+                )
+            except (ValueError, TypeError):
+                pass
         if vol7 is not None:
             context_parts.append(
                 f"최근 7일 감성 점수의 변동성(표준편차)은 {vol7:.3f}입니다."
@@ -803,16 +870,46 @@ class SentimentalAgent(BaseAgent):
             rebuts=rebuts_joined,
             pred_close=f"{pred_close:.4f}",
             chg=("NA" if change_ratio is None else f"{change_ratio*100:.2f}%"),
-            mean7=("NA" if mean7 is None else f"{mean7:.4f}"),
-            mean30=("NA" if mean30 is None else f"{mean30:.4f}"),
-            pos7=("NA" if pos7 is None else f"{pos7:.4f}"),
-            neg7=("NA" if neg7 is None else f"{neg7:.4f}"),
-            vol7=("NA" if vol7 is None else f"{vol7:.4f}"),
-            trend7=("NA" if trend7 is None else f"{trend7:.4f}"),
+            mean7=("NA" if mean7_val is None else f"{float(mean7_val):.4f}"),
+            mean30=("NA" if mean30_val is None else f"{float(mean30_val):.4f}"),
+            pos7=("NA" if pos7_val is None else f"{float(pos7_val):.4f}"),
+            neg7=("NA" if neg7_val is None else f"{float(neg7_val):.4f}"),
+            vol7=("NA" if vol7 is None else f"{float(vol7):.4f}"),
+            trend7=("NA" if trend7 is None else f"{float(trend7):.4f}"),
             news7=("NA" if news7 is None else f"{news7}"),
             context=context_str,
         )
         return system_tmpl, user_text
+        
+    def reviewer_revise(
+        self,
+        my_opinion: Opinion,
+        others: List[Opinion],
+        rebuttals: Optional[List[Rebuttal]] = None,
+        stock_data: StockData = None,
+    ) -> Opinion:
+        # SentimentalAgent는 BaseAgent의 revise 로직을 사용하되,
+        # revise된 예측값을 유지하도록 수정 (기존에는 원래 값으로 되돌렸음)
+        revised = super().reviewer_revise(
+            my_opinion=my_opinion,
+            others=others,
+            rebuttals=rebuttals,
+            stock_data=stock_data,
+        )
+
+        # revise된 값이 유효한 경우 유지 (None이거나 0에 가까운 값이 아닌 경우)
+        try:
+            if revised is not None and hasattr(revised, "target") and revised.target is not None:
+                revised_close = revised.target.next_close
+                # revise된 값이 비정상적으로 작거나 None인 경우에만 원래 값으로 복원
+                if revised_close is None or revised_close < 10.0:
+                    print(f"[SentimentalAgent] revise된 값({revised_close})이 비정상적이어서 원래 값({my_opinion.target.next_close})으로 복원")
+                    revised.target.next_close = my_opinion.target.next_close
+                # 그 외에는 revise된 값을 유지하여 다양성 확보
+        except Exception as e:
+            print(f"[SentimentalAgent] reviewer_revise post-fix 실패: {e}")
+
+        return revised
 
     # -------------------------------------------------------
     # 레거시 get_opinion (단독 테스트용)

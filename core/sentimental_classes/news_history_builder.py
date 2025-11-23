@@ -16,7 +16,7 @@ if not EODHD_API_KEY:
 def fetch_history_news(ticker, start, end):
     url = (
         f"https://eodhd.com/api/news?"
-        f"s={ticker}&from={start}&to={end}&api_token={EODHD_API_KEY}&fmt=json"
+        f"s={ticker}&from={start}&to={end}&limit=1000&api_token={EODHD_API_KEY}&fmt=json"
     )
 
     r = requests.get(url, timeout=10)
