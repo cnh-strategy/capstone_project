@@ -30,7 +30,7 @@ agents_info = {
         "patience": 8,
         "learning_rate": 4.2471233429729313e-4,
         "batch_size": 64,
-        "period": "5y",
+        "period": "3y",
         "interval": "1d",
         "x_scaler": "MinMaxScaler",
         "y_scaler": "StandardScaler",
@@ -40,31 +40,32 @@ agents_info = {
     },
 
     # -----------------------------------------------------------
-    # MacroSentiAgent: 거시지표 + 시장심리 조합 모델
+    # MacroAgent: 거시지표 + 시장심리 조합 모델
     #  (매크로 모듈이 없으면 코드에서 자동으로 우회되도록 구성)
     # -----------------------------------------------------------
-    "MacroSentiAgent": {
+    "MacroAgent": {
         "description": "거시경제 데이터 기반 시장 분석 모델",
         # 모델/피처 관련
-        "input_dim": 13,
-        "hidden_dim": 64,
-        "num_layers": 2,
-        "dropout": 0.1,
+        # "input_dim": 169,  # 제거: 코드에서 자동 계산
+        "hidden_dims": [128, 64, 32],  # LSTM 3층 hidden dimensions
+        "dropout_rates": [0.3, 0.3, 0.2],  # 각 LSTM 레이어별 dropout
         "data_cols": [
             "Open", "High", "Low", "Close", "Volume",
             "returns", "sma_5", "sma_20", "rsi", "volume_z",
             "USD_KRW", "NASDAQ", "VIX"
         ],
         # 시퀀스/학습 관련
-        "window_size": 14,
-        "epochs": 50,
-        "learning_rate": 1e-4,      # 0.0001
+        "window_size": 40,  # 실제 사용값
+        "epochs": 60,
+        "patience": 10,  # Early stopping patience
+        "learning_rate": 0.0005,  # 5e-4
         "batch_size": 16,
-        "period": "2y",
+        "loss_fn": "L1Loss",  # Loss function type
+        "period": "3y",
         "interval": "1d",
         # 스케일러
         "x_scaler": "StandardScaler",
-        "y_scaler": "StandardScaler",
+        "y_scaler": "MinMaxScaler",  # 실제 사용값 (feature_range=(-1, 1))
         # 합의/수렴 관련
         "gamma": 0.5,
         "delta_limit": 0.1,
@@ -90,7 +91,7 @@ agents_info = {
         "epochs": 50,
         "learning_rate": 5e-4,      # 0.0005
         "batch_size": 32,
-        "period": "5y",
+        "period": "3y",
         "interval": "1d",
         # 스케일러
         "x_scaler": "StandardScaler",
