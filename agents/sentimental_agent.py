@@ -1,589 +1,544 @@
 # agents/sentimental_agent.py
-# ===============================================================
-# SentimentalAgent: 감성(뉴스/텍스트) + LSTM 기반 예측 에이전트
-#  - LSTM 출력은 "다음날 수익률(return)"을 예측한다고 가정하고,
-#    마지막 종가(last_close)에 곱해서 다음 종가(pred_next_close)를 계산한다.
-# ===============================================================
 
 from __future__ import annotations
+
 import os
 import json
-from dataclasses import dataclass
 from typing import Optional, Tuple, Dict, Any, List, Union
+from datetime import datetime
 
-from pathlib import Path
-from datetime import datetime, timedelta, date
-
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
+import yfinance as yf
 
-from typing import Any
-from core.data_set import load_dataset
+# BaseAgent
+from agents.base_agent import BaseAgent, StockData, Target, Opinion, Rebuttal
 
-# ---------------------------
-# 프로젝트 의존 모듈 (안전 import)
-# ---------------------------
-# 이미 있는 타입 힌트용 코드도 활용
-try:
-    from agents.base_agent import StockData, Target, Opinion, Rebuttal
-except Exception:
-    StockData = Any
-    Target = Any
-    Opinion = Any
-    Rebuttal = Any
+# 뉴스 병합 / 뉴스 기반 데이터셋
+from core.sentimental_classes.news import merge_price_with_news_features
+from core.sentimental_classes.pretrain_dataset_builder import build_pretrain_dataset
 
-# dir_info 쓰는 경우를 대비해서 (있으면 사용, 없으면 기본값)
-try:
-    from config.agents import dir_info
-except Exception:
-    dir_info = {}
+# LSTM 모델
+from core.sentimental_classes.lstm_model import SentimentalLSTM
 
-try:
-    from agents.base_agent import BaseAgent, StockData, Target, Opinion  # type: ignore
-except Exception:
-    BaseAgent = object  # type: ignore
+# dataset loader
+from core.data_set import load_dataset, build_dataset
 
-    @dataclass
-    class Target:  # type: ignore
-        next_close: float
-        uncertainty: float
-        confidence: float
+# 프롬프트
+from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 
-    @dataclass
-    class Opinion:  # type: ignore
-        agent_id: str
-        target: Target
-        reason: str
+from config.agents import agents_info, dir_info
 
-try:
-    from config.agents import agents_info, dir_info  # type: ignore
-except Exception:
-    agents_info = {
-        "SentimentalAgent": {
-            "window_size": 40,
-            "hidden_dim": 128,
-            "dropout": 0.2,
-            "epochs": 30,
-            "learning_rate": 1e-3,
-            "batch_size": 64,
-            "x_scaler": "StandardScaler",
-            "y_scaler": "StandardScaler",
-            "gamma": 0.3,
-            "delta_limit": 0.05,
-        }
-    }
-    dir_info = {
-        "data_dir": "data",
-        "model_dir": "models",
-        "scaler_dir": os.path.join("models", "scalers"),
-    }
+# config
+from config.agents import agents_info, dir_info
 
-try:
-    from core.data_set import build_dataset, load_dataset  # type: ignore
-except Exception:
-    build_dataset = None  # type: ignore
+CFG_S = agents_info["SentimentalAgent"]
 
-    def load_dataset(*args, **kwargs):  # type: ignore
-        raise RuntimeError("core.data_set.load_dataset 를 찾을 수 없습니다.")
+FEATURE_COLS = [
+    "return_1d",
+    "hl_range",
+    "Volume",
+    "news_count_1d",
+    "news_count_7d",
+    "sentiment_mean_1d",
+    "sentiment_mean_7d",
+    "sentiment_vol_7d",
+]
 
-# 프롬프트 세트 (있는 경우 사용)
-try:
-    from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS  # type: ignore
-except Exception:
-    OPINION_PROMPTS = REBUTTAL_PROMPTS = REVISION_PROMPTS = None  # type: ignore
+# config 값과 동기화
+WINDOW_SIZE = CFG_S["window_size"]
+HIDDEN_DIM = CFG_S.get("d_model", 64)   # d_model을 LSTM hidden_dim으로 재활용
+NUM_LAYERS = CFG_S["num_layers"]
+DROPOUT = CFG_S["dropout"]
+# =============================================================================
 
 
-# ---------------------------
-# FinBERT / 뉴스 유틸 import
-# ---------------------------
-from typing import Any  # 파일 맨 위에 이미 있으면 생략
+class SentimentalAgent(BaseAgent):
 
-FinBertScorer: Any | None = None
-load_or_fetch_news: Any | None = None
-score_news_items: Any | None = None
-attach_scores_to_items: Any | None = None
-compute_finbert_features: Any | None = None
+    def __init__(self, ticker, agent_id="SentimentalAgent", **kwargs):
+        super().__init__(ticker=ticker, agent_id=agent_id, **kwargs)
 
-try:
-    # ✅ FinBERT 관련 유틸은 전부 이 모듈에서 가져온다
-    from core.sentimental_classes.finbert_utils import (
-        FinBertScorer,
-        load_or_fetch_news,
-        score_news_items,
-        attach_scores_to_items,
-        compute_finbert_features,
-    )
-except Exception as e:
-    print("[warn] core.sentimental_classes.finbert_utils 에서 FinBERT 관련 유틸을 불러오지 못했습니다:", repr(e))
-    FinBertScorer = None
-    load_or_fetch_news = None
-    score_news_items = None
-    attach_scores_to_items = None
-    compute_finbert_features = None
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-USE_FINBERT = all(
-    x is not None
-    for x in [
-        FinBertScorer,
-        score_news_items,
-        attach_scores_to_items,
-        compute_finbert_features,
-    ]
-)
+        cfg = agents_info[self.agent_id]
 
-try:
-    from core.data_set import load_dataset  # 프로젝트 공통 데이터 로더
-except Exception:
-    load_dataset = None  # 타입 힌트용/안전장치
+        # BaseAgent에서도 window_size를 세팅하지만, 여기서도 명시적으로 맞춰둠
+        self.window_size = cfg["window_size"]
 
-# ---------------------------------------------------------------
-# 모델 정의: LSTM + Dropout (MC Dropout 지원)
-#   ⚠️ 출력은 "다음날 수익률(return)" 값으로 가정
-# ---------------------------------------------------------------
-class SentimentalNet(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int = 128, dropout: float = 0.2):
-        super().__init__()
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers=1, batch_first=True)
-        self.drop = nn.Dropout(dropout)
-        self.fc = nn.Linear(hidden_dim, 1)
+        # LSTM 구조 관련 하이퍼파라미터
+        self.hidden_dim = HIDDEN_DIM          # = cfg.get("d_model", 64)
+        self.num_layers = NUM_LAYERS          # = cfg["num_layers"]
+        self.dropout = DROPOUT                # = cfg["dropout"]
 
-    def forward(self, x):
-        # x: [B, T, F]
-        out, _ = self.lstm(x)
-        out = self.drop(out[:, -1, :])
-        out = self.fc(out)  # [B, 1]  ← "예측된 수익률" (return)
-        return out
+        # 피처 목록 (실제는 FEATURE_COLS 기준)
+        self.feature_cols = list(FEATURE_COLS)
 
+        self.model = None
+        self.model_loaded = False
 
-# ---------------------------------------------------------------
-# load/build dataset 시그니처 호환 유틸
-# ---------------------------------------------------------------
-def _load_dataset_compat(ticker: str, agent_id: str, window_size: Optional[int] = None):
-    if not ticker:
-        raise ValueError("load_dataset_compat: empty ticker")
-    try:
-        return load_dataset(ticker, agent_id, window_size=window_size)  # type: ignore
-    except TypeError:
-        pass
-    try:
-        return load_dataset(ticker, agent_id, seq_len=window_size)  # type: ignore
-    except TypeError:
-        pass
-    return load_dataset(ticker, agent_id)  # type: ignore
-
-
-def _build_dataset_compat(ticker: str, agent_id: str, window_size: Optional[int] = None):
-    if not ticker:
-        raise ValueError("build_dataset_compat: empty ticker")
-    if build_dataset is None:
-        return
-    try:
-        return build_dataset(ticker, agent_id, window_size=window_size)  # type: ignore
-    except TypeError:
-        pass
-    try:
-        return build_dataset(ticker, agent_id, seq_len=window_size)  # type: ignore
-    except TypeError:
-        pass
-    return build_dataset(ticker, agent_id)  # type: ignore
-
-
-# ---------------------------------------------------------------
-# 유틸: 진단 스크립트가 저장한 뉴스 캐시를 읽어 FinBERT 집계 피처 생성
-# ---------------------------------------------------------------
-def _utc_from_kst_asof(asof_kst: str, lookback_days: int = 40) -> Tuple[str, str, date]:
-    kst_dt = datetime.fromisoformat(asof_kst)
-    utc_today = (kst_dt - timedelta(hours=9)).date()
-    to_utc_date = utc_today - timedelta(days=1)
-    from_utc_date = to_utc_date - timedelta(days=lookback_days)
-    return from_utc_date.isoformat(), to_utc_date.isoformat(), to_utc_date
-
-
-def _zero_news_feats() -> Dict[str, Any]:
-    """뉴스/FinBERT 피처가 없을 때 기본값."""
-    return {
-        "sentiment_summary": {
-            "mean_7d": 0.0,
-            "mean_30d": 0.0,
-            "pos_ratio_7d": 0.0,
-            "neg_ratio_7d": 0.0,
-        },
-        "sentiment_volatility": {"vol_7d": 0.0},
-        "news_count": {"count_1d": 0, "count_7d": 0},
-        "trend_7d": 0.0,
-        "has_news": False,
-    }
-
-
-def build_finbert_news_features(
-    ticker: str,
-    asof_kst: str,
-    base_dir: str = "data/raw/news",
-    text_fields: Tuple[str, ...] = ("title", "content", "text", "summary"),
-) -> Dict[str, Any]:
-    """
-    SentimentalAgent 가 사용할 FinBERT 입력용 뉴스 피처 생성.
-    - base_dir 가 상대경로면, 항상 '프로젝트 루트/데이터' 기준으로 해석
-    - 정확한 기간 파일이 없으면 동일 티커의 최신 캐시 파일을 fallback 으로 사용
-    """
-    
-    # FinBERT 자체가 비활성화된 경우: 안전하게 0 피처 반환
-    if FinBertScorer is None:
-        print("[FinBERT] FinBertScorer 없음 → 감성 피처를 0으로 대체합니다.")
-        return _zero_news_feats()
-
-    fr, to, to_date_utc = _utc_from_kst_asof(asof_kst, lookback_days=40)
-    symbol_us = f"{ticker}.US"
-
-    project_root = Path(__file__).resolve().parent.parent
-    base = Path(base_dir)
-    if not base.is_absolute():
-        base = project_root / base
-
-    # 1) 정확한 기간 파일 우선 탐색
-    path = base / f"{symbol_us}_{fr}_{to}.json"
-    print(f"[FinBERT] 캐시 탐색: {path} (exists={path.exists()})")
-
-    if not path.exists():
-        # 2) fallback: 동일 티커의 최신 캐시 파일 사용
-        pattern = f"{symbol_us}_*.json"
-        candidates = sorted(base.glob(pattern))
-        if candidates:
-            latest = max(candidates, key=lambda p: p.stat().st_mtime)
-            print(
-                f"[FinBERT] 뉴스 캐시 없음(정확한 기간): {path.name}, "
-                f"대신 최신 파일 사용: {latest.name}"
-            )
-            path = latest
-        else:
-            print(f"[FinBERT] 뉴스 캐시 없음: {path} (글로벌 매치도 없음)")
-            return _zero_news_feats()
-
-    try:
-        items = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as e:
-        print(f"[FinBERT] 캐시 로드 실패: {path} ({e})")
-        return _zero_news_feats()
-
-    if not isinstance(items, list):
-        print(f"[FinBERT] 캐시 형식 경고(list 아님): {path}")
-        return _zero_news_feats()
-
-    for it in items:
-        for k in ("date", "published_date", "time", "pubDate"):
-            if not isinstance(it.get(k), str):
-                it[k] = ""
-
-    print(f"[FinBERT] {len(items)}건 뉴스 감성 분석 시작... ({path.name})")
-    try:
-        scorer = FinBertScorer()
-        scores = score_news_items(items, scorer=scorer, text_fields=text_fields)
-        items_scored = attach_scores_to_items(items, scores)
-        feats = compute_finbert_features(items_scored, asof_utc_date=to_date_utc)
-    except Exception as e:
-        print(f"[FinBERT] 감성 분석 중 오류 발생 → 0 피처로 대체: {e}")
-        return _zero_news_feats()
-
-    vol7 = feats.get("sentiment_volatility", {}).get("vol_7d", 0.0)
-    feats["sentiment_volatility"] = {"vol_7d": vol7}
-
-    print(
-        f"[FinBERT] 7d_mean={feats['sentiment_summary']['mean_7d']:.3f} "
-        f"7d_cnt={feats['news_count']['count_7d']}"
-    )
-    feats["has_news"] = True
-    return feats
-
-
-# ---------------------------------------------------------------
-# 본체: SentimentalAgent
-# ---------------------------------------------------------------
-class SentimentalAgent(BaseAgent):  # type: ignore
-    agent_id: str = "SentimentalAgent"
-
-    def __init__(
-        self,
-        ticker: str | None = None,
-        agent_id: str = "SentimentalAgent",
-        *args,
-        **kwargs,
-    ):
-        # ✅ BaseAgent 한 번만 초기화
-        agent_id = agent_id or "SentimentalAgent"
-        super().__init__(agent_id=agent_id, ticker=ticker, *args, **kwargs)
-
-        # 티커 정리
         if not getattr(self, "ticker", None):
             self.ticker = ticker
-        if self.ticker is None or str(self.ticker).strip() == "":
+        if not self.ticker:
             raise ValueError("SentimentalAgent: ticker is None/empty")
         self.ticker = str(self.ticker).upper()
         setattr(self, "symbol", self.ticker)
 
-        # 설정 로드
-        cfg = (agents_info or {}).get(self.agent_id, {})
-        if not cfg:
-            print("[WARN] agents_info['SentimentalAgent'] 가 없어 기본값 사용")
-            cfg = {
-                "window_size": 40,
-                "hidden_dim": 128,
-                "dropout": 0.2,
-                "epochs": 30,
-                "learning_rate": 1e-3,
-                "batch_size": 64,
-                "x_scaler": "StandardScaler",
-                "y_scaler": "StandardScaler",
-                "gamma": 0.3,
-                "delta_limit": 0.05,
-            }
-        self.window_size = cfg.get("window_size", 40)
-        self.hidden_dim = cfg.get("hidden_dim", 128)
-        self.dropout = cfg.get("dropout", 0.2)
 
-        self.model: Optional[nn.Module] = None
-        self.feature_cols: List[str] = []  # ctx에서 써먹을 용도
-        self.model_loaded: bool = False
+    # -------------------------------------------------------
+    # PRETRAIN
+    # -------------------------------------------------------
+    def pretrain(self):
+        print(f"[SentimentalAgent] Building pretrain dataset with news for {self.ticker}...")
+        build_pretrain_dataset(self.ticker)
 
-        # ✅ 초기화 시 자동 모델 로드 (있으면)
-        try:
-            self._load_model_if_exists()
-        except Exception as e:
-            # 여기서는 조용히 넘기고, 실제 예측 시 BaseAgent.predict에서 다시 처리
-            print(f"[SentimentalAgent] 초기 모델 로드 중 예외 발생 (무시하고 진행): {e}")
-            
-    def run_dataset(self, save_dir: str | None = None) -> "StockData":
-        """
-        core.data_set.load_dataset()를 호출해서
-        (X, y, feature_cols)를 로드하고,
-        BaseAgent에서 사용하는 StockData 형태로 감싸서 self.stockdata에 저장.
+        print(f"[SentimentalAgent] Pretraining LSTM for {self.ticker}...")
+        super().pretrain()
 
-        반환값: StockData 인스턴스
-        """
-
-        # 1) save_dir 기본값 설정
-        if save_dir is None:
-            # config.agents.dir_info 에서 처리 경로를 관리하고 있다면 우선 사용
-            # (키 이름은 프로젝트 상황에 따라 다를 수 있음)
-            save_dir = (
-                dir_info.get("processed_dir")
-                or dir_info.get("data_processed")
-                or "data/processed"
-            )
-
-        # 2) 공통 데이터셋 로더 호출
-        # 시그니처: load_dataset(ticker: str, agent_id: str, save_dir: str)
-        X, y, feature_cols = load_dataset(
-            ticker=self.ticker,
-            agent_id=self.agent_id,
-            save_dir=save_dir,
-        )
-
-        # 3) StockData 래핑 (positional 인자로만 전달)
-        stock_data = StockData(X, y, feature_cols)
-
-        # 4) BaseAgent 쪽에서 사용할 수 있도록 저장
-        self.stockdata = stock_data
-
-        return stock_data
-
-
-        # 4) BaseAgent에서 참조할 수 있도록 저장
-        self.stockdata = stock_data
-
-        return stock_data
-
-    # -----------------------------------------------------------
-    # 모델 관련 유틸
-    # -----------------------------------------------------------
+    # -------------------------------------------------------
+    # _BUILD_MODEL
+    # -------------------------------------------------------
     def _build_model(self) -> nn.Module:
-        """
-        BaseAgent.pretrain()에서 호출하는 모델 생성 함수.
-        SentimentalNet(LSTM) 구조를 생성해서 반환.
-        """
+        """BaseAgent.pretrain에서 사용할 LSTM 모델 생성"""
+
+        # dataset 로드 또는 생성
         try:
-            X, y, cols = _load_dataset_compat(
-                self.ticker,
-                self.agent_id,
-                window_size=self.window_size,
+            X, y, cols = load_dataset(
+                ticker=self.ticker,
+                agent_id=self.agent_id,
             )
         except Exception:
-            # 데이터셋이 없다면 먼저 생성
-            _build_dataset_compat(
-                self.ticker,
-                self.agent_id,
-                window_size=self.window_size,
+            build_dataset(
+                ticker=self.ticker,
+                agent_id=self.agent_id,
             )
-            X, y, cols = _load_dataset_compat(
-                self.ticker,
-                self.agent_id,
-                window_size=self.window_size,
+            X, y, cols = load_dataset(
+                ticker=self.ticker,
+                agent_id=self.agent_id,
             )
 
-        input_dim = X.shape[-1]
+        # feature_cols 자동 업데이트
         self.feature_cols = list(cols)
+        input_dim = X.shape[-1]
 
-        net = SentimentalNet(
+        model = SentimentalLSTM(
             input_dim=input_dim,
             hidden_dim=self.hidden_dim,
+            num_layers=self.num_layers,
             dropout=self.dropout,
         )
-        return net
 
-    def model_path(self) -> str:
-        try:
-            from config.agents import dir_info  # 재-import 방지용
-            model_dir = dir_info["model_dir"]
-        except Exception:
-            model_dir = "models"
+        return model
 
-        ticker = getattr(self, "ticker", "UNKNOWN")
-        agent_id = getattr(self, "agent_id", "SentimentalAgent")
-        return os.path.join(model_dir, f"{ticker}_{agent_id}.pt")
-
-    def _load_model_if_exists(self) -> None:
+    # -------------------------------------------------------
+    # RUN_DATASET
+    # -------------------------------------------------------
+    def run_dataset(self, days: int = None) -> StockData:
         """
-        TechnicalAgent 와 동일한 전략:
-        - model_path() 기준으로 파일 존재 시 BaseAgent.load_model() 사용
-        - 직접 torch.load / load_state_dict 호출 ❌
+        최근 days일치 가격 + 뉴스 피처를 기반으로
+        FEATURE_COLS 입력(1, T, F)을 만들고 StockData를 생성
         """
-        model_path = self.model_path()
+        # Config에서 period 값을 가져와서 일수로 변환
+        if days is None:
+            cfg = agents_info.get(self.agent_id, {})
+            period_str = cfg.get("period", "5y")
+            
+            # period 문자열을 일수로 변환
+            if period_str.endswith("y"):
+                years = int(period_str[:-1])
+                days = years * 365
+            elif period_str.endswith("m"):
+                months = int(period_str[:-1])
+                days = months * 30
+            elif period_str.endswith("d"):
+                days = int(period_str[:-1])
+            else:
+                # 기본값: 5년 (1825일)
+                days = 5 * 365
+        
+        # 0) 날짜 범위
+        end = pd.Timestamp.today().normalize()
+        start = end - pd.Timedelta(days=days)
 
-        if not os.path.exists(model_path):
-            # 모델 파일 없으면 조용히 패스 (경고 X)
-            self.model_loaded = False
-            return
+        # 1) 가격 데이터 (yfinance)
+        df_price = yf.download(self.ticker, start=start, end=end)
+        if isinstance(df_price.columns, pd.MultiIndex):
+            df_price.columns = [c[0].lower() for c in df_price.columns]
+        else:
+            df_price.columns = [c.lower() for c in df_price.columns]
 
-        ok = False
-        try:
-            ok = self.load_model(model_path)
-        except Exception as e:
-            print(f"[SentimentalAgent] 모델 로드 실패: {e}")
-            ok = False
+        df_price = df_price.rename(columns={
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "volume": "volume",
+        })
 
-        self.model_loaded = bool(ok)
+        df_price["date"] = df_price.index
+        df_price = df_price.reset_index(drop=True)
 
-    # -----------------------------------------------------------
-    # MC Dropout 기반 helper (기존 기능 유지)
-    # -----------------------------------------------------------
-    @torch.inference_mode()
-    def _mc_dropout_predict(self, x: torch.Tensor, T: int = 30) -> Tuple[float, float]:
+        # 2) 뉴스 + 가격 병합
+        df_merged = merge_price_with_news_features( 
+            df_price=df_price,
+            ticker=self.ticker,
+            asof_kst=end.date(),
+            base_dir=os.path.join("data", "raw", "news"),
+        )
+        if isinstance(df_merged, tuple):
+            df_feat = df_merged[0]
+        else:
+            df_feat = df_merged
+
+        df_feat = df_feat.sort_values("date").reset_index(drop=True)
+
+        # ---------------------------------------
+        # FEATURE_COLS 자동 보정
+        # ---------------------------------------
+        required = list(FEATURE_COLS)
+        print("[SentimentalAgent.run_dataset] missing(before):",
+              [c for c in required if c not in df_feat.columns])
+
+        # return_1d
+        if "return_1d" not in df_feat.columns:
+            df_feat["return_1d"] = df_feat["close"].pct_change().fillna(0)
+
+        # hl_range
+        if "hl_range" not in df_feat.columns:
+            df_feat["hl_range"] = ((df_feat["high"] - df_feat["low"]) /
+                                   df_feat["close"].replace(0, np.nan)).fillna(0)
+
+        # Volume (대문자)
+        if "Volume" not in df_feat.columns:
+            df_feat["Volume"] = df_feat["volume"].fillna(0)
+
+        # 뉴스 1일 feature (없으면 0)
+        for col in ["news_count_1d", "sentiment_mean_1d"]:
+            if col not in df_feat.columns:
+                df_feat[col] = 0.0
+
+        # 마지막 검증
+        missing_after = [c for c in required if c not in df_feat.columns]
+        if missing_after:
+            raise ValueError(
+                f"[SentimentalAgent.run_dataset] FEATURE_COLS 부족: {missing_after}"
+            )
+
+        print("[SentimentalAgent.run_dataset] all FEATURE_COLS present.")
+
+        # ---------------------------------------
+        # 입력 행렬 생성
+        # ---------------------------------------
+        feat_values = df_feat[required].values.astype("float32")
+
+        if len(feat_values) < self.window_size:
+            raise ValueError(
+                f"데이터 길이({len(feat_values)}) < 윈도우({self.window_size})"
+            )
+
+        X_last = feat_values[-self.window_size:]
+        X_last = X_last[None, :, :]  # (1, T, F)
+        self._last_input = X_last
+
+        # ---------------------------------------
+        # StockData 생성
+        # ---------------------------------------
+        last_row = df_feat.iloc[-1]
+        last_price = float(last_row["close"])
+
+        sd = StockData()
+        sd.ticker = self.ticker
+        sd.last_price = last_price
+        sd.currency = "USD"
+        sd.feature_cols = required
+        sd.window_size = self.window_size
+        sd.raw_df = df_feat
+
+        sd.news_feats = {
+            "news_count_7d": float(last_row.get("news_count_7d", 0)),
+            "sentiment_mean_7d": float(last_row.get("sentiment_mean_7d", 0)),
+            "sentiment_vol_7d": float(last_row.get("sentiment_vol_7d", 0)),
+        }
+
+        sd.snapshot = {
+            "agent_id": self.agent_id,
+            "feature_cols": sd.feature_cols,
+            "window_size": sd.window_size,
+            "news_feats": sd.news_feats,
+            "raw_df": sd.raw_df,
+        }
+
+        sd.X_seq = X_last
+        sd.SentimentalAgent = {
+            "X_seq": X_last,
+            "last_price": last_price,
+        }
+
+        self.stockdata = sd
+        return sd
+
+    # -------------------------------------------------------
+    # searcher (DebateAgent에서 호출) :
+    #   - 여기서는 run_dataset() 기반으로 최신 가격/뉴스 사용
+    # -------------------------------------------------------
+    def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
+        if ticker and ticker != self.ticker:
+            self.ticker = str(ticker).upper()
+
+        sd = self.run_dataset(days=365)
+        self.stockdata = sd
+
+        X_last = sd.X_seq  # (1, T, F)
+        X_tensor = torch.tensor(X_last, dtype=torch.float32)
+        return X_tensor
+
+    # -------------------------------------------------------
+    # predict
+    #   - Monte Carlo Dropout + DataScaler + y*100 스케일 고려
+    # -------------------------------------------------------
+    def predict(self, X, n_samples: int = 30, current_price: float | None = None):
         """
-        x: [1, T, F]
-        반환: (mean_return, std_return)
+        SentimentalAgent 전용 Monte Carlo Dropout 예측 함수
+
+        - 입력: StockData 또는 (T, F) / (1, T, F) numpy/tensor
+        - self.model(SentimentalLSTM) + self.scaler 로드
+        - MC Dropout으로 예측 분포 샘플링
+        - "수익률 * 100" → 실제 가격(next_close)로 변환
+        - Target(next_close, uncertainty, confidence) 반환
         """
-        if self.model is None:
-            raise RuntimeError("model is None for MC Dropout")
+        # -----------------------------
+        # 0) 입력 정리 (StockData 래핑)
+        # -----------------------------
+        if isinstance(X, StockData):
+            sd = X
+            X_in = getattr(sd, "X_seq", None)
+            if X_in is None:
+                raise ValueError("StockData에 X_seq가 없습니다. run_dataset()을 먼저 호출하세요.")
+            if current_price is None and getattr(sd, "last_price", None) is not None:
+                current_price = float(sd.last_price)
+        else:
+            sd = None
+            X_in = X
 
-        self.model.train()
-        outs = []
-        for _ in range(T):
-            outs.append(self.model(x).detach())
-        self.model.eval()
+        if X_in is None:
+            raise ValueError("predict()에 전달된 입력 X가 None 입니다.")
 
-        y = torch.stack(outs, dim=0).squeeze(-1)
-        mean = y.mean(dim=0)
-        std = y.std(dim=0)
-        return float(mean.squeeze().item()), float(std.squeeze().item())
+        # numpy / tensor 로 통일
+        if isinstance(X_in, np.ndarray):
+            X_raw_np = X_in.copy()
+        elif isinstance(X_in, torch.Tensor):
+            X_raw_np = X_in.detach().cpu().numpy().copy()
+        else:
+            raise TypeError(f"Unsupported input type for predict: {type(X_in)}")
 
+        # run_dataset() 기준: X_seq.shape == (1, T, F)
+        if X_raw_np.ndim == 3 and X_raw_np.shape[0] == 1:
+            X_seq_np = X_raw_np[0]        # (T, F)
+        elif X_raw_np.ndim == 2:
+            X_seq_np = X_raw_np           # (T, F)
+        else:
+            raise ValueError(f"예상하지 못한 입력 shape: {X_raw_np.shape}, (T,F) 또는 (1,T,F)만 지원합니다.")
+
+        # -----------------------------
+        # 1) 모델 준비 (load_model()에 의존하지 않음)
+        # -----------------------------
+        model = getattr(self, "model", None)
+        if model is None:
+            # __init__에서 hidden_dim, num_layers, dropout 세팅해둔 상태라고 가정
+            self.model = SentimentalLSTM(
+                input_dim=len(FEATURE_COLS),
+                hidden_dim=self.hidden_dim,
+                num_layers=self.num_layers,
+                dropout=self.dropout,
+            )
+            model = self.model
+
+        # state_dict 직접 로드
+        model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
+        if os.path.exists(model_path) and not getattr(self, "model_loaded", False):
+            try:
+                ckpt = torch.load(model_path, map_location="cpu")
+                state_dict = ckpt.get("model_state_dict", ckpt)
+                model.load_state_dict(state_dict, strict=False)
+                self.model_loaded = True
+                print(f" SentimentalAgent 모델(state_dict) 로드 완료 ({model_path})")
+            except Exception as e:
+                print(f"[SentimentalAgent] 모델 state_dict 로드 실패(무시하고 진행): {e}")
+
+        # -----------------------------
+        # 1-1) 스케일러 로드
+        # -----------------------------
+        if not hasattr(self, "scaler"):
+            raise RuntimeError("[SentimentalAgent] self.scaler가 정의되지 않았습니다.")
+        self.scaler.load(self.ticker)
+
+        # -----------------------------
+        # 2) 입력 스케일링
+        # -----------------------------
+        X_scaled, _ = self.scaler.transform(X_seq_np)     # (T, F)
+        X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
+
+        # [T, F] → [1, T, F]
+        if X_tensor.dim() == 2:
+            X_tensor = X_tensor.unsqueeze(0)
+
+        device = getattr(self, "device", torch.device("cpu"))
+        X_tensor = X_tensor.to(device)
+        model.to(device)
+
+        # -----------------------------
+        # 3) Monte Carlo Dropout 추론
+        # -----------------------------
+        model.train()  # dropout 활성화 (MC Dropout)
+        preds = []
+
+        with torch.no_grad():
+            for _ in range(n_samples):
+                y_pred = model(X_tensor)   # 예: (1, seq_len) 또는 (1, 1)
+                if isinstance(y_pred, (tuple, list)):
+                    y_pred = y_pred[0]
+                preds.append(y_pred.detach().cpu().numpy().flatten())
+
+        preds = np.stack(preds)           # (samples, L)
+        mean_pred = preds.mean(axis=0)    # (L,)
+        std_pred = np.abs(preds.std(axis=0))
+
+        # -----------------------------
+        # 4) σ 기반 confidence 계산
+        # -----------------------------
+        sigma = float(std_pred[-1])
+        sigma = max(sigma, 1e-6)
+        confidence = float(1.0 / (1.0 + np.log1p(sigma)))
+
+        # -----------------------------
+        # 5) y_scaler 역변환 + 수익률 → 가격 변환
+        # -----------------------------
+        # 모델 출력이 "수익률 * 100" 형태라고 가정 (예: 3.5 → +3.5%)
+        if hasattr(self.scaler, "y_scaler") and self.scaler.y_scaler is not None:
+            mean_pred = self.scaler.inverse_y(mean_pred)
+            std_pred = self.scaler.inverse_y(std_pred)
+
+        predicted_return = float(mean_pred[-1]) / 100.0  # 3.5 → 0.035
+        
+        # 수익률이 비정상적으로 큰 경우 클리핑 (일반적으로 -50% ~ +50% 범위)
+        predicted_return = np.clip(predicted_return, -0.5, 0.5)
+
+        # current_price 추론
+        if current_price is None:
+            if sd is not None and getattr(sd, "last_price", None) is not None:
+                current_price = float(sd.last_price)
+            else:
+                current_price = float(getattr(self, "last_price", 100.0))
+
+        predicted_price = float(current_price * (1.0 + predicted_return))
+
+        # -----------------------------
+        # 6) Target 생성 및 저장
+        # -----------------------------
+        target = Target(
+            next_close=predicted_price,
+            uncertainty=sigma,
+            confidence=confidence,
+        )
+
+        if hasattr(self, "targets"):
+            self.targets.append(target)
+
+        return target
+
+    # -------------------------------------------------------
+    # 내부 helper: _predict_next_close
+    #   - run_dataset → self.predict(StockData) 조합으로 사용
+    # -------------------------------------------------------
     @torch.inference_mode()
     def _predict_next_close(self) -> Tuple[float, float, float, List[str]]:
         """
-        LSTM 출력은 "다음날 수익률(return)"로 가정하고,
-        마지막 종가(last_close)에 곱해 다음 종가(pred_close)를 계산한다.
-        반환:
-            pred_close      : 예측된 다음 종가 (price)
-            uncertainty_std : 예측 수익률(return)의 표준편차
-            confidence      : 1 / (1 + uncertainty_std)
-            cols            : feature 컬럼 리스트
+        run_dataset() 결과 또는 이미 계산된 self.stockdata를 이용해
+        다음날 종가 / 불확실성 / 신뢰도를 얻는다.
         """
-        if not self.ticker:
-            raise ValueError("ticker is None in _predict_next_close")
+        sd = getattr(self, "stockdata", None)
+        if sd is None or getattr(sd, "X_seq", None) is None:
+            sd = self.run_dataset(days=365)
 
-        try:
-            X, y, cols = _load_dataset_compat(self.ticker, self.agent_id, window_size=self.window_size)
-        except Exception:
-            _build_dataset_compat(self.ticker, self.agent_id, window_size=self.window_size)
-            X, y, cols = _load_dataset_compat(self.ticker, self.agent_id, window_size=self.window_size)
+        target = self.predict(sd, n_samples=30)
+        cols = list(getattr(sd, "feature_cols", self.feature_cols))
+        return float(target.next_close), float(target.uncertainty or 0.0), float(target.confidence or 0.0), cols
 
-        # 마지막 종가 추출
-        last_close_idx = cols.index("Close") if "Close" in cols else -1
-        last_close = None
-        if last_close_idx >= 0:
-            last_close = float(X[-1, -1, last_close_idx])
-
-        # last_close가 없으면 fallback 값 (이 경우엔 네트워크 출력을 그대로 price처럼 취급)
-        if last_close is None or not (last_close == last_close):
-            last_close = None
-
-        # 모델이 없으면: 마지막 종가 그대로 사용 (수익률 0 가정)
-        if self.model is None:
-            pred_close = float(last_close) if last_close is not None else float("nan")
-            uncertainty_std = 0.10  # return 기준 대략 10% 정도로 가정
-            confidence = 1.0 / (1.0 + uncertainty_std)
-            return pred_close, uncertainty_std, confidence, cols
-
-        # 모델이 있으면: 수익률(return) 예측 후 price로 변환
-        x_last = torch.tensor(X[-1:]).float()
-        mean_ret, std_ret = self._mc_dropout_predict(x_last, T=30)
-
-        if last_close is not None:
-            pred_close = float(last_close * (1.0 + mean_ret))
-        else:
-            # 어쩔 수 없이 return 값을 그대로 price처럼 사용 (이 경우는 거의 없을 것)
-            pred_close = float(mean_ret)
-
-        uncertainty_std = float(std_ret)  # "수익률"의 표준편차
-        confidence = float(1.0 / (1.0 + max(1e-6, uncertainty_std)))
-
-        # 디버깅용 로그 (필요하면 주석 해제)
-        # print(f"[SentimentalAgent] last_close={last_close}, mean_ret={mean_ret}, pred_close={pred_close}")
-
-        return pred_close, uncertainty_std, confidence, cols
-
-    # -----------------------------------------------------------
-    # ctx 생성 (FinBERT + 가격 스냅샷)
-    # -----------------------------------------------------------
+    # -------------------------------------------------------
+    # ctx 구성 (run_dataset의 news_feats 사용)
+    # -------------------------------------------------------
     def build_ctx(self, asof_date_kst: Optional[str] = None) -> Dict[str, Any]:
+        # 0) StockData 확보
+        stockdata: StockData | None = getattr(self, "stockdata", None)
+        if stockdata is None or getattr(stockdata, "X_seq", None) is None:
+            stockdata = self.run_dataset()
+
+        # 1) 기준 날짜(asof_date_kst)
         if asof_date_kst is None:
             asof_date_kst = datetime.now().strftime("%Y-%m-%d")
 
+        # 2) 예측 값
         pred_close, uncertainty_std, confidence, cols = self._predict_next_close()
 
+        # 3) 가격 스냅샷 (raw_df 마지막 행 기준)
         price_snapshot: Dict[str, Optional[float]] = {}
-        try:
-            X, _, cols2 = _load_dataset_compat(self.ticker, self.agent_id, window_size=self.window_size)
-            last = X[-1, -1, :]
-            snap_map = {c: float(v) for c, v in zip(cols2, last)}
-            for k in ("Close", "Open", "High", "Low", "Volume", "returns"):
-                if k in snap_map:
-                    price_snapshot[k] = snap_map[k]
-        except Exception:
-            pass
+        df = getattr(stockdata, "raw_df", None)
+        if isinstance(df, pd.DataFrame) and len(df) > 0:
+            last = df.iloc[-1]
+            price_snapshot["Close"] = float(last.get("close", np.nan))
+            price_snapshot["Open"] = float(last.get("open", np.nan))
+            price_snapshot["High"] = float(last.get("high", np.nan))
+            price_snapshot["Low"] = float(last.get("low", np.nan))
+            price_snapshot["Volume"] = float(last.get("volume", np.nan))
+        else:
+            price_snapshot = {
+                "Close": getattr(stockdata, "last_price", np.nan),
+                "Open": None,
+                "High": None,
+                "Low": None,
+                "Volume": None,
+            }
 
-        news_feats = build_finbert_news_features(
-            self.ticker, asof_date_kst, base_dir=os.path.join("data", "raw", "news")
-        )
+        # 4) 뉴스/감성 피처: run_dataset()에서 저장한 news_feats 사용
+        nf = getattr(stockdata, "news_feats", {}) or {}
+        news_count_7d = float(nf.get("news_count_7d", 0.0))
+        sentiment_mean_7d = float(nf.get("sentiment_mean_7d", 0.0))
+        sentiment_vol_7d = float(nf.get("sentiment_vol_7d", 0.0))
+
+        sentiment_summary = {
+            "mean_7d": sentiment_mean_7d,
+            "mean_30d": 0.0,          # 아직은 30일 피처 없으니 0으로
+            "pos_ratio_7d": 0.0,
+            "neg_ratio_7d": 0.0,
+        }
+        sentiment_vol = {"vol_7d": sentiment_vol_7d}
+        news_count = {"count_7d": int(news_count_7d)}
+        trend_7d = 0.0
+        has_news = bool(news_count_7d > 0)
+
+        # 5) snapshot / prediction 구성
+        last_price = price_snapshot.get("Close", np.nan)
+        if last_price and last_price == last_price:
+            pred_return = float(pred_close / last_price - 1.0)
+        else:
+            pred_return = None
 
         snapshot = {
             "asof_date": asof_date_kst,
-            "last_price": price_snapshot.get("Close", np.nan),
-            "currency": "USD",
+            "last_price": last_price,
+            "currency": getattr(stockdata, "currency", "USD"),
             "window_size": self.window_size,
             "feature_cols_preview": [c for c in (cols or [])[:8]],
         }
 
-        last_price = snapshot["last_price"]
-        pred_return = float(pred_close / last_price - 1.0) if (last_price and last_price == last_price) else None
-
         feature_importance = {
-            "sentiment_score": news_feats["sentiment_summary"]["mean_7d"],
-            "sentiment_summary": news_feats["sentiment_summary"],
-            "sentiment_volatility": {"vol_7d": news_feats["sentiment_volatility"].get("vol_7d", 0.0)},
-            "trend_7d": news_feats["trend_7d"],
-            "news_count": news_feats["news_count"],
-            "has_news": news_feats.get("has_news", False),
+            "sentiment_score": sentiment_summary.get("mean_7d", 0.0),
+            "sentiment_summary": sentiment_summary,
+            "sentiment_volatility": sentiment_vol,
+            "trend_7d": trend_7d,
+            "news_count": news_count,
+            "has_news": has_news,
             "price_snapshot": {
                 "Close": price_snapshot.get("Close"),
                 "Open": price_snapshot.get("Open"),
@@ -605,7 +560,10 @@ class SentimentalAgent(BaseAgent):  # type: ignore
             "prediction": {
                 "pred_close": pred_close,
                 "pred_return": pred_return,
-                "uncertainty": {"std": uncertainty_std, "ci95": float(1.96 * uncertainty_std)},
+                "uncertainty": {
+                    "std": uncertainty_std,
+                    "ci95": float(1.96 * uncertainty_std),
+                },
                 "confidence": confidence,
                 "pred_next_close": pred_close,
             },
@@ -613,119 +571,102 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         }
         return ctx
 
-    # --------------------------
-    # BaseAgent 규약 충족: Opinion 프롬프트
-    # --------------------------
+    def reviewer_rebuttal(
+        self,
+        my_opinion: Opinion,
+        other_opinion: Opinion,
+        round_index: int,
+    ) -> Rebuttal:
+
+        return self.reviewer_rebut(
+            my_opinion=my_opinion,
+            other_opinion=other_opinion,
+            round=round_index,
+        )
+
+    # -------------------------------------------------------
+    # Opinion / Rebuttal / Revision 프롬프트
+    # -------------------------------------------------------
     def _build_messages_opinion(
         self,
-        stock_data: "StockData",
-        target: "Target",
-    ):
-        from prompts import OPINION_PROMPTS  # 상단에 이미 있으면 생략 가능
-        import json
-        from typing import Dict, Any
-        import numpy as np
-
+        stock_data: StockData,
+        target: Target,
+    ) -> Tuple[str, str]:
         if stock_data is None:
             stock_data = self.stockdata
 
-        ctx: Dict[str, Any] = {}
+        # 공통 ctx 사용
+        ctx = self.build_ctx()
+        
+        # [New] 최근 뉴스 헤드라인 조회 및 추가 (XAI용)
+        news_summary = []
+        try:
+            db_path = os.path.join("data/raw/news", f"{self.ticker}_news_db.csv")
+            if os.path.exists(db_path):
+                df_news = pd.read_csv(db_path)
+                df_news['date'] = pd.to_datetime(df_news['date'])
+                # 타임존 정보가 있을 경우 제거하여 비교 오류 방지
+                if df_news['date'].dt.tz is not None:
+                    df_news['date'] = df_news['date'].dt.tz_localize(None)
+                
+                # 최근 7일 뉴스 필터링
+                asof_date_str = ctx['snapshot']['asof_date']
+                last_date = pd.to_datetime(asof_date_str)
+                start_date = last_date - pd.Timedelta(days=7)
+                
+                recent_news = df_news[(df_news['date'] >= start_date) & (df_news['date'] <= last_date)]
+                
+                if not recent_news.empty:
+                    # 감성 점수가 극단적인 뉴스 위주로 5개 선정
+                    recent_news = recent_news.copy()
+                    recent_news['abs_score'] = recent_news['sentiment_score'].abs()
+                    top_news = recent_news.sort_values('abs_score', ascending=False).head(5)
+                    
+                    for _, row in top_news.iterrows():
+                        date_str = row['date'].strftime('%Y-%m-%d')
+                        title = str(row['title'])
+                        label = str(row['sentiment_label'])
+                        score = float(row['sentiment_score'])
+                        news_summary.append(f"- {date_str}: {title} ({label}, {score:.2f})")
+        except Exception as e:
+            print(f"[WARN] 뉴스 요약 생성 실패: {e}")
+            
+        ctx['recent_news_headlines'] = news_summary if news_summary else ["(최근 7일간 주요 뉴스 없음)"]
 
-        # 기본 메타 정보
-        ctx["ticker"] = getattr(stock_data, "ticker", self.ticker)
-        ctx["currency"] = getattr(stock_data, "currency", "USD")
+        # DebateAgent에서 target이 업데이트됐을 수 있으므로 반영
+        ctx["prediction"]["pred_next_close"] = float(getattr(target, "next_close", 0.0))
+        ctx["prediction"]["pred_close"] = ctx["prediction"]["pred_next_close"]
 
-        # 현재가 / 다음날 예측 종가
-        last_close = getattr(stock_data, "last_price", None)
-        ctx["last_close"] = last_close
-        ctx["next_close"] = float(getattr(target, "next_close", None) or 0.0)
-
-        # 예상 수익률 (비율)
-        change_ratio = None
+        last_close = ctx["snapshot"].get("last_price")
         if isinstance(last_close, (int, float)) and last_close not in (0, None):
             try:
-                change_ratio = ctx["next_close"] / float(last_close) - 1.0
+                chg = ctx["prediction"]["pred_next_close"] / float(last_close) - 1.0
             except ZeroDivisionError:
-                change_ratio = None
-        ctx["change_ratio"] = change_ratio
+                chg = None
+        else:
+            chg = None
+        ctx["prediction"]["pred_return"] = chg
 
-        # 예측 불확실성 / 신뢰도
-        ctx["uncertainty_std"] = getattr(target, "uncertainty", None)
-        ctx["confidence"] = getattr(target, "confidence", None)
-
-        # --- SentimentalAgent 전용 스냅샷 주입 ---
-        # 이전 코드: snap = getattr(stock_data, "SentimentalAgent", {}) or {}
-        # → numpy 배열일 때 truth value 에러 발생하므로 수정
-        snap = getattr(stock_data, "SentimentalAgent", None)
-
-        if isinstance(snap, dict):
-            for k, v in snap.items():
-                # numpy 배열이면 마지막 값 위주로 사용
-                if isinstance(v, np.ndarray):
-                    if v.ndim == 0:
-                        ctx[k] = v.item()
-                    elif v.size > 0:
-                        flat = v.reshape(-1)
-                        last_val = flat[-1]
-                        try:
-                            ctx[k] = float(last_val)
-                        except Exception:
-                            ctx[k] = last_val
-                    else:
-                        ctx[k] = None
-                # 리스트/튜플이면 마지막 값 사용
-                elif isinstance(v, (list, tuple)) and len(v) > 0:
-                    ctx[k] = v[-1]
-                else:
-                    ctx[k] = v
-        # dict 가 아니면(예: np.array 직접 할당) 그냥 무시
-
-        # JSON 직렬화
         ctx_json = json.dumps(ctx, ensure_ascii=False, indent=2)
+        prompts = OPINION_PROMPTS["SentimentalAgent"]
+        system_text = prompts["system"]
+        user_tmpl = prompts["user"]
 
-        # 프롬프트 로딩
-        prompts = OPINION_PROMPTS.get("SentimentalAgent", {}) if OPINION_PROMPTS else {}
-        system_text = prompts.get("system", "너는 감성/뉴스 중심의 단기 주가 분석가다.")
-        user_tmpl = prompts.get(
-            "user",
-            "ctx(JSON):\n{context}\n\n위 ctx를 바탕으로 reason을 생성하라.",
-        )
-
-        # 템플릿 포맷 안전 처리
         try:
             user_text = user_tmpl.format(context=ctx_json)
         except KeyError:
-            try:
-                user_text = user_tmpl.format(ctx_json)
-            except Exception:
-                user_text = user_tmpl.replace("{context}", ctx_json)
+            user_text = user_tmpl.replace("{context}", ctx_json)
 
         return system_text, user_text
 
-    # --------------------------
-    # BaseAgent 규약 충족: Rebuttal 프롬프트
-    # --------------------------
-    def _build_messages_rebuttal(self, *args, **kwargs) -> Tuple[str, str]:
-        stock_data = args[0] if len(args) > 0 else kwargs.get("stock_data")
-        target: Optional[Target] = args[1] if len(args) > 1 else kwargs.get("target")
-
-        opponent = None
-        for key in ("opponent", "opponent_opinion", "other_opinion", "other", "opinion"):
-            if key in kwargs:
-                opponent = kwargs[key]
-                break
-        if opponent is None and len(args) > 2:
-            opponent = args[2]
-
-        if isinstance(opponent, Opinion):
-            opp_agent = getattr(opponent, "agent_id", "UnknownAgent")
-            opp_reason = getattr(opponent, "reason", "")
-        elif isinstance(opponent, dict):
-            opp_agent = opponent.get("agent_id", "UnknownAgent")
-            opp_reason = opponent.get("reason", "")
-        else:
-            opp_agent = "UnknownAgent"
-            opp_reason = str(opponent) if opponent is not None else ""
+    def _build_messages_rebuttal(
+        self,
+        my_opinion: Opinion,
+        target_opinion: Opinion,
+        stock_data: StockData,
+    ) -> Tuple[str, str]:
+        opp_agent = getattr(target_opinion, "agent_id", "UnknownAgent")
+        opp_reason = getattr(target_opinion, "reason", "")
 
         ctx = self.build_ctx()
         fi = ctx.get("feature_importance", {})
@@ -734,7 +675,7 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         trend7 = fi.get("trend_7d", None)
         news7 = fi.get("news_count", {}).get("count_7d", None)
 
-        pred_close = float(target.next_close) if target else float(ctx["prediction"]["pred_next_close"])
+        pred_close = float(my_opinion.target.next_close)
         last_price = ctx.get("snapshot", {}).get("last_price")
         change_ratio = None
         if last_price and last_price == last_price and last_price != 0:
@@ -783,49 +724,36 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         )
         return system_tmpl, user_text
 
-    # --------------------------
-    # BaseAgent 규약 충족: Revision 프롬프트
-    # --------------------------
-    def _build_messages_revision(self, *args, **kwargs) -> Tuple[str, str]:
-        stock_data = args[0] if len(args) > 0 else kwargs.get("stock_data")
-        target: Optional[Target] = args[1] if len(args) > 1 else kwargs.get("target")
+    def _build_messages_revision(
+        self,
+        my_opinion: Opinion,
+        others: List[Opinion],
+        rebuttals: Optional[List[Rebuttal]] = None,
+        stock_data: StockData = None,
+    ) -> Tuple[str, str]:
+        if stock_data is None:
+            stock_data = self.stockdata
 
-        # previous opinion 찾기
-        prev = None
-        rebs = None
-        for key in ("previous", "previous_opinion", "draft", "opinion"):
-            if key in kwargs:
-                prev = kwargs[key]
-                break
-        if prev is None and len(args) > 2:
-            prev = args[2]
-
-        # rebuttals 찾기
-        for key in ("rebuttals", "replies", "responses"):
-            if key in kwargs:
-                rebs = kwargs[key]
-                break
-        if rebs is None and len(args) > 3:
-            rebs = args[3]
-
-        # Opinion/Dict/str → text
-        def _op_text(x: Union[Opinion, Dict[str, Any], str, None]) -> str:
+        def _op_text(x: Union[Opinion, Dict[str, Any], str, None, Any]) -> str:
             if isinstance(x, Opinion):
                 return getattr(x, "reason", "")
             if isinstance(x, dict):
-                return x.get("reason", "")
-            return x or ""
+                return x.get("reason", "") or x.get("message", "")
+            if hasattr(x, "message"):
+                return getattr(x, "message", "")
+            if hasattr(x, "reason"):
+                return getattr(x, "reason", "")
+            return str(x) if x else ""
 
-        prev_reason = _op_text(prev)
+        prev_reason = _op_text(my_opinion)
 
         reb_texts: List[str] = []
-        if isinstance(rebs, list):
-            for r in rebs:
+        if isinstance(rebuttals, list):
+            for r in rebuttals:
                 reb_texts.append(_op_text(r))
-        elif rebs is not None:
-            reb_texts.append(_op_text(rebs))
+        elif rebuttals is not None:
+            reb_texts.append(_op_text(rebuttals))
 
-        # 공통 ctx 로딩
         ctx = self.build_ctx()
         fi = ctx.get("feature_importance", {})
         sent = fi.get("sentiment_summary", {})
@@ -833,21 +761,18 @@ class SentimentalAgent(BaseAgent):  # type: ignore
         trend7 = fi.get("trend_7d", None)
         news7 = fi.get("news_count", {}).get("count_7d", None)
 
-        # 불확실성/신뢰도 (prediction 블록에서 가져옴)
         pred_info = ctx.get("prediction", {}) or {}
         unc_dict = pred_info.get("uncertainty", {}) or {}
         unc_std = unc_dict.get("std", None)
         confidence = pred_info.get("confidence", None)
 
-        pred_close = float(target.next_close) if target else float(pred_info.get("pred_next_close"))
+        pred_close = float(my_opinion.target.next_close)
         last_price = ctx.get("snapshot", {}).get("last_price")
         change_ratio = None
         if last_price and last_price == last_price and last_price != 0:
             change_ratio = pred_close / last_price - 1.0
 
-        # === 감성/예측 요약 context 문자열 생성 ===
         context_parts: List[str] = []
-
         if last_price is not None:
             if change_ratio is not None:
                 context_parts.append(
@@ -863,19 +788,29 @@ class SentimentalAgent(BaseAgent):  # type: ignore
                 f"다음 거래일 종가 예측값은 {pred_close:.2f}입니다."
             )
 
-        mean7 = sent.get("mean_7d", None)
-        mean30 = sent.get("mean_30d", None)
-        pos7 = sent.get("pos_ratio_7d", None)
-        neg7 = sent.get("neg_ratio_7d", None)
+        mean7_val = sent.get('mean_7d', None)
+        mean30_val = sent.get('mean_30d', None)
+        pos7_val = sent.get('pos_ratio_7d', None)
+        neg7_val = sent.get('neg_ratio_7d', None)
 
-        if mean7 is not None and mean30 is not None:
-            context_parts.append(
-                f"최근 7일 평균 감성 점수는 {mean7:.3f}, 최근 30일 평균은 {mean30:.3f}입니다."
-            )
-        if pos7 is not None and neg7 is not None:
-            context_parts.append(
-                f"최근 7일 기준 긍정 기사 비율은 {pos7:.2%}, 부정 기사 비율은 {neg7:.2%}입니다."
-            )
+        if mean7_val is not None and mean30_val is not None:
+            try:
+                mean7_val = float(mean7_val)
+                mean30_val = float(mean30_val)
+                context_parts.append(
+                    f"최근 7일 평균 감성 점수는 {mean7_val:.3f}, 최근 30일 평균은 {mean30_val:.3f}입니다."
+                )
+            except (ValueError, TypeError):
+                pass
+        if pos7_val is not None and neg7_val is not None:
+            try:
+                pos7_val = float(pos7_val)
+                neg7_val = float(neg7_val)
+                context_parts.append(
+                    f"최근 7일 기준 긍정 기사 비율은 {pos7_val:.2%}, 부정 기사 비율은 {neg7_val:.2%}입니다."
+                )
+            except (ValueError, TypeError):
+                pass
         if vol7 is not None:
             context_parts.append(
                 f"최근 7일 감성 점수의 변동성(표준편차)은 {vol7:.3f}입니다."
@@ -891,16 +826,13 @@ class SentimentalAgent(BaseAgent):  # type: ignore
 
         if unc_std is not None and confidence is not None:
             context_parts.append(
-                f"Monte Carlo Dropout 기반 예측 표준편차는 {unc_std:.4f}, 신뢰도는 {confidence:.3f}입니다."
+                f"예측 표준편차는 {unc_std:.4f}, 신뢰도는 {confidence:.3f}입니다."
             )
 
         context_str = " ".join(context_parts) if context_parts else (
             "최근 뉴스 감성 점수, 변동성, 긍·부정 비율, 뉴스 수, 예측 불확실성 등을 종합해 단기 주가를 해석합니다."
         )
 
-        # ==========================
-        # 프롬프트 템플릿 선택
-        # ==========================
         system_tmpl = None
         user_tmpl = None
         if REVISION_PROMPTS and "SentimentalAgent" in REVISION_PROMPTS:
@@ -916,7 +848,6 @@ class SentimentalAgent(BaseAgent):  # type: ignore
             )
 
         if not user_tmpl:
-            # 기본 템플릿은 context 없이 동작 (기존 형식 유지)
             user_tmpl = (
                 "티커: {ticker}\n"
                 "초안 의견:\n{prev}\n\n"
@@ -924,32 +855,65 @@ class SentimentalAgent(BaseAgent):  # type: ignore
                 "업데이트된 수치:\n- next_close: {pred_close}\n- 예상 변화율: {chg}\n"
                 "감성 근거 스냅샷:\n- mean7={mean7}, mean30={mean30}, pos7={pos7}, neg7={neg7}\n"
                 "- vol7={vol7}, trend7={trend7}, news7={news7}\n\n"
-                "요청: 초안에서 과장/중복/약한 근거를 정리하고, 강한 근거(감성 추세, 변동성 안정/확대, 뉴스 수 변화)를 중심으로 "
-                "최종 의견을 3~5문장으로 재작성하세요. 불확실성(표준편차)/신뢰도 해석을 함께 제시하세요."
+                "추가 컨텍스트:\n{context}\n\n"
+                "요청: 초안의 과장/중복/약한 근거를 정리하고, 강한 근거(감성 추세, 변동성, 뉴스 수 변화)를 중심으로 "
+                "최종 의견을 3~5문장으로 재작성하세요. 불확실성/신뢰도 해석을 포함하세요."
             )
 
-        rebuts_joined = "- " + "\n- ".join([s for s in reb_texts if s]) if reb_texts else "(반박 없음)"
+        rebuts_joined = "- " + "\n- ".join(
+            [s for s in reb_texts if s]
+        ) if reb_texts else "(반박 없음)"
 
-        # 🔴 핵심: context를 항상 함께 넘겨줌
         user_text = user_tmpl.format(
             ticker=self.ticker,
             prev=prev_reason if prev_reason else "(초안 없음)",
             rebuts=rebuts_joined,
             pred_close=f"{pred_close:.4f}",
             chg=("NA" if change_ratio is None else f"{change_ratio*100:.2f}%"),
-            mean7=("NA" if mean7 is None else f"{mean7:.4f}"),
-            mean30=("NA" if mean30 is None else f"{mean30:.4f}"),
-            pos7=("NA" if pos7 is None else f"{pos7:.4f}"),
-            neg7=("NA" if neg7 is None else f"{neg7:.4f}"),
-            vol7=("NA" if vol7 is None else f"{vol7:.4f}"),
-            trend7=("NA" if trend7 is None else f"{trend7:.4f}"),
+            mean7=("NA" if mean7_val is None else f"{float(mean7_val):.4f}"),
+            mean30=("NA" if mean30_val is None else f"{float(mean30_val):.4f}"),
+            pos7=("NA" if pos7_val is None else f"{float(pos7_val):.4f}"),
+            neg7=("NA" if neg7_val is None else f"{float(neg7_val):.4f}"),
+            vol7=("NA" if vol7 is None else f"{float(vol7):.4f}"),
+            trend7=("NA" if trend7 is None else f"{float(trend7):.4f}"),
             news7=("NA" if news7 is None else f"{news7}"),
-            context=context_str,  # ✅ REVISION_PROMPTS에서 {context}를 써도 안전하게
+            context=context_str,
         )
         return system_tmpl, user_text
+        
+    def reviewer_revise(
+        self,
+        my_opinion: Opinion,
+        others: List[Opinion],
+        rebuttals: Optional[List[Rebuttal]] = None,
+        stock_data: StockData = None,
+    ) -> Opinion:
+        # SentimentalAgent는 BaseAgent의 revise 로직을 사용하되,
+        # revise된 예측값을 유지하도록 수정 (기존에는 원래 값으로 되돌렸음)
+        revised = super().reviewer_revise(
+            my_opinion=my_opinion,
+            others=others,
+            rebuttals=rebuttals,
+            stock_data=stock_data,
+        )
 
-    # Opinion 생성 (legacy 경로)
-    # --------------------------
+        # revise된 값이 유효한 경우 유지 (None이거나 0에 가까운 값이 아닌 경우)
+        try:
+            if revised is not None and hasattr(revised, "target") and revised.target is not None:
+                revised_close = revised.target.next_close
+                # revise된 값이 비정상적으로 작거나 None인 경우에만 원래 값으로 복원
+                if revised_close is None or revised_close < 10.0:
+                    print(f"[SentimentalAgent] revise된 값({revised_close})이 비정상적이어서 원래 값({my_opinion.target.next_close})으로 복원")
+                    revised.target.next_close = my_opinion.target.next_close
+                # 그 외에는 revise된 값을 유지하여 다양성 확보
+        except Exception as e:
+            print(f"[SentimentalAgent] reviewer_revise post-fix 실패: {e}")
+
+        return revised
+
+    # -------------------------------------------------------
+    # 레거시 get_opinion (단독 테스트용)
+    # -------------------------------------------------------
     def get_opinion(self, idx: int = 0, ticker: Optional[str] = None) -> Opinion:
         if ticker and ticker != self.ticker:
             self.ticker = str(ticker).upper()

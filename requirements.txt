@@ -1,8 +1,10 @@
 # Core ML/AI packages
 torch>=2.0.0
+# tensorflow>=2.13.0  # FinBERT uses PyTorch, TF might be optional unless legacy code needs it.
 numpy>=1.21.0
 pandas>=1.3.0
 scikit-learn>=1.0.0
+lightgbm>=4.0.0
 
 # Data fetching and financial data
 yfinance>=0.2.0
@@ -19,36 +21,25 @@ joblib>=1.0.0
 # Dashboard and visualization
 streamlit>=1.28.0
 plotly>=5.0.0
-
-# Additional utilities
 matplotlib>=3.5.0
-
-# Development and testing (optional)
-pytest>=6.0.0
-jupyter>=1.0.0
 
 # LLM and AI packages
 openai>=1.0.0
 anthropic>=0.3.0
 transformers>=4.30.0
 
-# Data processing
+# Data processing & Utils
 openpyxl>=3.0.0
 xlrd>=2.0.0
-
-# Time series analysis
-ta>=0.10.0
-
-# Statistical analysis
+tqdm>=4.62.0
+pyyaml>=6.0
 scipy>=1.7.0
 statsmodels>=0.13.0
 
-# Web scraping (for news/sentiment)
+# Web scraping (optional but kept for compatibility)
 beautifulsoup4>=4.9.0
 newspaper3k>=0.2.8
 
-# Progress bars
-tqdm>=4.62.0
-
-# Configuration management
-pyyaml>=6.0
+# Development
+pytest>=6.0.0
+jupyter>=1.0.0
