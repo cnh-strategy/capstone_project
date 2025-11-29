@@ -1,19 +1,3 @@
-core/*
-!core/__init__.py
-!core/data_set.py
-
-# sentimental
-!core/sentimental_classes/
-!core/sentimental_classes/**
-
-# macro
-!core/macro_classes/
-!core/macro_classes/**
-
-# technical
-!core/technical_classes/
-!core/technical_classes/**
-
 # Environment variables
 .env
 .env.local
@@ -28,38 +12,24 @@ env/
 # Python cache
 __pycache__/
 *.pyc
-__pycache__
 
-# Data and models (optional - uncomment if you don't want to track these)
-# data/
-# models/
-*.pkl
-*.h5
-*.keras
-
-# IDE
+# IDE & OS
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# OS
 .DS_Store
 Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
-# 노트북은 notebooks/ 폴더에만 보관
-*.ipynb
-!notebooks/*.ipynb
 
-
-# 데이터 파일 제외
-notebooks/data/
-notebooks/models/__pycache__/
-SentimentalAgent/
-data/
-models/
-news_data.csv
-*.pyc
-*.npz
+# Data & Models (데이터나 모델 파일이 너무 크면 이 부분을 유지하세요)
+# *.pkl
+# *.h5
+# *.keras
+# *.npz
+# data/
+# models/
+# notebooks/data/
+# SentimentalAgent/
