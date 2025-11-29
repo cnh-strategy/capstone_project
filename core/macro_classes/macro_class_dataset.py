@@ -99,9 +99,23 @@ class MacroAData:
         return df
 
     def save_csv(self):
-        path = os.path.join(OUTPUT_DIR, f"{self.ticker}_{self.agent_id}.csv")
-        self.data.to_csv(path, index=True)
+        path = os.path.join(OUTPUT_DIR, f"{self.ticker}_{self.agent_id}_dataset.csv")
+
+        df = self.data.copy()
+
+        # 1) index가 datetime이든 아니든 항상 Date 컬럼 생성
+        if 'Date' not in df.columns:
+            df['Date'] = pd.to_datetime(df.index).strftime('%Y-%m-%d')
+
+        # 2) Date를 첫 번째 칼럼으로
+        cols = ['Date'] + [c for c in df.columns if c != 'Date']
+        df = df[cols]
+
+        # 3) index는 절대 저장하지 않는다 (중복 Date 방지)
+        df.to_csv(path, index=False)
+
         print(f"[MacroAgent] Saved {path}")
+
 
 
     def make_close_price(self):
@@ -112,11 +126,12 @@ class MacroAData:
             end=self.end_date,
         )["Close"]
 
+
         # CSV 저장
         path = os.path.join(OUTPUT_DIR, "daily_closePrice.csv")
         df_prices.to_csv(path)
 
-        print("저장 완료:", df_prices.shape, "rows")
+        print("[make_close_price]저장 완료:", df_prices.shape, "rows")
 
 
     #티커 통합 모델 저장
@@ -126,13 +141,14 @@ class MacroAData:
         # 1. 데이터 불러오기
         # -------------------------------------------------------------
         PRICE_CSV_PATH = os.path.join(OUTPUT_DIR, "daily_closePrice.csv")
-        MACRO_CSV_PATH = os.path.join(OUTPUT_DIR, f"{self.ticker}_{self.agent_id}.csv")
+        MACRO_CSV_PATH = os.path.join(OUTPUT_DIR, f"{self.ticker}_{self.agent_id}_dataset.csv")
 
         macro_df = pd.read_csv(MACRO_CSV_PATH)
         price_df = pd.read_csv(PRICE_CSV_PATH)
 
-        macro_df['Date'] = pd.to_datetime(macro_df['Date'])
-        price_df['Date'] = pd.to_datetime(price_df['Date'])
+        macro_df['Date'] = pd.to_datetime(macro_df['Date']).dt.strftime('%Y-%m-%d')
+        price_df['Date'] = pd.to_datetime(price_df['Date']).dt.strftime('%Y-%m-%d')
+
 
         # -------------------------------------------------------------
         # 2. 매크로 피처 확장 (원본 + 변화율)
@@ -157,8 +173,18 @@ class MacroAData:
             errors='ignore'
         )
 
-        constant_cols = [c for c in macro_full.columns if macro_full[c].std() == 0]
-        macro_full = macro_full.drop(columns=constant_cols, errors="ignore")
+        # ★ Date 보존
+        date_col = macro_full['Date']
+
+        # ★ 숫자 컬럼만 추출
+        numeric_cols = macro_full.select_dtypes(include=['number'])
+
+        # ★ 상수 컬럼 제거
+        constant_cols = [c for c in numeric_cols.columns if numeric_cols[c].std() == 0]
+        numeric_cols = numeric_cols.drop(columns=constant_cols, errors="ignore")
+
+        # ★ Date + 숫자컬럼 다시 병합 → Date 유지됨!
+        macro_full = pd.concat([date_col, numeric_cols], axis=1)
 
         # -------------------------------------------------------------
         # 4. 주가 기반 피처 생성

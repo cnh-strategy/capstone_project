@@ -13,6 +13,6 @@ def macro_dataset(ticker_name, train_model=False):
     macro_data_agent.add_features()
     macro_data_agent.save_csv()
     macro_data_agent.make_close_price()
-    print(f"macro: 데이터셋 생성> {ticker_name}")
+    print(f"[macro_dataset] macro: 데이터셋 생성> {ticker_name}")
 
     return True
