@@ -58,18 +58,18 @@ class TechnicalAgent(BaseAgent, nn.Module):
     """
 
     def __init__(self,
-        agent_id="TechnicalAgent",
-        input_dim=agents_info["TechnicalAgent"]["input_dim"],
-        rnn_units1=agents_info["TechnicalAgent"]["rnn_units1"], # 1층 hidden (아연수정)
-        rnn_units2=agents_info["TechnicalAgent"]["rnn_units2"], # 2층 hidden (아연수정)
-        dropout=agents_info["TechnicalAgent"]["dropout"],
-        data_dir=dir_info["data_dir"],
-        window_size=agents_info["TechnicalAgent"]["window_size"],
-        epochs=agents_info["TechnicalAgent"]["epochs"],
-        learning_rate=agents_info["TechnicalAgent"]["learning_rate"],
-        batch_size=agents_info["TechnicalAgent"]["batch_size"],
-        **kwargs
-    ):
+                 agent_id="TechnicalAgent",
+                 input_dim=agents_info["TechnicalAgent"]["input_dim"],
+                 rnn_units1=agents_info["TechnicalAgent"]["rnn_units1"], # 1층 hidden (아연수정)
+                 rnn_units2=agents_info["TechnicalAgent"]["rnn_units2"], # 2층 hidden (아연수정)
+                 dropout=agents_info["TechnicalAgent"]["dropout"],
+                 data_dir=dir_info["data_dir"],
+                 window_size=agents_info["TechnicalAgent"]["window_size"],
+                 epochs=agents_info["TechnicalAgent"]["epochs"],
+                 learning_rate=agents_info["TechnicalAgent"]["learning_rate"],
+                 batch_size=agents_info["TechnicalAgent"]["batch_size"],
+                 **kwargs
+                 ):
         # 1) nn.Module 먼저 초기화
         nn.Module.__init__(self)
 
@@ -256,14 +256,14 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return np.array([v/s if s > 0 else 1.0/F for v in deltas], dtype=float)
 
     def explain_last(
-        self,
-        X_last: torch.Tensor,
-        dates: list | None = None,
-        top_k: int = 5,
-        use_shap: bool = True, # 기본은 빠르게 off, 필요시 true
-        shap_weight_time: float = 0.20,      # 시간 중요도에서 SHAP 가중치(임의설정)
-        shap_weight_feat: float = 0.30       # 피처 중요도에서 SHAP 가중치(임의설정)
-        ):
+            self,
+            X_last: torch.Tensor,
+            dates: list | None = None,
+            top_k: int = 5,
+            use_shap: bool = True, # 기본은 빠르게 off, 필요시 true
+            shap_weight_time: float = 0.20,      # 시간 중요도에서 SHAP 가중치(임의설정)
+            shap_weight_feat: float = 0.30       # 피처 중요도에서 SHAP 가중치(임의설정)
+    ):
         """
         기능: Attention + Grad×Input + Occlusion 융합으로 최신 윈도우 설명 패킷 생성.
         입력: X_last(1,T,F), dates(list|None), top_k(int)
@@ -329,18 +329,18 @@ class TechnicalAgent(BaseAgent, nn.Module):
             w_time = np.array([0.4, 0.25, 0.15, float(shap_weight_time)], dtype=float)
             w_time = w_time / w_time.sum()
             per_time = (
-                w_time[0]*time_attn +
-                w_time[1]*g_time_n +
-                w_time[2]*occ_time +
-                w_time[3]*shap_time
+                    w_time[0]*time_attn +
+                    w_time[1]*g_time_n +
+                    w_time[2]*occ_time +
+                    w_time[3]*shap_time
             )
             # 피처 중요도: GI 0.5, occ 0.2, shap (인자) → 합 1로 재정규화
             w_feat = np.array([0.5, 0.2, float(shap_weight_feat)], dtype=float)
             w_feat = w_feat / w_feat.sum()
             per_feat = (
-                w_feat[0]*g_feat_n +
-                w_feat[1]*occ_feat_n +
-                w_feat[2]*shap_feat
+                    w_feat[0]*g_feat_n +
+                    w_feat[1]*occ_feat_n +
+                    w_feat[2]*shap_feat
             )
         else:
             # SHAP 미사용/실패 시 기존 고정 비율
@@ -365,7 +365,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         time_attention = {str(d): r4(w) for d, w in zip(dates, time_attn.tolist())}
         per_time_list = [{"date": str(d), "sum_abs": r4(v)} for d, v in zip(dates, per_time.tolist())]
         per_feat_list = [{"feature": k, "sum_abs": r4(v)} for k, v in sorted(zip(feat_names, per_feat.tolist()),
-                                                                          key=lambda z: z[1], reverse=True)]
+                                                                             key=lambda z: z[1], reverse=True)]
 
         evidence = {
             "attention": [r4(x) for x in time_attn.tolist()],
@@ -373,7 +373,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             "occlusion_time": [r4(x) for x in occ_time.tolist()],
             "window_size": int(T),
             "shap_used": bool(shap_used)
-            }
+        }
 
         return {
             "per_time": per_time_list,
@@ -382,7 +382,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             "time_feature": time_feature,
             "evidence": evidence,
             "raw": {"gradxinput": gi_abs.tolist()}  # 원시값은 비라운딩 유지 가능
-          }
+        }
 
     # ---------------- SHAP 보조: 배경 샘플 추출 ----------------
     def _background_windows(self, k: int = 64):
@@ -391,7 +391,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         파일 상단 수정 없이 내부에서 lazy import.
         """
         try:
-            from core.technical_classes.technical_data_set import load_dataset  
+            from core.technical_classes.technical_data_set import load_dataset
             X, _, _, _ = load_dataset(self.ticker, agent_id=self.agent_id, save_dir=self.data_dir)
             if len(X) <= 1:
                 return None
@@ -485,23 +485,10 @@ class TechnicalAgent(BaseAgent, nn.Module):
         """TechnicalAgent용 LLM 프롬프트 메시지 구성 + 설명값 포함"""
         last = float(getattr(stock_data, "last_price", target.next_close))
 
-        # stockdata에서 이미 저장된 데이터 재사용 (중복 searcher 방지)
-        agent_data = getattr(stock_data, self.agent_id, {})
-        
-        if isinstance(agent_data, dict) and agent_data:
-            # DataFrame으로 복원
-            df = pd.DataFrame(agent_data)
-            X_last = torch.tensor(
-                df.tail(self.window_size).values, 
-                dtype=torch.float32
-            ).unsqueeze(0)  # (1, T, F)
-        else:
-            # 만약 stockdata가 비어있으면 searcher() 재호출
-            print(f"[WARN] {self.agent_id} stockdata가 비어있음, searcher 재호출")
-            X_last = self.searcher(self.ticker)
-            if not isinstance(X_last, torch.Tensor):
-                X_last = torch.tensor(X_last, dtype=torch.float32)
-        
+        # 최신 윈도우 설명 산출
+        X_last = self.searcher(self.ticker)
+        if not isinstance(X_last, torch.Tensor):
+            X_last = torch.tensor(X_last, dtype=torch.float32)
         T = X_last.shape[1]
         # dates 수정
         dates = getattr(self.stockdata, f"{self.agent_id}_dates", [])
@@ -531,9 +518,9 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
 
     def _build_messages_rebuttal(self,
-                                my_opinion: Opinion,
-                                target_opinion: Opinion,
-                                stock_data: StockData) -> tuple[str, str]:
+                                 my_opinion: Opinion,
+                                 target_opinion: Opinion,
+                                 stock_data: StockData) -> tuple[str, str]:
 
         t = stock_data.ticker or "UNKNOWN"
         ccy = (stock_data.currency or "USD").upper()
@@ -561,7 +548,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             }
         }
         # 각 컬럼별 최근 시계열 그대로 포함
-    
+
         for col, values in agent_data.items():
             if isinstance(values, (list, tuple)):
                 ctx[col] = values[-self.window_size:] # 수정
@@ -572,16 +559,16 @@ class TechnicalAgent(BaseAgent, nn.Module):
         system_text = REBUTTAL_PROMPTS[self.agent_id]["system"]
         tmpl = REBUTTAL_PROMPTS[self.agent_id]["user"]
         user_text = tmpl.replace("{context}", json.dumps(ctx, ensure_ascii=False))
-    
+
         return system_text, user_text
 
 
     def _build_messages_revision(
-        self,
-        my_opinion: Opinion,
-        others: List[Opinion],
-        rebuttals: Optional[List[Rebuttal]] = None,
-        stock_data: StockData = None,
+            self,
+            my_opinion: Opinion,
+            others: List[Opinion],
+            rebuttals: Optional[List[Rebuttal]] = None,
+            stock_data: StockData = None,
     ) -> tuple[str, str]:
         """
         Revision용 LLM 메시지 생성기
@@ -617,7 +604,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
                     entry["rebuttals_to_me"] = related_rebuts
 
             others_summary.append(entry)
-            
+
 
         # Context 구성
         ctx = {
@@ -657,9 +644,9 @@ class TechnicalAgent(BaseAgent, nn.Module):
         agent_id = self.agent_id
         ticker = ticker or self.ticker
         self.ticker = ticker
-        
+
         dataset_path = os.path.join(self.data_dir, f"{ticker}_{agent_id}_dataset.csv")
-        cfg = agents_info.get(self.agent_id, {}) 
+        cfg = agents_info.get(self.agent_id, {})
 
         need_build = rebuild or (not os.path.exists(dataset_path))
         if need_build:
@@ -670,11 +657,11 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 period=cfg.get("period", "5y"),
                 interval=cfg.get("interval", "1d"),
             )
-    
+
         # CSV 로드
         X, y, feature_cols, dates_all = load_dataset_tech(
             ticker, agent_id=agent_id, save_dir=self.data_dir
-            )
+        )
 
         # 최근 window
         X_latest = X[-1:]
@@ -682,7 +669,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         # StockData 구성
         self.stockdata = StockData(ticker=ticker)
         self.stockdata.feature_cols = feature_cols
-        
+
         # dates_all 구조에 따라 "마지막 윈도우" 날짜만 추출
         if dates_all:
             if isinstance(dates_all[0], (list, tuple)):
@@ -694,12 +681,12 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 last_dates = dates_all[-win:]
         else:
             last_dates = []
-        
-        
+
+
         # 전체는 *_dates_all로, 마지막 윈도우는 *_dates로 저장
         setattr(self.stockdata, f"{agent_id}_dates_all", dates_all or [])
         setattr(self.stockdata, f"{agent_id}_dates",     last_dates or [])
-        
+
         # last_price 안전 변환
         try:
             data = yf.download(ticker, period="5y", interval="1d", auto_adjust=True, progress=False)
@@ -743,7 +730,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 period=cfg.get("period", "5y"),
                 interval=cfg.get("interval", "1d"),
             )
-            
+
         # 데이터 로드
         X, y, cols, _ = load_dataset_tech(self.ticker, self.agent_id, save_dir=self.data_dir)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
@@ -863,7 +850,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         if stock_data is not None:
             self.stockdata = stock_data
         else:
-        # 내부에 없으면 searcher 한 번 돌려서 만든다
+            # 내부에 없으면 searcher 한 번 돌려서 만든다
             if getattr(self, "stockdata", None) is None:
                 if not self.ticker:
                     raise RuntimeError(
@@ -875,17 +862,8 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
         # 2) 예측값 생성
         if target is None:
-            # stockdata에서 X 재구성 (중복 searcher 방지)
-            agent_data = getattr(stock_data, self.agent_id, {})
-            if isinstance(agent_data, dict) and agent_data:
-                df = pd.DataFrame(agent_data)
-                X_input = torch.tensor(
-                    df.tail(self.window_size).values, 
-                    dtype=torch.float32
-                ).unsqueeze(0)  # (1,T,F)
-            else:
-                # 만약 비어있으면 searcher 재호출
-                X_input = self.searcher(self.ticker)
+            # searcher는 위에서 한 번 돌았으므로, 여기서는 최신 윈도우로 predict만 수행
+            X_input = self.searcher(self.ticker)              # (1,T,F)
             target = self.predict(X_input)
 
         # 3) LLM 호출(reason 생성) - 전달받은 stock_data 사용
@@ -895,9 +873,9 @@ class TechnicalAgent(BaseAgent, nn.Module):
             self._msg("system", sys_text),
             self._msg("user", user_text),
             {
-                "type": "object", 
-                "properties": {"reason": {"type": "string"}}, 
-                "required": ["reason"], 
+                "type": "object",
+                "properties": {"reason": {"type": "string"}},
+                "required": ["reason"],
                 "additionalProperties": False}
         )
 
@@ -905,9 +883,9 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
         # 4) Opinion 기록/반환 (항상 최신 값 append)
         self.opinions.append(Opinion(
-                    agent_id=self.agent_id, 
-                    target=target, 
-                    reason=reason))
+            agent_id=self.agent_id,
+            target=target,
+            reason=reason))
 
         # 최신 오피니언 반환
         return self.opinions[-1]
@@ -956,13 +934,13 @@ class TechnicalAgent(BaseAgent, nn.Module):
             )
 
         return result
-    
+
     # DebateAgent.get_rebuttal() 호환용 래퍼
     def reviewer_rebuttal(
-        self,
-        my_opinion: Opinion,
-        other_opinion: Opinion,
-        round_index: int,
+            self,
+            my_opinion: Opinion,
+            other_opinion: Opinion,
+            round_index: int,
     ) -> Rebuttal:
         return self.reviewer_rebut(
             my_opinion=my_opinion,
@@ -971,14 +949,14 @@ class TechnicalAgent(BaseAgent, nn.Module):
         )
 
     def reviewer_revise(
-        self,
-        my_opinion: Opinion,
-        others: List[Opinion],
-        rebuttals: List[Rebuttal],
-        stock_data: StockData,
-        fine_tune: bool = True,
-        lr: float = 1e-4,
-        epochs: int = 20,
+            self,
+            my_opinion: Opinion,
+            others: List[Opinion],
+            rebuttals: List[Rebuttal],
+            stock_data: StockData,
+            fine_tune: bool = True,
+            lr: float = 1e-4,
+            epochs: int = 20,
     ):
         """
         Revision 단계
@@ -1134,9 +1112,9 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 state_dict = checkpoint.state_dict()
             elif isinstance(checkpoint, dict):
                 state_dict = (
-                    checkpoint.get("model_state_dict")
-                    or checkpoint.get("state_dict")
-                    or checkpoint
+                        checkpoint.get("model_state_dict")
+                        or checkpoint.get("state_dict")
+                        or checkpoint
                 )
             else:
                 print(f"[{self.agent_id}] 알 수 없는 체크포맷: {type(checkpoint)}")

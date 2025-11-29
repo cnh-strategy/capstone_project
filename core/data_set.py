@@ -119,7 +119,7 @@ def build_dataset(
 ) -> None:
     """
     debate_agent.py에서 agent_id를 넘겨주면, 여기서 분기 처리
-    - agent_id == 'MacroAgent' / '매크로' / 'macro'
+    - agent_id == 'MacroSentiAgent' / '매크로' / 'macro'
     - agent_id == 'SentimentalAgent' / '센티멘탈' / 'sentimental'
     - agent_id == 'TechnicalAgent' / '테크니컬' / 'technical' (추후)
     """
@@ -135,14 +135,14 @@ def build_dataset(
     # Agent별 데이터셋을 CSV로 저장
     for aid, _ in agents_info.items():
         # ---------- macro_agent ----------
-        if aid in {"MacroAgent","macroagent", "macro", "매크로"}:
+        if aid in {"MacroSentiAgent","macrosentiagent", "macro", "매크로"}:
             if not _HAS_MACRO or macro_dataset is None:
                 raise ImportError(
                     "macro_dataset 모듈을 찾을 수 없습니다. core/macro_classes 확인 필요 "
                     f"details={_MACRO_IMPORT_ERROR}"
                 )
             macro_dataset(ticker_name=ticker)
-            print(f"✅ {ticker} MacroAgent dataset saved (macro_dataset 호출 via {_MACRO_SRC})")
+            print(f"✅ {ticker} MacroSentiAgent dataset saved (macro_dataset 호출 via {_MACRO_SRC})")
 
         # ---------- sentimental_agent ----------
         elif aid in {"SentimentalAgent","sentimentalagent", "sentimental", "센티멘탈"}:
@@ -176,21 +176,14 @@ def build_dataset(
             samples, time_steps, n_feats = X_seq.shape
             print(f"[SentimentalAgent] X_seq: {X_seq.shape}, y_seq: {y_seq.shape}")
 
-            # 날짜 정보 준비
-            dates = X.index
-
             # 플랫 CSV
             flattened = []
             for sample_idx in range(samples):
-                # 윈도우 내 날짜들
-                window_dates = dates[sample_idx : sample_idx + time_steps]
-                
                 for time_idx in range(time_steps):
                     row = {
                         "sample_id": sample_idx,
                         "time_step": time_idx,
                         "target": float(y_seq[sample_idx, 0]) if time_idx == time_steps - 1 else np.nan,
-                        "date": window_dates[time_idx].strftime("%Y-%m-%d"),
                     }
                     for feat_idx, feat_name in enumerate(feature_cols):
                         row[feat_name] = float(X_seq[sample_idx, time_idx, feat_idx])
@@ -214,11 +207,10 @@ def build_dataset(
             raise ValueError(f"지원하지 않는 agent_id: {agent_id}")
 
 
-def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"], return_dates: bool = False) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"]) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
     위에서 저장한 CSV({ticker}_{agent_id}_dataset.csv)를 다시 시퀀스로 복원
     - 숫자형 컬럼만 사용하도록 안전 가드 추가(날짜/문자열 혼입 방지)
-    - return_dates=True일 경우 (X, y, feature_cols, dates_all) 반환
     """
     # 1) 테크니컬은 전용 로더로 위임
     norm = str(agent_id).lower()
@@ -228,8 +220,6 @@ def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"
             agent_id="TechnicalAgent",
             save_dir=save_dir,
         )
-        if return_dates:
-            return X, y, feature_cols, _dates
         return X, y, feature_cols
 
     csv_path = os.path.join(save_dir, f"{ticker}_{agent_id}_dataset.csv")
@@ -239,7 +229,7 @@ def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"
     df = pd.read_csv(csv_path)
 
     # 후보 피처: 플랫 CSV 기준 기본 제외 컬럼
-    candidate_cols = [c for c in df.columns if c not in ["sample_id", "time_step", "target", "date"]]
+    candidate_cols = [c for c in df.columns if c not in ["sample_id", "time_step", "target"]]
 
     unique_samples = df["sample_id"].nunique()
     time_steps = df["time_step"].nunique()
@@ -266,9 +256,6 @@ def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"
 
     X = np.zeros((unique_samples, time_steps, n_features), dtype=np.float32)
     y = np.zeros((unique_samples, 1), dtype=np.float32)
-    
-    dates_all = []
-    has_date = "date" in df.columns
 
     for i, sample_id in enumerate(sorted(df["sample_id"].unique())):
         block = df[df["sample_id"] == sample_id].sort_values("time_step")
@@ -284,16 +271,7 @@ def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"
         # 마지막 타임스텝에만 target 값이 들어가 있으므로 그 값을 사용
         y_val = block["target"].dropna()
         y[i, 0] = float(y_val.iloc[-1]) if not y_val.empty else np.nan
-        
-        if return_dates:
-            if has_date:
-                dates_all.append(block["date"].tolist())
-            else:
-                dates_all.append([None] * time_steps)
 
-    if return_dates:
-        return X, y, feature_cols, dates_all
-        
     return X, y, feature_cols
 
 
