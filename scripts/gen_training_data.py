@@ -246,7 +246,7 @@ def generate_ensemble_data(ticker="NVDA", days=None, output_path="data/processed
                 print(f"    [ERROR] TechnicalAgent 예측 실패: {e}")
 
         # -------------------------------------
-        # 3-2. Macro Prediction
+        # 3-2. Macro Prediction (다른 에이전트와 동일하게 원본 데이터 전달)
         # -------------------------------------
         try:
             # 날짜 형식 통일
@@ -255,28 +255,21 @@ def generate_ensemble_data(ticker="NVDA", days=None, output_path="data/processed
             if not m_match.empty:
                 m_idx = m_match.index[0]
                 if m_idx >= w_macro - 1: 
-                    # scaler_X None 체크
-                    if not hasattr(macro_agent, 'scaler_X') or macro_agent.scaler_X is None:
-                        pred_macro = np.nan; conf_macro = 0; unc_macro = 0
-                    else:
-                        feat_cols = list(macro_agent.scaler_X.feature_names_in_)
-                        df_slice = macro_full_df.iloc[m_idx - w_macro + 1 : m_idx + 1]
-                        
-                        X_slice = pd.DataFrame(index=df_slice.index)
-                        for c in feat_cols:
-                            if c in df_slice.columns:
-                                X_slice[c] = df_slice[c]
-                            else:
-                                X_slice[c] = 0.0
-                        
-                        X_sc = macro_agent.scaler_X.transform(X_slice)
-                        X_in = np.expand_dims(X_sc, axis=0)
-                        X_tensor = torch.FloatTensor(X_in).to(macro_agent.device)
-                        
-                        target_macro = macro_agent.predict(X_tensor, current_price=curr_close)
-                        pred_macro = target_macro.next_close
-                        conf_macro = target_macro.confidence
-                        unc_macro = target_macro.uncertainty
+                    # 원본 데이터 추출 (predict 내부에서 스케일링 처리)
+                    df_slice = macro_full_df.iloc[m_idx - w_macro + 1 : m_idx + 1]
+                    
+                    # 숫자형 컬럼만 추출 (sample_id, time_step, target, date 제외)
+                    feat_cols = [c for c in df_slice.columns if c not in ['sample_id', 'time_step', 'target', 'date', 'Date']]
+                    feat_cols = [c for c in feat_cols if pd.api.types.is_numeric_dtype(df_slice[c])]
+                    
+                    # 윈도우 데이터 추출 (T, F) 형태 - predict 내부에서 스케일링
+                    X_values = df_slice[feat_cols].values
+                    
+                    # predict에 원본 데이터 전달 (내부에서 스케일링 처리)
+                    target_macro = macro_agent.predict(X_values, current_price=curr_close)
+                    pred_macro = target_macro.next_close
+                    conf_macro = target_macro.confidence
+                    unc_macro = target_macro.uncertainty
                 else:
                      pred_macro = np.nan; conf_macro = 0; unc_macro = 0
             else:

@@ -273,7 +273,7 @@ class RollingBacktester:
             os.path.join(model_dir, f"{ticker}_TechnicalAgent.pt"),
             os.path.join(model_dir, f"{ticker}_MacroAgent.pt"),
             os.path.join(model_dir, f"{ticker}_SentimentalAgent.pt"),
-            os.path.join(model_dir, f"{ticker}_ensemble_lightgbm.pkl"),
+            os.path.join(model_dir, f"{ticker}_ensemble_lightgbm.pt"),
         ]
         
         # MacroAgent 스케일러 파일

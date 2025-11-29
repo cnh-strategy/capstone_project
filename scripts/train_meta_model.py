@@ -15,7 +15,7 @@ from config.agents import dir_info
 
 def train_meta_model(
     data_path="data/processed/ensemble_train.csv",
-    model_out_path="models/ensemble_lightgbm.pkl"
+    model_out_path="models/ensemble_lightgbm.pt"
 ):
     """
     LightGBM 메타 모델 학습

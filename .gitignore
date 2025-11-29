@@ -1,87 +1,114 @@
-# Environment variables
+# ==========================================
+# Environment & Config
+# ==========================================
 .env
 .env.local
 .env.*.local
 
-# Virtual environments
-capstone/
+# ==========================================
+# Python & Virtual Environments
+# ==========================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Envs
 venv/
 env/
 .venv/
+capstone/
 
-# Python cache
-__pycache__/
-*.pyc
-
-# IDE & OS
+# ==========================================
+# IDE & Editor
+# ==========================================
 .vscode/
 .idea/
 *.swp
 *.swo
+*.swn
 .DS_Store
 Thumbs.db
+.project
+.pydevproject
 
-# Jupyter
+# ==========================================
+# Jupyter Notebooks
+# ==========================================
 .ipynb_checkpoints/
+*/.ipynb_checkpoints/
+*_test.ipynb
+test*.ipynb
+untitled*.ipynb
 
-# Temporary files and outputs
-=*
+# ==========================================
+# Logs & Temporary Files
+# ==========================================
 *.log
 *.tmp
 *.temp
+*.bak
+nohup.out
 
-# Data & Models (데이터나 모델 파일이 너무 크면 이 부분을 유지하세요)
-# *.pkl
-# *.h5
-# *.keras
-# *.npz
-# data/
-# models/
-# notebooks/data/
-# SentimentalAgent/
+# ==========================================
+# Data & Models (Large Files)
+# ==========================================
+# Data directories
+data/raw/
+data/processed/
+data/backtests/
+backtest/data/
 
-# Backtest files
-data/raw/backtest_temp/
-backtest/data/raw/backtest_temp/
+# Model directories
+models/
 backtest/models/
-backtest/data/processed/
-backtest/data/backtests/*.csv
+
+# File types to ignore everywhere (if not in tracked dirs)
+*.csv
+*.pt
+*.pth
+*.pkl
+*.h5
+*.keras
+*.onnx
+
+# Except specific config/example files if needed
+!data/.gitkeep
+!models/.gitkeep
+
+# ==========================================
+# Backtest Specific
+# ==========================================
+# Backtest results and analysis
 backtest/data/backtests/analysis/
-
-# Data files (large files)
-data/raw/*.csv
-data/processed/*.csv
-data/backtests/*.csv
-data/backtests/analysis/
-
-# Model files (large files)
-models/*.pt
-models/*.pkl
-models/scalers/*.pkl
-
-# Test files
-test*.py
-test*.ipynb
-*_test.ipynb
-test1.ipynb
-test_get_ensemble.py
-
-# Analysis markdown files
 *_analysis.md
+BACKTEST_*.md
+
+# Temporary backtest data
+backtest/data/raw/backtest_temp/
+data/raw/backtest_temp/
+
+# ==========================================
+# Specific Analysis/Report Files
+# ==========================================
 pretrain_*.md
 agent_predict_analysis.md
-BACKTEST_*.md
 PARAMETER_*.md
 PERIOD_*.md
-
-# Temporary files
-=0.2.40
-*.log
-*.tmp
-*.temp
-*.swp
-*.swo
-
-# OS files
-.DS_Store
-Thumbs.db
