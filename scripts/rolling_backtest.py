@@ -13,7 +13,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from agents.debate_agent import DebateAgent
 from core.data_set import build_dataset
-# from core.metrics import calculate_metrics, calculate_direction_accuracy, calculate_profitability
+from core.metrics import calculate_metrics, calculate_direction_accuracy, calculate_profitability
 from config.agents import agents_info, dir_info
 
 class RollingBacktester:
@@ -157,120 +157,120 @@ class RollingBacktester:
         df.to_csv(self.csv_path, index=False)
         print(f"💾 Results saved to {self.csv_path}")
     
-    # def analyze(self, csv_path: str = None, output_dir: str = None):
-    #     """
-    #     백테스팅 결과 분석 및 시각화
-    #     """
-    #     if csv_path is None:
-    #         csv_path = self.csv_path
-    #
-    #     if csv_path is None or not os.path.exists(csv_path):
-    #         print(f"❌ CSV file not found: {csv_path}")
-    #         return
-    #
-    #     if output_dir is None:
-    #         output_dir = os.path.join(self.output_dir, "analysis")
-    #
-    #     os.makedirs(output_dir, exist_ok=True)
-    #
-    #     # 데이터 로드
-    #     df = pd.read_csv(csv_path)
-    #     df['Date'] = pd.to_datetime(df['Date'])
-    #     df = df.sort_values('Date')
-    #
-    #     print(f"\n📈 Loaded {len(df)} rows from {csv_path}")
-    #
-    #     # 1. 기본 지표 계산
-    #     df_valid = df.dropna(subset=['Actual_Close', 'Ensemble_Pred'])
-    #
-    #     if len(df_valid) == 0:
-    #         print("❌ No valid data for analysis")
-    #         return
-    #
-    #     y_true = df_valid['Actual_Close'].values
-    #     y_pred = df_valid['Ensemble_Pred'].values
-    #
-    #     metrics = calculate_metrics(y_true, y_pred)
-    #     print("\n[Ensemble Performance]")
-    #     for k, v in metrics.items():
-    #         print(f"  {k}: {v:.4f}")
-    #
-    #     # 방향 정확도
-    #     prev_close = df_valid['Actual_Close'].shift(1).fillna(method='bfill').values
-    #     dir_acc = calculate_direction_accuracy(y_true, y_pred, prev_close)
-    #     print(f"  Direction Accuracy: {dir_acc:.2f}%")
-    #
-    #     # 2. 수익률 분석
-    #     dates = df_valid['Date'].dt.strftime('%Y-%m-%d').tolist()
-    #     prof_res = calculate_profitability(dates, y_true, y_pred)
-    #     print("\n[Profitability]")
-    #     print(f"  Strategy Return: {prof_res['Strategy_Return']:.2f}%")
-    #     print(f"  Buy & Hold Return: {prof_res['BuyHold_Return']:.2f}%")
-    #
-    #     # 3. 시각화
-    #     base_name = os.path.basename(csv_path).replace(".csv", "")
-    #
-    #     # A. Price Chart
-    #     plt.figure(figsize=(12, 6))
-    #     plt.plot(df_valid['Date'], df_valid['Actual_Close'], label='Actual Close', color='black', linewidth=2)
-    #     plt.plot(df_valid['Date'], df_valid['Ensemble_Pred'], label='Ensemble Pred', color='blue', linestyle='--', linewidth=1.5)
-    #
-    #     # Agent별 예측 추가 (있는 경우)
-    #     colors = ['red', 'green', 'orange', 'purple', 'brown']
-    #     agent_pred_cols = [c for c in df.columns if c.endswith('_Pred') and c != 'Ensemble_Pred']
-    #     for i, col in enumerate(agent_pred_cols):
-    #         if col in df_valid.columns:
-    #             plt.plot(df_valid['Date'], df_valid[col], label=col.replace('_Pred', ''), alpha=0.5, linestyle=':', color=colors[i%len(colors)])
-    #
-    #     plt.title(f"Price Prediction: {base_name}", fontsize=14, fontweight='bold')
-    #     plt.xlabel("Date", fontsize=12)
-    #     plt.ylabel("Price ($)", fontsize=12)
-    #     plt.legend()
-    #     plt.grid(True, alpha=0.3)
-    #     plt.tight_layout()
-    #     price_chart_path = os.path.join(output_dir, f"{base_name}_price.png")
-    #     plt.savefig(price_chart_path, dpi=150, bbox_inches='tight')
-    #     plt.close()
-    #     print(f"  ✅ Saved price chart: {price_chart_path}")
-    #
-    #     # B. Cumulative Return
-    #     df_valid['Daily_Ret'] = df_valid['Actual_Close'].pct_change().fillna(0)
-    #     df_valid['Prev_Close'] = df_valid['Actual_Close'].shift(1)
-    #     df_valid['Signal'] = np.where(df_valid['Ensemble_Pred'] > df_valid['Prev_Close'], 1, 0)
-    #     df_valid['Strat_Daily_Ret'] = df_valid['Signal'] * df_valid['Daily_Ret']
-    #
-    #     df_valid['Cum_BH'] = (1 + df_valid['Daily_Ret']).cumprod()
-    #     df_valid['Cum_Strat'] = (1 + df_valid['Strat_Daily_Ret']).cumprod()
-    #
-    #     plt.figure(figsize=(12, 6))
-    #     plt.plot(df_valid['Date'], df_valid['Cum_BH'], label='Buy & Hold', color='gray', linewidth=2)
-    #     plt.plot(df_valid['Date'], df_valid['Cum_Strat'], label='Strategy', color='red', linewidth=2)
-    #     plt.title(f"Cumulative Return: {base_name}", fontsize=14, fontweight='bold')
-    #     plt.xlabel("Date", fontsize=12)
-    #     plt.ylabel("Cumulative Return", fontsize=12)
-    #     plt.legend()
-    #     plt.grid(True, alpha=0.3)
-    #     plt.tight_layout()
-    #     return_chart_path = os.path.join(output_dir, f"{base_name}_return.png")
-    #     plt.savefig(return_chart_path, dpi=150, bbox_inches='tight')
-    #     plt.close()
-    #     print(f"  ✅ Saved return chart: {return_chart_path}")
-    #
-    #     # C. Error Histogram
-    #     errors = (df_valid['Ensemble_Pred'] - df_valid['Actual_Close']) / df_valid['Actual_Close'] * 100
-    #     plt.figure(figsize=(10, 5))
-    #     plt.hist(errors, bins=30, color='purple', alpha=0.7, edgecolor='black')
-    #     plt.title(f"Error Distribution (%) : {base_name}", fontsize=14, fontweight='bold')
-    #     plt.xlabel("Error %", fontsize=12)
-    #     plt.ylabel("Frequency", fontsize=12)
-    #     plt.grid(True, alpha=0.3, axis='y')
-    #     plt.tight_layout()
-    #     error_chart_path = os.path.join(output_dir, f"{base_name}_error.png")
-    #     plt.savefig(error_chart_path, dpi=150, bbox_inches='tight')
-    #     plt.close()
-    #     print(f"  ✅ Saved error histogram: {error_chart_path}")
-    #
-    #     print(f"\n✅ Analysis complete! Charts saved to: {output_dir}")
+    def analyze(self, csv_path: str = None, output_dir: str = None):
+        """
+        백테스팅 결과 분석 및 시각화
+        """
+        if csv_path is None:
+            csv_path = self.csv_path
+
+        if csv_path is None or not os.path.exists(csv_path):
+            print(f"❌ CSV file not found: {csv_path}")
+            return
+
+        if output_dir is None:
+            output_dir = os.path.join(self.output_dir, "analysis")
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 데이터 로드
+        df = pd.read_csv(csv_path)
+        df['Date'] = pd.to_datetime(df['Date'])
+        df = df.sort_values('Date')
+
+        print(f"\n📈 Loaded {len(df)} rows from {csv_path}")
+
+        # 1. 기본 지표 계산
+        df_valid = df.dropna(subset=['Actual_Close', 'Ensemble_Pred'])
+
+        if len(df_valid) == 0:
+            print("❌ No valid data for analysis")
+            return
+
+        y_true = df_valid['Actual_Close'].values
+        y_pred = df_valid['Ensemble_Pred'].values
+
+        metrics = calculate_metrics(y_true, y_pred)
+        print("\n[Ensemble Performance]")
+        for k, v in metrics.items():
+            print(f"  {k}: {v:.4f}")
+
+        # 방향 정확도
+        prev_close = df_valid['Actual_Close'].shift(1).fillna(method='bfill').values
+        dir_acc = calculate_direction_accuracy(y_true, y_pred, prev_close)
+        print(f"  Direction Accuracy: {dir_acc:.2f}%")
+
+        # 2. 수익률 분석
+        dates = df_valid['Date'].dt.strftime('%Y-%m-%d').tolist()
+        prof_res = calculate_profitability(dates, y_true, y_pred)
+        print("\n[Profitability]")
+        print(f"  Strategy Return: {prof_res['Strategy_Return']:.2f}%")
+        print(f"  Buy & Hold Return: {prof_res['BuyHold_Return']:.2f}%")
+
+        # 3. 시각화
+        base_name = os.path.basename(csv_path).replace(".csv", "")
+
+        # A. Price Chart
+        plt.figure(figsize=(12, 6))
+        plt.plot(df_valid['Date'], df_valid['Actual_Close'], label='Actual Close', color='black', linewidth=2)
+        plt.plot(df_valid['Date'], df_valid['Ensemble_Pred'], label='Ensemble Pred', color='blue', linestyle='--', linewidth=1.5)
+
+        # Agent별 예측 추가 (있는 경우)
+        colors = ['red', 'green', 'orange', 'purple', 'brown']
+        agent_pred_cols = [c for c in df.columns if c.endswith('_Pred') and c != 'Ensemble_Pred']
+        for i, col in enumerate(agent_pred_cols):
+            if col in df_valid.columns:
+                plt.plot(df_valid['Date'], df_valid[col], label=col.replace('_Pred', ''), alpha=0.5, linestyle=':', color=colors[i%len(colors)])
+
+        plt.title(f"Price Prediction: {base_name}", fontsize=14, fontweight='bold')
+        plt.xlabel("Date", fontsize=12)
+        plt.ylabel("Price ($)", fontsize=12)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        price_chart_path = os.path.join(output_dir, f"{base_name}_price.png")
+        plt.savefig(price_chart_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  ✅ Saved price chart: {price_chart_path}")
+
+        # B. Cumulative Return
+        df_valid['Daily_Ret'] = df_valid['Actual_Close'].pct_change().fillna(0)
+        df_valid['Prev_Close'] = df_valid['Actual_Close'].shift(1)
+        df_valid['Signal'] = np.where(df_valid['Ensemble_Pred'] > df_valid['Prev_Close'], 1, 0)
+        df_valid['Strat_Daily_Ret'] = df_valid['Signal'] * df_valid['Daily_Ret']
+
+        df_valid['Cum_BH'] = (1 + df_valid['Daily_Ret']).cumprod()
+        df_valid['Cum_Strat'] = (1 + df_valid['Strat_Daily_Ret']).cumprod()
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(df_valid['Date'], df_valid['Cum_BH'], label='Buy & Hold', color='gray', linewidth=2)
+        plt.plot(df_valid['Date'], df_valid['Cum_Strat'], label='Strategy', color='red', linewidth=2)
+        plt.title(f"Cumulative Return: {base_name}", fontsize=14, fontweight='bold')
+        plt.xlabel("Date", fontsize=12)
+        plt.ylabel("Cumulative Return", fontsize=12)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        return_chart_path = os.path.join(output_dir, f"{base_name}_return.png")
+        plt.savefig(return_chart_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  ✅ Saved return chart: {return_chart_path}")
+
+        # C. Error Histogram
+        errors = (df_valid['Ensemble_Pred'] - df_valid['Actual_Close']) / df_valid['Actual_Close'] * 100
+        plt.figure(figsize=(10, 5))
+        plt.hist(errors, bins=30, color='purple', alpha=0.7, edgecolor='black')
+        plt.title(f"Error Distribution (%) : {base_name}", fontsize=14, fontweight='bold')
+        plt.xlabel("Error %", fontsize=12)
+        plt.ylabel("Frequency", fontsize=12)
+        plt.grid(True, alpha=0.3, axis='y')
+        plt.tight_layout()
+        error_chart_path = os.path.join(output_dir, f"{base_name}_error.png")
+        plt.savefig(error_chart_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  ✅ Saved error histogram: {error_chart_path}")
+
+        print(f"\n✅ Analysis complete! Charts saved to: {output_dir}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Rolling Backtest Runner with Auto Analysis")

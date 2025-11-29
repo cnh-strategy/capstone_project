@@ -293,7 +293,7 @@ class DebateAgent:
 
         return round_revises
 
-    def run(self):
+    def run(self, force_pretrain=False):
         """
         전체 디베이트 프로세스 실행
 
@@ -314,7 +314,7 @@ class DebateAgent:
         print(f"\n{'='*80}")
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Round 0: 초기 Opinion 수집 시작")
         print(f"{'='*80}")
-        self.get_opinion(0, self.ticker, rebuild=False, force_pretrain=False)
+        self.get_opinion(0, self.ticker, rebuild=False, force_pretrain=force_pretrain)
 
         # Round 1~N: Rebuttal → Revise 반복
         for round in range(1, self.rounds + 1):
