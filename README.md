@@ -147,6 +147,7 @@ revised_price = β_i × my_price + (1-β_i) × weighted_others
 │       ├── technical_base_agent.py
 │       └── ...
 ├── scripts/
+│   ├── rolling_backtest.py   # 롤링 백테스트 스크립트
 │   └── sentimental_demo/     # 센티멘탈 데모 스크립트
 ├── notebooks/                  # 테스트 및 실험 노트북
 │   ├── macro_test.ipynb       # 매크로 에이전트 테스트
@@ -167,6 +168,7 @@ revised_price = β_i × my_price + (1-β_i) × weighted_others
 - 다중 전문 에이전트 완전 구현 (Technical, Sentimental, MacroSenti)
 - 실시간 대시보드 완성
 - Gradient 기반 Feature Importance 분석 (MacroSentiAgent)
+- 롤링 백테스팅 기능 구현
 
 ### 🔬 과학적 접근
 - 불확실성(uncertainty) 기반 신뢰도 계산
@@ -178,10 +180,37 @@ revised_price = β_i × my_price + (1-β_i) × weighted_others
 - 실시간 진행 상황 표시
 - 인터랙티브 차트 및 시각화
 
+## 📊 백테스팅 기능
+
+### Rolling Backtest
+프로젝트에는 롤링 백테스팅 기능이 포함되어 있습니다. 이 기능을 통해 과거 데이터를 사용하여 모델의 성능을 평가할 수 있습니다.
+
+#### 사용 방법
+```bash
+# 기본 사용법
+python scripts/rolling_backtest.py --ticker TSLA --predict-days 5 --rounds 3
+
+# 시작 날짜 지정
+python scripts/rolling_backtest.py --ticker TSLA --start 2024-01-01 --predict-days 10
+
+# 분석 스킵
+python scripts/rolling_backtest.py --ticker TSLA --predict-days 5 --no-analyze
+```
+
+#### 주요 기능
+- **Look-ahead bias 방지**: 각 거래일마다 해당 날짜 이전 데이터만 사용
+- **자동 분석**: 백테스트 완료 후 자동으로 성능 지표 및 차트 생성
+- **다중 라운드 지원**: DebateAgent의 여러 라운드 토론 시뮬레이션
+- **결과 저장**: CSV 형식으로 백테스트 결과 저장
+
+#### 출력 파일
+- `data/backtests/rolling_{TICKER}_{START}_{END}.csv`: 백테스트 결과
+- `data/backtests/analysis/rolling_{TICKER}_{START}_{END}_*.png`: 분석 차트
+
 ## 🚀 향후 계획
 
 - [ ] 더 많은 에이전트 추가 (Quantitative, ESG 등)
-- [ ] 백테스팅 기능 추가
+- [ ] 백테스팅 기능 고도화 (포트폴리오 최적화 등)
 - [ ] 모바일 앱 개발
 - [ ] API 서비스 제공
 

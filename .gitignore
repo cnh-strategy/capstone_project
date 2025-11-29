@@ -24,6 +24,12 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 
+# Temporary files and outputs
+=*
+*.log
+*.tmp
+*.temp
+
 # Data & Models (데이터나 모델 파일이 너무 크면 이 부분을 유지하세요)
 # *.pkl
 # *.h5
@@ -33,3 +39,6 @@ Thumbs.db
 # models/
 # notebooks/data/
 # SentimentalAgent/
+
+# Backtest temporary files
+data/raw/backtest_temp/
