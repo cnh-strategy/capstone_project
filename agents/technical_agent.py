@@ -639,6 +639,38 @@ class TechnicalAgent(BaseAgent, nn.Module):
     # TechnicalAgent 전용 메서드들 (TechnicalBaseAgent에서 이동)
     # ===============================================================
 
+    def _normalize_scaler_names(self):
+        """
+        DataScaler 내부에서 스케일러 이름을 문자열로 기대하기 때문에
+        technical_agent에서 먼저 정규화해주는 유틸리티.
+
+        - "MinMaxScaler()" → "MinMaxScaler"
+        - MinMaxScaler()  (객체) → "MinMaxScaler"
+        - MinMaxScaler    (클래스) → "MinMaxScaler"
+        """
+        def norm(x):
+            if x is None:
+                return "None"
+
+            # 클래스 객체인 경우
+            if isinstance(x, type):
+                return x.__name__
+
+            # 인스턴스인 경우
+            if not isinstance(x, str):
+                return x.__class__.__name__
+
+            # 문자열인 경우
+            x = x.strip()
+            if x.endswith("()"):
+                x = x[:-2]
+            return x
+
+        # 정규화
+        self.scaler.x_scaler = norm(self.scaler.x_scaler)
+        self.scaler.y_scaler = norm(self.scaler.y_scaler)
+
+
     def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
         """TechnicalAgent 전용 searcher - technical_data_set 사용"""
         agent_id = self.agent_id
@@ -713,28 +745,42 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return torch.tensor(X_latest, dtype=torch.float32)
 
     def pretrain(self):
-        """Agent별 사전학습 루틴 (모델 생성, 학습, 저장, self.model 연결까지 포함)"""
+        """
+        Agent별 사전학습 루틴
+
+        1) 데이터셋 CSV가 없으면 searcher()를 먼저 호출하여 데이터 생성
+        2) 데이터셋이 이미 있으면 searcher로 재생성하지 않고 바로 학습 진행
+        """
+        self._normalize_scaler_names()
+
         epochs = agents_info[self.agent_id]["epochs"]
         lr = agents_info[self.agent_id]["learning_rate"]
         batch_size = agents_info[self.agent_id]["batch_size"]
 
-        # (추가) 데이터셋 없으면 먼저 생성
+        # 1) 데이터셋 존재 여부 확인
         dataset_path = os.path.join(self.data_dir, f"{self.ticker}_{self.agent_id}_dataset.csv")
-        cfg = agents_info.get(self.agent_id, {})
-
+        
         if not os.path.exists(dataset_path):
-            print(f"⚙️ {self.ticker} {self.agent_id} dataset not found in {self.data_dir}. Building dataset for pretrain...")
-            build_dataset_tech(
-                ticker=self.ticker,
-                save_dir=self.data_dir,
-                period=cfg.get("period", "5y"),
-                interval=cfg.get("interval", "1d"),
+            # (1-1) 데이터가 없으면 searcher()를 통해 데이터 수집 및 데이터셋 생성
+            print(
+                f"⚙️ {self.ticker} {self.agent_id} dataset not found in {self.data_dir}. "
+                f"Calling searcher() to build dataset for pretrain..."
+            )
+            # searcher 내부에서 build_dataset_tech + load_dataset_tech 수행
+            _ = self.searcher(self.ticker)
+        else:
+            # (1-2) 데이터가 있으면 기존 데이터셋 그대로 사용
+            print(
+                f"⚙️ {self.ticker} {self.agent_id} dataset found in {self.data_dir}. "
+                f"Skip searcher build and use existing dataset for pretrain."
             )
 
-        # 데이터 로드
+
+        # 2) 데이터 로드
         X, y, cols, _ = load_dataset_tech(self.ticker, self.agent_id, save_dir=self.data_dir)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
 
+        # 3) 학습/검증 분리 (80/20)
         split_idx = int(len(X) * 0.8)
         X_train, X_val = X[:split_idx], X[split_idx:]
         y_train, y_val = y[:split_idx], y[split_idx:]
@@ -743,18 +789,19 @@ class TechnicalAgent(BaseAgent, nn.Module):
         y_train *= 100.0
         y_val   *= 100.0
 
+        # 4) 스케일러 적합 및 저장
         self.scaler.fit_scalers(X_train, y_train)
         self.scaler.save(self.ticker)
 
         X_train, y_train = map(torch.tensor, self.scaler.transform(X_train, y_train))
         X_train, y_train = X_train.float(), y_train.float()
 
-        # 모델 = self (nn.Module)
+        # 5) 모델 = self (nn.Module)
         model = self
         # 혹시 예전에 잘못 등록된 submodule "model"이 있으면 제거
         self._modules.pop("model", None)
 
-        # 학습
+        # 6) 학습
         model.train()
 
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -777,17 +824,79 @@ class TechnicalAgent(BaseAgent, nn.Module):
             if (epoch + 1) % 5 == 0:
                 print(f"  Epoch {epoch+1:03d} | Loss: {total_loss/len(train_loader):.6f}")
 
-        # 모델 저장 및 연결
+        # 7) 모델 저장 및 연결
         os.makedirs(self.model_dir, exist_ok=True)
         model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
         torch.save({"model_state_dict": model.state_dict()}, model_path)
 
         print(f" {self.agent_id} 모델 학습 및 저장 완료: {model_path}")
 
-    def predict(self, X, n_samples: int = 30, current_price: float = None, X_last: np.ndarray = None):
+    def predict(self, X=None, n_samples: int = 30, current_price: float = None, X_last: np.ndarray = None):
         """
         Monte Carlo Dropout 기반 예측 + 불확실성(σ) 및 confidence 계산 (안정형)
+
+        요구사항:
+        1) preprocessed_data.csv({ticker}_{agent_id}_dataset.csv)가 없으면
+             → searcher() 로 dataset 생성
+             → pretrain() 실행 후 모델/스케일러 저장
+        2) predict() 호출 시 X를 제공하지 않으면
+             → searcher(self.ticker)로 자동 최신 윈도우 생성
+        3) 이후 신뢰도/예측값(Target) 출력
         """
+        self._normalize_scaler_names()
+        
+        # ------------------------------
+        # 0) 입력 X가 없으면 searcher()로 자동 생성
+        # ------------------------------
+        if X is None:
+            print(f"⚙️ predict(): 입력 X 미지정 → 자동으로 searcher() 실행하여 최신 윈도우 생성")
+            X_auto = self.searcher(self.ticker)      # shape: (1, T, F)
+            X = X_auto.detach().cpu().numpy() if isinstance(X_auto, torch.Tensor) else X_auto
+
+        # ------------------------------
+        # 1) 전처리 데이터/모델/스케일러 준비 단계
+        # ------------------------------
+        dataset_path = os.path.join(
+            self.data_dir,
+            f"{self.ticker}_{self.agent_id}_dataset.csv"
+        )
+        model_path = os.path.join(
+            self.model_dir,
+            f"{self.ticker}_{self.agent_id}.pt"
+        )
+
+        need_pretrain = False
+
+        # (1-1) 전처리된 데이터셋 존재 여부 확인
+        if not os.path.exists(dataset_path):
+            print(
+                f"⚙️ {self.ticker} {self.agent_id} dataset not found → searcher() 호출해서 생성"
+            )
+            _ = self.searcher(self.ticker)
+            need_pretrain = True
+
+        # (1-2) 스케일러/모델 준비 상태 확인
+        try:
+            self.scaler.load(self.ticker)
+        except Exception:
+            need_pretrain = True
+
+        if not os.path.exists(model_path):
+            need_pretrain = True
+
+        # (1-3) 필요 시 자동 pretrain()
+        if need_pretrain:
+            print(
+                f"⚙️ {self.ticker} {self.agent_id} pretrain() 필요 → 자동 수행"
+            )
+            self.pretrain()
+            self.scaler.load(self.ticker)
+            self.load_model(model_path)
+        else:
+            # 이미 준비된 경우에는 모델만 안전하게 불러오기
+            self.load_model(model_path)
+
+        # -----------------------------
         # 1) 모델 및 스케일러 준비
         model = self  # TechnicalAgent 자체가 nn.Module
         self.scaler.load(self.ticker)
