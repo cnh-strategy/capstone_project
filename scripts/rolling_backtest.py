@@ -104,6 +104,7 @@ class RollingBacktester:
                 # 디베이트 시작
                 result = agent.run(force_pretrain=True)
                 result["simulation_date"] = sim_date
+                print(f"📊📊[디베이트 결과] result:{result}")
 
                 # 라운드 별 내용을 list화
                 self._collect_result(sim_date, result)
@@ -274,8 +275,8 @@ class RollingBacktester:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Rolling Backtest Runner with Auto Analysis")
-    parser.add_argument("--ticker", type=str,# default="AAPL",  # 기본 티커 원하는 값으로 설정
-                        required=True, help="Target Ticker (e.g. AAPL)")
+    parser.add_argument("--ticker", type=str, default="AAPL",  # 기본 티커 원하는 값으로 설정
+                        required=False, help="Target Ticker (e.g. AAPL)")
     parser.add_argument(
         "--start",
         type=str,
