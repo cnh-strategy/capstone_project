@@ -6,7 +6,6 @@ import pandas as pd
 import numpy as np
 import lightgbm as lgb
 from datetime import datetime
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # 프로젝트 루트 경로 추가
@@ -16,11 +15,11 @@ from config.agents import dir_info
 
 def train_meta_model(
     data_path="data/processed/ensemble_train.csv",
-    model_out_path="models/ensemble_lightgbm.pkl",
-    test_size=0.2
+    model_out_path="models/ensemble_lightgbm.pkl"
 ):
     """
     LightGBM 메타 모델 학습
+    개별 에이전트들과 동일하게 전체 데이터를 학습에 사용합니다.
     """
     if not os.path.exists(data_path):
         print(f"[Error] 학습 데이터가 없습니다: {data_path}")
@@ -36,11 +35,19 @@ def train_meta_model(
     # "예측 수익률(Return)"로 변환하여 학습.
     # Return = (Pred - Last) / Last
     
-    # 입력 피처
-    # Tech
-    df['Tech_Ret'] = (df['Tech_Pred'] - df['Last_Close']) / df['Last_Close']
-    df['Macro_Ret'] = (df['Macro_Pred'] - df['Last_Close']) / df['Last_Close']
-    df['Senti_Ret'] = (df['Senti_Pred'] - df['Last_Close']) / df['Last_Close']
+    # 입력 피처: 예측값을 수익률로 변환
+    # NaN이 있는 경우 0으로 채움 (해당 에이전트의 예측이 없을 때)
+    df['Tech_Ret'] = ((df['Tech_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
+    df['Macro_Ret'] = ((df['Macro_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
+    df['Senti_Ret'] = ((df['Senti_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
+    
+    # Confidence와 Uncertainty도 NaN이면 0으로 채움
+    df['Tech_Conf'] = df['Tech_Conf'].fillna(0.0)
+    df['Tech_Unc'] = df['Tech_Unc'].fillna(0.0)
+    df['Macro_Conf'] = df['Macro_Conf'].fillna(0.0)
+    df['Macro_Unc'] = df['Macro_Unc'].fillna(0.0)
+    df['Senti_Conf'] = df['Senti_Conf'].fillna(0.0)
+    df['Senti_Unc'] = df['Senti_Unc'].fillna(0.0)
     
     # Target
     df['Target_Ret'] = (df['Next_Close'] - df['Last_Close']) / df['Last_Close']
@@ -51,70 +58,51 @@ def train_meta_model(
         'Senti_Ret', 'Senti_Conf', 'Senti_Unc'
     ]
     
-    # 결측치 제거 (안전장치)
-    df_clean = df.dropna(subset=feature_cols + ['Target_Ret'])
+    # Target_Ret만 필수 (예측값은 NaN이면 0으로 처리했으므로)
+    df_clean = df.dropna(subset=['Target_Ret'])
     print(f"전처리 후 데이터: {len(df_clean)}행")
     
-    # -------------------------------------------------------
-    # 2. 강제 학습 (데이터 부족해도) - 데모 목적
-    # -------------------------------------------------------
-    # 실제로는 데이터가 더 많아야 하지만, 지금은 프로세스 완성을 위해 최소한으로 진행
-    if len(df_clean) < 5: # 최소 5개라도 있으면 학습 시도
-        print("[Warn] 데이터가 매우 적습니다. Overfitting 주의.")
-        test_size = 0.0 # 테스트셋 없음
+    # 디버깅: 각 피처의 NaN 개수 확인
+    if len(df_clean) > 0:
+        print(f"   피처별 NaN 개수:")
+        for col in feature_cols:
+            nan_count = df_clean[col].isna().sum()
+            if nan_count > 0:
+                print(f"     {col}: {nan_count}개")
     
+    # -------------------------------------------------------
+    # 2. 전체 데이터를 학습에 사용 (개별 에이전트와 동일)
+    # -------------------------------------------------------
+    # 개별 에이전트들(TechnicalAgent, MacroAgent, SentimentalAgent)과 동일하게
+    # 전체 데이터를 학습에 사용합니다. 모델 성능 평가는 백테스팅으로 수행합니다.
     X = df_clean[feature_cols]
     y = df_clean['Target_Ret']
+    
+    X_train, y_train = X, y
+    print(f"[INFO] 전체 {len(X_train)}개 샘플을 학습에 사용")
 
     # -------------------------------------------------------
-    # 3. Time-Series Split
-    # -------------------------------------------------------
-    if test_size > 0:
-        split_idx = int(len(df_clean) * (1 - test_size))
-        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
-    else:
-        X_train, y_train = X, y
-        X_test, y_test = X, y # 평가용으로 동일 데이터 사용
-
-    print(f"Train: {len(X_train)}, Test: {len(X_test)}")
-
-    # -------------------------------------------------------
-    # 4. LightGBM 학습
+    # 3. LightGBM 학습
     # -------------------------------------------------------
     # Regression Model
     model = lgb.LGBMRegressor(
-        n_estimators=100, # 줄임
+        n_estimators=100,
         learning_rate=0.05,
-        max_depth=3, # 줄임
+        max_depth=3,
         random_state=42,
         n_jobs=-1
     )
     
+    # 전체 데이터로 학습 (Early stopping 없음)
     model.fit(
         X_train, y_train,
-        eval_set=[(X_test, y_test)],
         eval_metric='mse',
         callbacks=[
-            lgb.early_stopping(stopping_rounds=50),
             lgb.log_evaluation(period=50)
         ]
     )
     
-    # -------------------------------------------------------
-    # 5. 평가
-    # -------------------------------------------------------
-    y_pred = model.predict(X_test)
-    mse = mean_squared_error(y_test, y_pred)
-    mae = mean_absolute_error(y_test, y_pred)
-    
-    print(f"Test MSE: {mse:.6f}")
-    print(f"Test MAE: {mae:.6f}")
-    
-    # Baseline (단순 평균)과 비교
-    avg_pred = (X_test['Tech_Ret'] + X_test['Macro_Ret'] + X_test['Senti_Ret']) / 3
-    base_mse = mean_squared_error(y_test, avg_pred)
-    print(f"Baseline(Simple Avg) MSE: {base_mse:.6f}")
+    print("[INFO] 모델 학습 완료. 실제 성능 평가는 백테스팅으로 수행하세요.")
     
     # Feature Importance
     print("\nFeature Importance:")

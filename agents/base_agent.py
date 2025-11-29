@@ -10,7 +10,7 @@ import os, json, time, requests, yfinance as yf
 from datetime import datetime
 from dotenv import load_dotenv
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
-from config.agents import agents_info, dir_info
+from config.agents import agents_info, dir_info, common_params
 from core.data_set import build_dataset, load_dataset
 import torch
 import numpy as np
@@ -85,20 +85,21 @@ class BaseAgent:
             agent_id: str,
             model: Optional[str] = None,
             preferred_models: Optional[List[str]] = None,
-            temperature: float = 0.2,
+            temperature: Optional[float] = None,
             verbose: bool = False,
             need_training: bool = True,
             data_dir: str = dir_info["data_dir"],
             model_dir: str = dir_info["model_dir"],
             ticker: str=None,
-            gamma: float = 0.3,
-            delta_limit: float = 0.05,
+            gamma: Optional[float] = None,
+            delta_limit: Optional[float] = None,
     ):
 
         load_dotenv()
         self.agent_id = agent_id # 에이전트 식별자
         self.model = model # 모델 이름
-        self.temperature = temperature # Temperature 설정
+        # Temperature 설정 (config에서 가져오기)
+        self.temperature = temperature if temperature is not None else common_params.get("temperature", 0.2)
         self.verbose = verbose            # 디버깅 모드
         self.need_training = need_training # 모델 학습 필요 여부
         self.data_dir = data_dir
@@ -106,8 +107,8 @@ class BaseAgent:
         self.ticker = ticker
         self.scaler = DataScaler(agent_id)
         self.window_size = agents_info[agent_id]["window_size"]
-        # 모델 폴백 우선순위
-        self.preferred_models = preferred_models or ["gpt-5-mini", "gpt-4.1-mini"]
+        # 모델 폴백 우선순위 (config에서 가져오기)
+        self.preferred_models = preferred_models or common_params.get("preferred_models", ["gpt-5-mini", "gpt-4.1-mini"])
         if model:
             self.preferred_models = [model] + [
                 m for m in self.preferred_models if m != model
@@ -130,9 +131,9 @@ class BaseAgent:
         self.opinions: List[Opinion] = []
         self.rebuttals: Dict[int, List[Rebuttal]] = defaultdict(list)
 
-        # 수렴율 및 이동 한계
-        self.gamma = agents_info[agent_id]["gamma"]
-        self.delta_limit = agents_info[agent_id]["delta_limit"]
+        # 수렴율 및 이동 한계 (config에서 가져오기, 인자로 전달된 값이 있으면 우선)
+        self.gamma = gamma if gamma is not None else agents_info[agent_id].get("gamma", 0.3)
+        self.delta_limit = delta_limit if delta_limit is not None else agents_info[agent_id].get("delta_limit", 0.05)
 
         # JSON Schema
         self.schema_obj_opinion = {
@@ -268,12 +269,16 @@ class BaseAgent:
         )
 
 
-    def predict(self, X, n_samples: int = 30, current_price: float | None = None):
+    def predict(self, X, n_samples: Optional[int] = None, current_price: float | None = None):
         """
         Monte Carlo Dropout 기반 예측 + 불확실성(σ) 및 confidence 계산 (안정형)
         """
         import numpy as np
         import torch
+        
+        # n_samples 설정 (config에서 가져오기)
+        if n_samples is None:
+            n_samples = common_params.get("n_samples", 30)
 
         # 원본 X는 나중에 current_price 추론에 사용
         X_original = X
@@ -352,7 +357,9 @@ class BaseAgent:
             sigma = float(std_pred)
 
         # 예: σ가 작을수록 confidence ↑ (0~1 사이 값으로 squash)
-        confidence = float(1.0 / (1.0 + sigma))
+        # config에서 confidence 계산 공식 가져오기 (기본값: 1.0 / (1.0 + sigma))
+        confidence_formula = common_params.get("confidence_formula", "1.0 / (1.0 + sigma)")
+        confidence = float(eval(confidence_formula))
 
         # current_price 추론용 배열 (모델 입력과 동일 스케일)
         X_arr_for_price = X_tensor.detach().cpu().numpy()
@@ -455,7 +462,8 @@ class BaseAgent:
         # σ 기반 confidence 계산
         # -----------------------------
         sigma = float(std_pred[-1])
-        sigma = max(sigma, 1e-6)
+        sigma_min = common_params.get("sigma_min", 1e-6)
+        sigma = max(sigma, sigma_min)
 
         # 신뢰도: 불확실성 작을수록 1에 가까움
         confidence = 1 / (1 + np.log1p(sigma))
@@ -468,7 +476,8 @@ class BaseAgent:
             std_pred = self.scaler.inverse_y(std_pred)
 
         if current_price is None:
-            current_price = getattr(self.stockdata, 'last_price', 100.0)
+            default_price = common_params.get("default_current_price", 100.0)
+            current_price = getattr(self.stockdata, 'last_price', default_price)
 
         # ✅ 현재 모델은 "다음날 수익률(return)"을 예측하므로, 종가로 변환 시 (1 + return)
         predicted_return = float(mean_pred[-1])  # 예측된 상승률 (%)
@@ -581,16 +590,18 @@ class BaseAgent:
         gamma = getattr(self, "gamma", 0.3)
         try:
             my_price = float(my_opinion.target.next_close)
-            my_sigma = abs(my_opinion.target.uncertainty or 1e-6)
+            sigma_min = common_params.get("sigma_min", 1e-6)
+            my_sigma = abs(my_opinion.target.uncertainty or sigma_min)
 
             if not others:
                 return my_price
 
             other_prices = np.array([o.target.next_close for o in others], dtype=float)
-            other_sigmas = np.array([abs(o.target.uncertainty or 1e-6) for o in others], dtype=float)
+            sigma_min = common_params.get("sigma_min", 1e-6)
+            other_sigmas = np.array([abs(o.target.uncertainty or sigma_min) for o in others], dtype=float)
 
             all_sigmas = np.concatenate([[my_sigma], other_sigmas])
-            inv_sigmas = 1 / (all_sigmas + 1e-6)
+            inv_sigmas = 1 / (all_sigmas + sigma_min)
             betas = inv_sigmas / inv_sigmas.sum()
 
             delta = np.sum(betas[1:] * (other_prices - my_price))
@@ -608,8 +619,8 @@ class BaseAgent:
             rebuttals: List[Rebuttal],
             stock_data: StockData,
             fine_tune: bool = True,
-            lr: float = 1e-4,
-            epochs: int = 10,
+            lr: Optional[float] = None,
+            epochs: Optional[int] = None,
     ):
         """
         Revision 단계 
@@ -618,6 +629,12 @@ class BaseAgent:
         - fine-tuning (HuberLoss 사용)
         - reasoning 생성
         """
+        # Fine-tuning 파라미터 설정 (config에서 가져오기)
+        if lr is None:
+            lr = common_params.get("fine_tune_lr", 1e-4)
+        if epochs is None:
+            epochs = agents_info.get(self.agent_id, {}).get("fine_tune_epochs", common_params.get("fine_tune_epochs", 10))
+        
         # 1. 신뢰도 기반 가격 계산
         revised_price = self._calculate_consensus_price(my_opinion, others)
 
@@ -627,7 +644,8 @@ class BaseAgent:
             try:
                 current_price = getattr(stock_data, "last_price", None)
                 if current_price is None:
-                    current_price = getattr(self, "last_price", 100.0)
+                    default_price = common_params.get("default_current_price", 100.0)
+                    current_price = getattr(self, "last_price", default_price)
 
                 revised_return = (revised_price / current_price) - 1.0
                 y_target = revised_return
@@ -647,7 +665,9 @@ class BaseAgent:
                 self.model.train()
                 try:
                     optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-                    criterion = torch.nn.HuberLoss(delta=1.0)
+                    # config에서 HuberLoss delta 가져오기
+                    huber_delta = common_params.get("huber_loss_delta", 1.0)
+                    criterion = torch.nn.HuberLoss(delta=huber_delta)
 
                     for _ in range(epochs):
                         optimizer.zero_grad()
@@ -789,15 +809,21 @@ class BaseAgent:
         X, y, cols = load_dataset(self.ticker, self.agent_id, save_dir=self.data_dir)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
 
-        split_idx = int(len(X) * 0.8)
-        X_train, X_val = X[:split_idx], X[split_idx:]
-        y_train, y_val = y[:split_idx], y[split_idx:]
+        # 백테스팅 모드: simulation_date 이전 데이터만 필터링
+        # BaseAgent의 pretrain은 load_dataset을 사용하므로, 날짜 정보가 없을 수 있음
+        # 하지만 test_mode와 simulation_date가 설정되어 있으면 경고만 출력
+        if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
+            print(f"[INFO] 백테스팅 모드: {self.simulation_date} 이전 데이터만 사용 (날짜 필터링은 load_dataset에서 처리됨)")
 
-        # 🔹 타깃 스케일 조정 복원 - 상승/하락율을 100배로 스케일링
-        # 기존: 원본 상승/하락율 그대로 사용 (문제: 너무 작은 값으로 과적합)
-        # 수정: ±0.04 → ±4.0으로 스케일링하여 적절한 학습 범위 확보
-        y_train *= 100.0
-        y_val   *= 100.0
+        # 전부 학습 (검증 데이터 분할 없음)
+        # 예측을 위한 모델이므로 모든 데이터를 학습에 사용
+        X_train, y_train = X, y
+        print(f"[INFO] 전체 {len(X_train)}개 샘플을 학습에 사용")
+
+        # 🔹 타깃 스케일 조정 복원 - 상승/하락율을 스케일링
+        # config에서 스케일 팩터 가져오기
+        y_scale_factor = common_params.get("y_scale_factor", 100.0)
+        y_train *= y_scale_factor
 
         self.scaler.fit_scalers(X_train, y_train)
         self.scaler.save(self.ticker)
@@ -819,11 +845,10 @@ class BaseAgent:
         model.train()
 
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        # 기존: MSE Loss 사용
-        # loss_fn = torch.nn.MSELoss()
-        # 수정: Huber Loss 사용 - 이상치에 덜 민감하고 더 안정적인 학습
-        # delta=1.0으로 조정 (타겟 스케일링 후 적절한 값)
-        loss_fn = torch.nn.HuberLoss(delta=1.0)
+        # Huber Loss 사용 - 이상치에 덜 민감하고 더 안정적인 학습
+        # config에서 delta 값 가져오기
+        huber_delta = common_params.get("huber_loss_delta", 1.0)
+        loss_fn = torch.nn.HuberLoss(delta=huber_delta)
         train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
 
         # --------------------------

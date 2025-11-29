@@ -12,7 +12,7 @@ DebateAgent: Multi-Agent Debate System Orchestrator
 - Ensemble: 최종 통합 예측 생성
 """
 import os
-from config.agents import dir_info, agents_info
+from config.agents import dir_info, agents_info, common_params
 from prompts import DEBATE_PROMPTS
 
 from datetime import datetime
@@ -73,14 +73,18 @@ class DebateAgent:
         macro_window = macro_cfg.get("window_size", 40)
 
         # ---- 3) 각 에이전트 생성 ----
-        # 각 에이전트에 서로 다른 gamma 값을 설정하여 다양성 확보
+        # 각 에이전트에 config에서 gamma, delta_limit 값을 가져와서 설정
         # gamma: 수렴율 (0~1), 값이 클수록 다른 에이전트의 의견을 더 많이 반영
+        tech_cfg = agents_info.get("TechnicalAgent", {})
+        macro_cfg = agents_info.get("MacroAgent", {})
+        sent_cfg = agents_info.get("SentimentalAgent", {})
+        
         self.agents = {
             "TechnicalAgent": TechnicalAgent(
                 agent_id="TechnicalAgent",
                 ticker=self.ticker,
-                gamma=0.4,  # 기술적 분석에 중간 정도의 수렴 허용
-                delta_limit=0.08  # 최대 8% 변화 허용
+                gamma=tech_cfg.get("gamma", 0.3),  # config에서 가져오기
+                delta_limit=tech_cfg.get("delta_limit", 0.05)  # config에서 가져오기
             ),
 
             "MacroAgent": MacroAgent(
@@ -88,15 +92,15 @@ class DebateAgent:
                 ticker=self.ticker,
                 base_date=datetime.today(),
                 window=macro_window,
-                gamma=0.5,  # 거시경제 분석에 더 많은 수렴 허용
-                delta_limit=0.10  # 최대 10% 변화 허용
+                gamma=macro_cfg.get("gamma", 0.5),  # config에서 가져오기
+                delta_limit=macro_cfg.get("delta_limit", 0.1)  # config에서 가져오기
             ),
 
             "SentimentalAgent": SentimentalAgent(
                 ticker=self.ticker,
                 agent_id="SentimentalAgent",
-                gamma=0.35,  # 감성 분석에 보수적 수렴
-                delta_limit=0.07  # 최대 7% 변화 허용
+                gamma=sent_cfg.get("gamma", 0.3),  # config에서 가져오기
+                delta_limit=sent_cfg.get("delta_limit", 0.05)  # config에서 가져오기
             ),
         }
 
@@ -157,8 +161,8 @@ class DebateAgent:
                 print(f"[Step 1/2] 학습 데이터 생성 중... ({self.ticker})")
                 # DebateAgent 내부 에이전트들을 활용하기보다, 스크립트가 독립적으로 수행하도록 함
                 # (메모리 관리 및 독립성 위해)
-                # 데이터 부족 문제를 해결하기 위해 기간을 3년(1095일)으로 늘림
-                generate_ensemble_data(ticker=self.ticker, days=1095, output_path=data_path)
+                # days=None이면 config/agents의 period 사용
+                generate_ensemble_data(ticker=self.ticker, days=None, output_path=data_path)
                 
                 # 2. 모델 학습
                 print(f"[Step 2/2] LightGBM 모델 학습 중...")
@@ -251,12 +255,27 @@ class DebateAgent:
                 
                 # pretrain 이후 최신 데이터로 run_dataset (중복 방지)
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [SentimentalAgent] run_dataset 실행 (최신 데이터 수집)")
-                sd = agent.run_dataset(days=365)
+                cfg = agents_info.get(agent_id, {})
+                # common_params에서 period 가져오기
+                period_str = common_params.get("period", "2y")
+                # period 문자열을 일수로 변환
+                if period_str.endswith("y"):
+                    years = int(period_str[:-1])
+                    days = years * 365
+                elif period_str.endswith("m"):
+                    months = int(period_str[:-1])
+                    days = months * 30
+                elif period_str.endswith("d"):
+                    days = int(period_str[:-1])
+                else:
+                    days = 2 * 365  # 기본값
+                sd = agent.run_dataset(days=days)
                 agent.stockdata = sd
                 
-                # 예측
+                # 예측 (config에서 n_samples 가져오기)
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [SentimentalAgent] predict 실행 (MC Dropout 포함)")
-                target = agent.predict(sd, n_samples=30)
+                n_samples = common_params.get("n_samples", 30)
+                target = agent.predict(sd, n_samples=n_samples)
             else:
                 # Technical/Macro: searcher 먼저 → 필요시 pretrain
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] searcher 실행 (데이터셋 준비)")
@@ -388,9 +407,12 @@ class DebateAgent:
 
         return round_revises
 
-    def run(self):
+    def run(self, force_pretrain: bool = False):
         """
         전체 디베이트 프로세스 실행
+        
+        Args:
+            force_pretrain: 초기 Opinion 수집 시 강제 pretrain 여부
         
         프로세스:
         1. (선택) 공통 데이터셋 생성 – 현재는 각 Agent 내부 pretrain/searcher 에서 처리
@@ -411,9 +433,9 @@ class DebateAgent:
 
         # Round 0: 초기 Opinion 수집
         print(f"\n{'='*80}")
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Round 0: 초기 Opinion 수집 시작")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Round 0: 초기 Opinion 수집 시작 (force_pretrain={force_pretrain})")
         print(f"{'='*80}")
-        self.get_opinion(0, self.ticker, rebuild=False, force_pretrain=False)
+        self.get_opinion(0, self.ticker, rebuild=False, force_pretrain=force_pretrain)
 
         # Round 1~N: Rebuttal → Revise 반복
         for round in range(1, self.rounds + 1):

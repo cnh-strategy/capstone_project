@@ -13,7 +13,7 @@ import yfinance as yf
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
-from config.agents import dir_info, agents_info
+from config.agents import dir_info, agents_info, common_params
 from core.macro_classes.macro_llm import GradientAnalyzer
 from agents.base_agent import BaseAgent, Target, StockData, Opinion, Rebuttal
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
@@ -105,6 +105,7 @@ class MacroAgent(BaseAgent, nn.Module):
         self.scaler_y = None
         self.macro_df = None
         self.X_scaled = None
+        self.X_raw = None
         self.last_price = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -250,10 +251,182 @@ class MacroAgent(BaseAgent, nn.Module):
         return X_final, merged
 
     # =========================================================================
-    # 메인 메서드
+    # 메인 메서드: searcher / pretrain
+    #  - searcher: MacroAData를 사용해 CSV/원시 피처만 생성 + 최신 윈도우 준비
+    #  - pretrain: CSV 기반으로만 스케일링/시퀀싱/학습 수행
     # =========================================================================
+
+    def _ensure_macro_csv(self, ticker: str, rebuild: bool = False) -> None:
+        """
+        MacroAData 없이, searcher 내부에서 직접:
+        - 매크로/주가 데이터를 API로 수집
+        - 파생 피처를 생성
+        - raw CSV를 생성한다.
+
+        NOTE:
+        - raw CSV는 data/raw에 저장된다.
+        - processed CSV는 pretrain에서 생성된다.
+        """
+        csv_path = os.path.join(data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
+
+        if not rebuild and os.path.exists(csv_path):
+            return
+
+        print(f"[INFO] MacroAgent.searcher: {ticker} 매크로 데이터셋 CSV 생성 중...")
+
+        # ------------------------------------------------------------------
+        # 1) 기간 설정 - config.common_params["period"] 를 사용
+        # ------------------------------------------------------------------
+        from config.agents import common_params  # 순환 import 방지용 지역 import
+
+        period = common_params.get("period", "2y")
+        # yfinance 의 period 파라미터를 그대로 사용 (예: "2y", "1y")
+
+        # ------------------------------------------------------------------
+        # 2) 매크로 데이터 수집 (MACRO_TICKERS 기준)
+        # ------------------------------------------------------------------
+        try:
+            df_macro = yf.download(
+                tickers=list(MACRO_TICKERS.values()),
+                period=period,
+                interval="1d",
+                group_by="ticker",
+                auto_adjust=False,
+                progress=False,
+            )
+        except Exception as e:
+            print(f"[WARN] MacroAgent.searcher: 매크로 데이터 다운로드 실패: {e}")
+            df_macro = pd.DataFrame()
+
+        if isinstance(df_macro.columns, pd.MultiIndex):
+            # (Date, 티커, OHLCV) -> (Date, Ticker_OHLCV)
+            df_macro = df_macro.stack(level=0)
+            df_macro.index.names = ["Date", "Ticker"]
+            df_macro = df_macro.unstack(level="Ticker")
+            df_macro.columns = [f"{col[1]}_{col[0]}" for col in df_macro.columns.values]
+        else:
+            df_macro.index.name = "Date"
+
+        df_macro = df_macro.reset_index()
+        if "Date" in df_macro.columns:
+            df_macro["Date"] = pd.to_datetime(df_macro["Date"]).dt.strftime("%Y-%m-%d")
+
+        # ------------------------------------------------------------------
+        # 3) 매크로 파생 피처 생성 (1일 수익률, Yield_spread, Risk_Sentiment)
+        #    - FINAL_FEATURES 와 일관되도록 이름을 맞춘다.
+        # ------------------------------------------------------------------
+        df_macro_feat = df_macro.copy()
+        if "Date" in df_macro_feat.columns:
+            df_macro_feat.set_index("Date", inplace=True)
+
+        # 각 자산의 1일 수익률
+        for t in MACRO_TICKERS.values():
+            col_close = f"{t}_Close"
+            if col_close in df_macro_feat.columns:
+                df_macro_feat[f"{t}_ret_1d"] = df_macro_feat[col_close].pct_change()
+
+        # 금리 스프레드
+        if "^TNX_Close" in df_macro_feat.columns and "^IRX_Close" in df_macro_feat.columns:
+            df_macro_feat["Yield_spread"] = df_macro_feat["^TNX_Close"] - df_macro_feat["^IRX_Close"]
+
+        # 시장 위험심리
+        if (
+            "SPY_ret_1d" in df_macro_feat.columns
+            and "DX-Y.NYB_ret_1d" in df_macro_feat.columns
+            and "^VIX_ret_1d" in df_macro_feat.columns
+        ):
+            df_macro_feat["Risk_Sentiment"] = (
+                df_macro_feat["SPY_ret_1d"] - df_macro_feat["DX-Y.NYB_ret_1d"] - df_macro_feat["^VIX_ret_1d"]
+            )
+
+        df_macro_feat = df_macro_feat.reset_index()
+
+        # ------------------------------------------------------------------
+        # 4) 개별 티커 주가 데이터 수집 (종가 기준) + 주가 피처(ret1, ma5, ma10)
+        # ------------------------------------------------------------------
+        try:
+            df_price = yf.download(
+                ticker,
+                period=period,
+                interval="1d",
+                auto_adjust=False,
+                progress=False,
+            )
+            # MultiIndex 컬럼(flatten)
+            if isinstance(df_price.columns, pd.MultiIndex):
+                df_price.columns = [c[0] if isinstance(c, tuple) else str(c) for c in df_price.columns]
+
+            df_price = df_price[["Close"]].rename(columns={"Close": ticker})
+            df_price.index.name = "Date"
+            df_price = df_price.reset_index()
+            df_price["Date"] = pd.to_datetime(df_price["Date"]).dt.strftime("%Y-%m-%d")
+        except Exception as e:
+            print(f"[WARN] MacroAgent.searcher: 종가 데이터 다운로드 실패({ticker}): {e}")
+            df_price = pd.DataFrame(columns=["Date", ticker])
+
+        # 주가 기반 파생 피처 (FINAL_FEATURES 의 stock 피처 이름과 일치하도록)
+        if not df_price.empty:
+            df_price["ret1"] = df_price[ticker].pct_change()
+            df_price["ma5"] = df_price[ticker].rolling(5).mean()
+            df_price["ma10"] = df_price[ticker].rolling(10).mean()
+            df_price = df_price.fillna(method="bfill")
+
+        # ------------------------------------------------------------------
+        # 5) 매크로 + 주가 병합 후, FINAL_FEATURES 기준 피처셋 구성
+        # ------------------------------------------------------------------
+        if "Date" in df_macro_feat.columns and "Date" in df_price.columns:
+            merged = pd.merge(df_price, df_macro_feat, on="Date", how="inner").sort_values("Date")
+        else:
+            print("[WARN] MacroAgent.searcher: 'Date' 컬럼 누락으로 병합 실패")
+            merged = pd.DataFrame(columns=["Date"])
+
+        merged = merged.fillna(method="ffill").fillna(method="bfill").dropna().reset_index(drop=True)
+
+        # FINAL_FEATURES 기준으로 정렬/보정 (누락 피처는 0.0으로 채움)
+        X_final = pd.DataFrame(index=merged.index)
+        for feature in FINAL_FEATURES:
+            if feature in merged.columns:
+                X_final[feature] = merged[feature]
+            else:
+                X_final[feature] = 0.0
+
+        # 개별 종목 종가 컬럼 준비 (마지막 컬럼으로 사용)
+        # 형식 통일: 첫 컬럼 Date, 마지막 컬럼 Close
+        if ticker in merged.columns:
+            merged["Close"] = merged[ticker]
+        elif "Close" not in merged.columns:
+            # 종가 정보를 찾지 못한 경우 fallback (NaN)
+            merged["Close"] = np.nan
+
+        # Date + FINAL_FEATURES + Close 형태로 저장
+        out_df = pd.concat(
+            [
+                merged[["Date"]].reset_index(drop=True),
+                X_final.reset_index(drop=True),
+                merged[["Close"]].reset_index(drop=True),
+            ],
+            axis=1,
+        )
+
+        # processed 경로
+        os.makedirs(data_dir, exist_ok=True)
+        out_df.to_csv(csv_path, index=False)
+
+        # raw 경로에도 동일 내용 저장 (TechnicalAgent 패턴과 유사)
+        base_root = os.path.dirname(data_dir)  # e.g. "data"
+        raw_dir = os.path.join(base_root, "raw")
+        os.makedirs(raw_dir, exist_ok=True)
+        raw_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
+        out_df.to_csv(raw_path, index=False)
+
+        print(f"[INFO] MacroAgent.searcher: 매크로 데이터셋 CSV 저장 완료 -> {csv_path}")
+
     def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
-        """MacroAgent 전용 searcher - 통합된 로직 사용"""
+        """
+        MacroAgent 전용 searcher
+        - MacroAData를 사용해 공통 CSV/가격 CSV를 준비
+        - CSV 기반으로 전체 시퀀스를 만든 뒤, 최신 윈도우만 반환
+        """
         agent_id = self.agent_id
         ticker = ticker or self.ticker
         if not ticker:
@@ -263,78 +436,63 @@ class MacroAgent(BaseAgent, nn.Module):
         if ticker not in self.tickers:
             self.tickers = [ticker]
 
-        # 모델 경로 업데이트
+        # 모델/스케일러 경로 업데이트
         self.model_path = os.path.join(model_dir, f"{ticker}_{agent_id}.pt")
         self.scaler_X_path = os.path.join(model_dir, "scalers", f"{ticker}_{agent_id}_xscaler.pkl")
         self.scaler_y_path = os.path.join(model_dir, "scalers", f"{ticker}_{agent_id}_yscaler.pkl")
 
-        # 날짜 설정 (충분히 길게 잡아서 window 확보)
-        end_date = datetime.today()
-        start_date = end_date - timedelta(days=self.window * 2 + 100)
+        # 1) Raw CSV 보장 (데이터 수집/전처리)
+        self._ensure_macro_csv(ticker, rebuild=rebuild)
+        
+        # 2) Raw CSV에서 최신 window_size만큼 직접 추출
+        raw_csv_path = os.path.join(os.path.dirname(self.data_dir), "raw", f"{ticker}_{self.agent_id}_raw.csv")
+        if not os.path.exists(raw_csv_path):
+            raise FileNotFoundError(f"Raw CSV not found: {raw_csv_path}")
+        
+        df_raw = pd.read_csv(raw_csv_path)
+        df_raw["Date"] = pd.to_datetime(df_raw["Date"])
+        df_raw = df_raw.sort_values("Date").reset_index(drop=True)
+        
+        feature_cols = FINAL_FEATURES
+        window_size = self.window
+        
+        # 피처 추출 (Date, Close 제외)
+        X_all = df_raw[feature_cols].values.astype(np.float32)
+        
+        # 최신 window_size만큼 추출
+        if len(X_all) < window_size:
+            raise ValueError(f"데이터 길이({len(X_all)}) < 윈도우 크기({window_size})")
+        
+        self.X_raw = df_raw[feature_cols]
+        X_latest = X_all[-window_size:].reshape(1, window_size, -1)  # (1, T, F)
+        
+        print(f"[OK] MacroAgent searcher - 최신 윈도우 준비 완료: {X_latest.shape}")
 
-        print("[INFO] MacroAgent 데이터 수집 및 처리 중 (Unified)...")
-        
-        # 1. 데이터 수집
-        macro_df = self._fetch_macro_data(start_date, end_date)
-        stock_df = self._fetch_stock_data(ticker, start_date, end_date)
-        
-        # 2. 파생변수 추가
-        macro_df = self._add_derived_features(macro_df)
-        
-        # 3. 최종 데이터셋 구성
-        X_input, merged = self._prepare_final_dataset(macro_df, stock_df, ticker)
-        
-        if len(X_input) < self.window:
-            # 데이터가 너무 적으면 에러 대신 dummy 데이터로 시도 (테스트용)
-            if len(X_input) == 0:
-                 raise ValueError(f"데이터가 부족합니다. ({len(X_input)} < {self.window})")
-            # pad with first row
-            pad_len = self.window - len(X_input)
-            first_row = X_input.iloc[[0]]
-            X_pad = pd.concat([first_row] * pad_len + [X_input])
-            X_input = X_pad
-            
-        # 4. Tensor 변환 (Raw Data)
-        X_seq_np = np.expand_dims(X_input.tail(self.window).values, axis=0)
-        X_seq = torch.FloatTensor(X_seq_np).to(self.device)
-        
-        print(f"[OK] 데이터 준비 완료: {X_seq.shape}")
-        
-        # 데이터 저장
-        self.X_raw = X_input.copy()
-        self.macro_df = merged.copy()
-        
         # StockData 구성
         self.stockdata = StockData(ticker=ticker)
-        
-        # last_price
         try:
-            if not stock_df.empty and f"Close_{ticker}" in stock_df.columns:
-                self.stockdata.last_price = float(stock_df[f"Close_{ticker}"].iloc[-1])
-                self.last_price = self.stockdata.last_price
-            else:
-                self.stockdata.last_price = None
+            self.stockdata.last_price = float(df_raw["Close"].iloc[-1])
+            self.last_price = self.stockdata.last_price
         except Exception:
             self.stockdata.last_price = None
-            
+
         # 통화코드
         try:
             self.stockdata.currency = yf.Ticker(ticker).info.get("currency", "USD")
         except Exception:
             self.stockdata.currency = "USD"
 
-        # feature_dict
-        df_latest = pd.DataFrame(X_input.tail(self.window).values, columns=FINAL_FEATURES)
+        # feature_dict (마지막 윈도우)
+        df_latest = pd.DataFrame(X_latest[0], columns=feature_cols)
         feature_dict = {col: df_latest[col].tolist() for col in df_latest.columns}
-        
-        # StockData 업데이트 (피처 및 메타데이터)
-        setattr(self.stockdata, agent_id, feature_dict)
-        self.stockdata.feature_cols = FINAL_FEATURES
 
-        return X_seq
+        setattr(self.stockdata, agent_id, feature_dict)
+        self.stockdata.feature_cols = feature_cols
+
+        return torch.FloatTensor(X_latest).to(self.device)
 
     def pretrain(self):
-        """Agent별 사전학습 루틴 (통합 로직)"""
+        """MacroAgent 사전학습 루틴 - data/raw CSV에서 직접 로드하여 scaling/window 처리"""
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
 
         # Config
@@ -342,104 +500,102 @@ class MacroAgent(BaseAgent, nn.Module):
         epochs = cfg.get("epochs", 60)
         lr = cfg.get("learning_rate", 0.0005)
         batch_size = cfg.get("batch_size", 16)
+
+        if not self.ticker:
+            raise ValueError("MacroAgent.pretrain: ticker가 설정되지 않았습니다.")
+
+        ticker = self.ticker
+
+        # 1) data/raw CSV 로드
+        raw_csv_path = os.path.join(os.path.dirname(self.data_dir), "raw", f"{ticker}_{self.agent_id}_raw.csv")
+        if not os.path.exists(raw_csv_path):
+            print(f"⚙️ {ticker} {self.agent_id} raw CSV not found. Running searcher() to generate it...")
+            _ = self.searcher(ticker, rebuild=True)
+            if not os.path.exists(raw_csv_path):
+                raise FileNotFoundError(f"Raw CSV not found after searcher: {raw_csv_path}")
         
-        # 1. 데이터 수집 (최대 5년치)
-        end_date = datetime.today()
-        start_date = end_date - timedelta(days=365*5)
+        # raw CSV 읽기 (Date 첫 컬럼, Close 마지막 컬럼)
+        df_raw = pd.read_csv(raw_csv_path)
+        df_raw["Date"] = pd.to_datetime(df_raw["Date"])
+        df_raw = df_raw.sort_values("Date").reset_index(drop=True)
         
-        print("[INFO] 학습 데이터 수집 중...")
-        macro_df = self._fetch_macro_data(start_date, end_date)
-        stock_df = self._fetch_stock_data(self.ticker, start_date, end_date)
-        macro_df = self._add_derived_features(macro_df)
-        X_raw, merged = self._prepare_final_dataset(macro_df, stock_df, self.ticker)
+        # 2) 피처 컬럼 추출 (Date, Close 제외)
+        feature_cols = FINAL_FEATURES
+        X_all = df_raw[feature_cols].values.astype(np.float32)
         
-        # 2. 타깃 생성 (다음날 수익률)
-        close_col = f"Close_{self.ticker}"
-        if close_col not in merged.columns:
-             # 대체 컬럼 찾기
-             cols = [c for c in merged.columns if "Close" in c and self.ticker in c]
-             if cols:
-                 close_col = cols[0]
-             else:
-                 raise ValueError(f"Target column {close_col} not found.")
-             
-        y_raw = merged[close_col].pct_change().shift(-1) # 다음날 수익률
+        # 3) 타겟 생성 (다음날 수익률)
+        close_prices = df_raw["Close"].values
+        y_all = (close_prices[1:] / close_prices[:-1] - 1.0).reshape(-1, 1).astype(np.float32)
+        X_all = X_all[:-1]  # 마지막 행 제외
         
-        # 유효 데이터 필터링
-        valid_idx = ~y_raw.isna()
-        X_data = X_raw[valid_idx]
-        y_data = y_raw[valid_idx]
+        # 4) Window 처리 (시퀀스 생성)
+        window_size = self.window
+        if len(X_all) < window_size:
+            raise ValueError(f"데이터 길이({len(X_all)}) < 윈도우 크기({window_size})")
         
-        if len(X_data) < self.window:
-             print("[WARN] 학습 데이터 부족으로 중단")
-             return
-             
-        # 3. 스케일링
+        def _create_sequences(X, y, win: int):
+            Xs, ys = [], []
+            for i in range(len(X) - win):
+                Xs.append(X[i : i + win])
+                ys.append(y[i + win])
+            return np.array(Xs), np.array(ys)
+        
+        X_seq, y_seq = _create_sequences(X_all, y_all, window_size)
+        print(f"[INFO] 시퀀스 생성 완료: {X_seq.shape}, {y_seq.shape}")
+        
+        if len(X_seq) == 0:
+            print("[WARN] MacroAgent.pretrain: 학습용 시퀀스가 없습니다.")
+            return
+
+        # 5) Scaling
         scaler_X = StandardScaler()
-        scaler_y = MinMaxScaler(feature_range=(-1, 1))
+        X_scaled = scaler_X.fit_transform(X_seq.reshape(-1, X_seq.shape[-1]))
+        X_scaled = X_scaled.reshape(X_seq.shape)
         
-        X_scaled = scaler_X.fit_transform(X_data)
-        y_scaled = scaler_y.fit_transform(y_data.values.reshape(-1, 1))
+        minmax_range = cfg.get("minmax_scaler_range", (-1, 1))
+        scaler_y = MinMaxScaler(feature_range=minmax_range)
+        y_scaled = scaler_y.fit_transform(y_seq)
         
         # 스케일러 저장
         os.makedirs(os.path.dirname(self.scaler_X_path), exist_ok=True)
-        scaler_X.feature_names_in_ = np.array(FINAL_FEATURES) # 명시적 지정
+        scaler_X.feature_names_in_ = np.array(feature_cols)
         joblib.dump(scaler_X, self.scaler_X_path)
         joblib.dump(scaler_y, self.scaler_y_path)
         self.scaler_X = scaler_X
         self.scaler_y = scaler_y
         
-        # 4. 시퀀싱
-        X_seq, y_seq = [], []
-        for i in range(len(X_scaled) - self.window):
-            X_seq.append(X_scaled[i : i + self.window])
-            y_seq.append(y_scaled[i + self.window])
-        
-        X_seq = np.array(X_seq)
-        y_seq = np.array(y_seq)
-        
-        # 5. 학습 준비
-        # input_dim이 실제 데이터와 다를 경우 레이어 재생성
+        # 6) input_dim 자동 조정
         actual_input_dim = X_seq.shape[-1]
         if actual_input_dim != self.input_dim:
             print(f"[INFO] input_dim 조정: {self.input_dim} -> {actual_input_dim}")
             self.input_dim = actual_input_dim
             hidden_dims = cfg.get("hidden_dims", [128, 64, 32])
             dropout_rates = cfg.get("dropout_rates", [0.3, 0.3, 0.2])
-            
+
             self.lstm1 = nn.LSTM(self.input_dim, hidden_dims[0], batch_first=True)
             self.lstm2 = nn.LSTM(hidden_dims[0], hidden_dims[1], batch_first=True)
             self.lstm3 = nn.LSTM(hidden_dims[1], hidden_dims[2], batch_first=True)
             self.fc1 = nn.Linear(hidden_dims[2], 32)
             self.fc2 = nn.Linear(32, self.output_dim)
-            
-        # 모델 = self
+
+        # 7) 학습 준비
         model = self
         model.to(self.device)
         model.train()
-        
-        # 데이터셋 구성
-        dataset = TensorDataset(torch.FloatTensor(X_seq).to(self.device), 
-                                torch.FloatTensor(y_seq).to(self.device))
-        
-        train_size = int(len(dataset) * 0.9)
-        val_size = len(dataset) - train_size
-        train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
-        
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size)
-        
+
+        dataset = TensorDataset(
+            torch.FloatTensor(X_scaled).to(self.device),
+            torch.FloatTensor(y_scaled).to(self.device),
+        )
+        train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        loss_fn = nn.L1Loss() # or HuberLoss
-        
-        # 6. 학습 루프
-        best_loss = float('inf')
-        patience_cnt = 0
-        patience = 10
-        
+        loss_fn = nn.L1Loss()
+
+        # 5) 학습 루프
         for epoch in range(epochs):
             model.train()
-            train_loss = 0
+            train_loss = 0.0
             for bx, by in train_loader:
                 optimizer.zero_grad()
                 pred = model(bx)
@@ -447,34 +603,40 @@ class MacroAgent(BaseAgent, nn.Module):
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item()
-            
-            model.eval()
-            val_loss = 0
-            with torch.no_grad():
-                for bx, by in val_loader:
-                    pred = model(bx)
-                    loss = loss_fn(pred, by)
-                    val_loss += loss.item()
-            
-            train_loss /= len(train_loader)
-            val_loss /= len(val_loader)
-            
-            if (epoch+1) % 10 == 0:
-                print(f"Epoch {epoch+1}/{epochs} | Train: {train_loss:.4f} | Val: {val_loss:.4f}")
-                
-            if val_loss < best_loss:
-                best_loss = val_loss
-                patience_cnt = 0
-                # 모델 저장
-                torch.save({"model_state_dict": model.state_dict()}, self.model_path)
-            else:
-                patience_cnt += 1
-                if patience_cnt >= patience:
-                    print(f"Early stopping at epoch {epoch+1}")
-                    break
-                    
-        print(f"[OK] 학습 완료. Best Val Loss: {best_loss:.4f}")
-        # 학습 후 최고 모델 로드
+
+            train_loss /= max(len(train_loader), 1)
+            if (epoch + 1) % 10 == 0:
+                print(f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.4f}")
+
+        # 8) 모델 저장
+        os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
+        torch.save({"model_state_dict": model.state_dict()}, self.model_path)
+        self.model_loaded = True
+        print(f"[OK] MacroAgent 학습 완료. Final Train Loss: {train_loss:.4f}")
+        
+        # 9) 전처리된 데이터 저장 (선택적)
+        dataset_path = os.path.join(self.data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
+        flattened_data = []
+        dates_list = df_raw["Date"].values[:-1]  # 마지막 제외
+        
+        for sample_idx in range(len(X_seq)):
+            for time_idx in range(window_size):
+                date_idx = sample_idx + time_idx
+                row = {
+                    'sample_id': sample_idx,
+                    'time_step': time_idx,
+                    'date': str(dates_list[date_idx]) if date_idx < len(dates_list) else None,
+                    'target': float(y_scaled[sample_idx, 0]) if time_idx == window_size - 1 else np.nan,
+                }
+                for feat_idx, feat_name in enumerate(feature_cols):
+                    row[feat_name] = float(X_scaled[sample_idx, time_idx, feat_idx])
+                flattened_data.append(row)
+        
+        dataset_df = pd.DataFrame(flattened_data)
+        os.makedirs(self.data_dir, exist_ok=True)
+        dataset_df.to_csv(dataset_path, index=False)
+        print(f"✅ 전처리된 데이터 저장 완료: {dataset_path}")
+
         if os.path.exists(self.model_path):
             checkpoint = torch.load(self.model_path, map_location=self.device)
             model.load_state_dict(checkpoint["model_state_dict"])
@@ -519,24 +681,68 @@ class MacroAgent(BaseAgent, nn.Module):
 
             self.load_state_dict(state_dict, strict=False)
             self.eval()
+            self.model_loaded = True
             return True
         except Exception as e:
             print(f"[{self.agent_id}] load_model 실패: {e}")
             return False
 
-    def predict(self, X, n_samples: int = 30, current_price: float = None, X_last: np.ndarray = None):
+    def predict(self, X, n_samples: Optional[int] = None, current_price: Optional[float] = None, X_last: Optional[np.ndarray] = None):
         """
         Monte Carlo Dropout 기반 예측 + 불확실성(σ) 및 confidence 계산 (안정형)
         """
+        # n_samples 설정 (config에서 가져오기)
+        if n_samples is None:
+            n_samples = common_params.get("n_samples", 30)
+        
+        # ticker 확인
+        if not self.ticker:
+            raise ValueError("ticker가 설정되지 않았습니다. 먼저 searcher(ticker)를 호출하세요.")
+        
+        # 모델 파일 확인
+        if not os.path.exists(self.model_path):
+            print(f"[{self.agent_id}] 모델이 없어 pretrain()을 실행합니다...")
+            self.pretrain()
+        else:
+            # 모델이 있으면 로드 (이미 로드되었는지 확인)
+            if not hasattr(self, "model_loaded") or not self.model_loaded:
+                self.load_model(self.model_path)
+        
         # 모델 준비 및 스케일러 로드
         if not hasattr(self, "scaler_X") or self.scaler_X is None:
              if os.path.exists(self.scaler_X_path):
                  self.scaler_X = joblib.load(self.scaler_X_path)
                  self.scaler_y = joblib.load(self.scaler_y_path)
              else:
-                 raise RuntimeError("스케일러가 없습니다. pretrain()을 먼저 실행하세요.")
+                 # 스케일러가 없으면 pretrain 실행
+                 if not self.ticker:
+                     raise ValueError("ticker가 설정되지 않았습니다. 먼저 searcher(ticker)를 호출하세요.")
+                 print(f"[{self.agent_id}] 스케일러가 없어 pretrain()을 실행합니다...")
+                 self.pretrain()
+                 # pretrain 후 다시 로드
+                 if os.path.exists(self.scaler_X_path):
+                     self.scaler_X = joblib.load(self.scaler_X_path)
+                     self.scaler_y = joblib.load(self.scaler_y_path)
+                 else:
+                     raise RuntimeError("pretrain() 후에도 스케일러가 생성되지 않았습니다.")
 
-        # 입력 변환 및 스케일링
+        # 입력 변환 및 스케일링 (StockData 지원)
+        if isinstance(X, StockData):
+            sd = X
+            X_in = getattr(sd, "X_seq", None)
+            if X_in is None:
+                # StockData에 X_seq가 없으면 agent_id로 찾기
+                X_in = getattr(sd, self.agent_id, None)
+                if isinstance(X_in, dict):
+                    # dict 형태면 DataFrame으로 변환
+                    df = pd.DataFrame(X_in)
+                    X_in = df.values
+            if X_in is None:
+                raise ValueError(f"StockData에 {self.agent_id} 데이터가 없습니다. searcher()를 먼저 호출하세요.")
+            if current_price is None and getattr(sd, "last_price", None) is not None:
+                current_price = float(sd.last_price)
+            X = X_in
+        
         if isinstance(X, np.ndarray):
             X_np = X
         elif isinstance(X, torch.Tensor):
@@ -551,8 +757,16 @@ class MacroAgent(BaseAgent, nn.Module):
             X_2d = X_np
             
         # 데이터 프레임으로 변환 (피처 이름 기준 transform)
-        # (X는 FINAL_FEATURES 순서로 들어왔다고 가정)
-        X_df = pd.DataFrame(X_2d, columns=FINAL_FEATURES)
+        # 학습 시 사용한 feature_cols(= scaler_X.feature_names_in_)를 그대로 사용해야 함
+        feature_names = getattr(self.scaler_X, "feature_names_in_", None)
+        if feature_names is None:
+            # fallback: 기존 FINAL_FEATURES 사용 (구버전 대비)
+            feature_names = FINAL_FEATURES
+        # 길이가 다를 경우(예: config/상수 변경 후 오래된 모델)에는
+        # 현재 입력 X의 차원에 맞춰 앞에서부터 잘라 사용
+        if len(feature_names) != X_2d.shape[1]:
+            feature_names = list(feature_names)[: X_2d.shape[1]]
+        X_df = pd.DataFrame(X_2d, columns=feature_names)
         X_scaled = self.scaler_X.transform(X_df)
         
         X_scaled_np = np.expand_dims(X_scaled, axis=0)
@@ -575,15 +789,21 @@ class MacroAgent(BaseAgent, nn.Module):
         std_inv = self.scaler_y.inverse_transform(std_pred)
 
         sigma = float(std_inv[-1, 0]) if std_inv.ndim > 1 else float(std_inv[-1])
-        sigma = max(sigma, 1e-6)
+        sigma_min = common_params.get("sigma_min", 1e-6)
+        sigma = max(sigma, sigma_min)
         confidence = 1 / (1 + np.log1p(sigma))
 
         # 가격 계산
         if current_price is None:
-            current_price = getattr(self.stockdata, 'last_price', None) or self.last_price or 100.0
+            default_price = common_params.get("default_current_price", 100.0)
+            current_price = getattr(self.stockdata, 'last_price', None) or self.last_price or default_price
 
         predicted_return = float(pred_inv[-1, 0]) if pred_inv.ndim > 1 else float(pred_inv[-1])
-        predicted_return = np.clip(predicted_return, -0.5, 0.5)
+        # config에서 수익률 클리핑 범위 가져오기
+        cfg = agents_info.get(self.agent_id, {})
+        return_clip_min = cfg.get("return_clip_min", -0.5)
+        return_clip_max = cfg.get("return_clip_max", 0.5)
+        predicted_return = np.clip(predicted_return, return_clip_min, return_clip_max)
         
         predicted_price = current_price * (1 + predicted_return)
 
@@ -695,7 +915,12 @@ class MacroAgent(BaseAgent, nn.Module):
     def reviewer_rebuttal(self, my_opinion, other_opinion, round_index):
         return self.reviewer_rebut(my_opinion, other_opinion, round_index)
 
-    def reviewer_revise(self, my_opinion, others, rebuttals, stock_data, fine_tune=True, lr=1e-4, epochs=5):
+    def reviewer_revise(self, my_opinion, others, rebuttals, stock_data, fine_tune=True, lr: Optional[float] = None, epochs: Optional[int] = None):
+        # Fine-tuning 파라미터 설정 (config에서 가져오기)
+        if lr is None:
+            lr = common_params.get("fine_tune_lr", 1e-4)
+        if epochs is None:
+            epochs = agents_info.get(self.agent_id, {}).get("fine_tune_epochs", 5)
         return super().reviewer_revise(my_opinion, others, rebuttals, stock_data, fine_tune, lr, epochs)
 
     def _build_messages_opinion(self, stock_data, target):
@@ -739,12 +964,14 @@ class MacroAgent(BaseAgent, nn.Module):
             except Exception:
                 pass
 
-        # 시계열 데이터 포함 (최근 14일)
+        # 시계열 데이터 포함 (config에서 일수 가져오기)
+        cfg = agents_info.get(self.agent_id, {})
+        recent_days = cfg.get("recent_days", 14)
         # agent_data에 저장된 리스트들 중, feature_imp가 아닌 실제 시계열 데이터만 추출
         for col, values in agent_data.items():
             if col == 'feature_importance': continue
             if isinstance(values, (list, tuple)):
-                ctx[col] = values[-14:]  # 최근 14일치
+                ctx[col] = values[-recent_days:]  # 최근 N일치
             else:
                 ctx[col] = [values]
         

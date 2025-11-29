@@ -139,10 +139,14 @@ class SentimentalAgent(BaseAgent):
         최근 days일치 가격 + 뉴스 피처를 기반으로
         FEATURE_COLS 입력(1, T, F)을 만들고 StockData를 생성
         """
-        # Config에서 period 값을 가져와서 일수로 변환
+        # common_params에서 period 값을 가져와서 일수로 변환
         if days is None:
-            cfg = agents_info.get(self.agent_id, {})
-            period_str = cfg.get("period", "5y")
+            from config.agents import common_params
+            # 백테스팅 모드면 period_test, 일반 모드면 period 사용
+            if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
+                period_str = common_params.get("period_test", "2y")
+            else:
+                period_str = common_params.get("period", "2y")
             
             # period 문자열을 일수로 변환
             if period_str.endswith("y"):
@@ -154,8 +158,8 @@ class SentimentalAgent(BaseAgent):
             elif period_str.endswith("d"):
                 days = int(period_str[:-1])
             else:
-                # 기본값: 5년 (1825일)
-                days = 5 * 365
+                # 기본값: 2년 (730일)
+                days = 2 * 365
         
         # 0) 날짜 범위
         end = pd.Timestamp.today().normalize()
@@ -286,7 +290,21 @@ class SentimentalAgent(BaseAgent):
         if ticker and ticker != self.ticker:
             self.ticker = str(ticker).upper()
 
-        sd = self.run_dataset(days=365)
+        # common_params에서 period 가져오기
+        from config.agents import common_params
+        period_str = common_params.get("period", "2y")
+        # period 문자열을 일수로 변환
+        if period_str.endswith("y"):
+            years = int(period_str[:-1])
+            days = years * 365
+        elif period_str.endswith("m"):
+            months = int(period_str[:-1])
+            days = months * 30
+        elif period_str.endswith("d"):
+            days = int(period_str[:-1])
+        else:
+            days = 2 * 365  # 기본값
+        sd = self.run_dataset(days=days)
         self.stockdata = sd
 
         X_last = sd.X_seq  # (1, T, F)
@@ -297,7 +315,7 @@ class SentimentalAgent(BaseAgent):
     # predict
     #   - Monte Carlo Dropout + DataScaler + y*100 스케일 고려
     # -------------------------------------------------------
-    def predict(self, X, n_samples: int = 30, current_price: float | None = None):
+    def predict(self, X, n_samples: Optional[int] = None, current_price: Optional[float] = None):
         """
         SentimentalAgent 전용 Monte Carlo Dropout 예측 함수
 
@@ -307,6 +325,10 @@ class SentimentalAgent(BaseAgent):
         - "수익률 * 100" → 실제 가격(next_close)로 변환
         - Target(next_close, uncertainty, confidence) 반환
         """
+        # n_samples 설정 (config에서 가져오기)
+        if n_samples is None:
+            n_samples = common_params.get("n_samples", 30)
+        
         # -----------------------------
         # 0) 입력 정리 (StockData 래핑)
         # -----------------------------
@@ -408,7 +430,8 @@ class SentimentalAgent(BaseAgent):
         # 4) σ 기반 confidence 계산
         # -----------------------------
         sigma = float(std_pred[-1])
-        sigma = max(sigma, 1e-6)
+        sigma_min = common_params.get("sigma_min", 1e-6)
+        sigma = max(sigma, sigma_min)
         confidence = float(1.0 / (1.0 + np.log1p(sigma)))
 
         # -----------------------------
@@ -419,17 +442,23 @@ class SentimentalAgent(BaseAgent):
             mean_pred = self.scaler.inverse_y(mean_pred)
             std_pred = self.scaler.inverse_y(std_pred)
 
-        predicted_return = float(mean_pred[-1]) / 100.0  # 3.5 → 0.035
+        # config에서 스케일 팩터 가져오기
+        y_scale_factor = common_params.get("y_scale_factor", 100.0)
+        predicted_return = float(mean_pred[-1]) / y_scale_factor  # 3.5 → 0.035
         
-        # 수익률이 비정상적으로 큰 경우 클리핑 (일반적으로 -50% ~ +50% 범위)
-        predicted_return = np.clip(predicted_return, -0.5, 0.5)
+        # 수익률이 비정상적으로 큰 경우 클리핑 (config에서 범위 가져오기)
+        cfg = agents_info.get(self.agent_id, {})
+        return_clip_min = cfg.get("return_clip_min", -0.5)
+        return_clip_max = cfg.get("return_clip_max", 0.5)
+        predicted_return = np.clip(predicted_return, return_clip_min, return_clip_max)
 
         # current_price 추론
         if current_price is None:
             if sd is not None and getattr(sd, "last_price", None) is not None:
                 current_price = float(sd.last_price)
             else:
-                current_price = float(getattr(self, "last_price", 100.0))
+                default_price = common_params.get("default_current_price", 100.0)
+                current_price = float(getattr(self, "last_price", default_price))
 
         predicted_price = float(current_price * (1.0 + predicted_return))
 
@@ -459,9 +488,26 @@ class SentimentalAgent(BaseAgent):
         """
         sd = getattr(self, "stockdata", None)
         if sd is None or getattr(sd, "X_seq", None) is None:
-            sd = self.run_dataset(days=365)
+            cfg = agents_info.get(self.agent_id, {})
+            # common_params에서 period 가져오기
+            from config.agents import common_params
+            period_str = common_params.get("period", "2y")
+            # period 문자열을 일수로 변환
+            if period_str.endswith("y"):
+                years = int(period_str[:-1])
+                days = years * 365
+            elif period_str.endswith("m"):
+                months = int(period_str[:-1])
+                days = months * 30
+            elif period_str.endswith("d"):
+                days = int(period_str[:-1])
+            else:
+                days = 2 * 365  # 기본값
+            sd = self.run_dataset(days=days)
 
-        target = self.predict(sd, n_samples=30)
+        # config에서 n_samples 가져오기
+        n_samples = common_params.get("n_samples", 30)
+        target = self.predict(sd, n_samples=n_samples)
         cols = list(getattr(sd, "feature_cols", self.feature_cols))
         return float(target.next_close), float(target.uncertainty or 0.0), float(target.confidence or 0.0), cols
 

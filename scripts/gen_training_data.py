@@ -13,15 +13,35 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agents.technical_agent import TechnicalAgent
 from agents.macro_agent import MacroAgent
 from agents.sentimental_agent import SentimentalAgent
-from config.agents import dir_info
+from config.agents import dir_info, common_params, agents_info
 
 # 1. TechnicalAgent 데이터 로더 helper
 from core.technical_classes.technical_data_set import load_dataset as load_dataset_tech
 
-def generate_ensemble_data(ticker="NVDA", days=365, output_path="data/processed/ensemble_train.csv"):
+def generate_ensemble_data(ticker="NVDA", days=None, output_path="data/processed/ensemble_train.csv"):
     """
     각 에이전트의 과거 예측값과 신뢰도를 수집하여 앙상블 학습 데이터 생성
+    
+    Args:
+        ticker: 종목 코드
+        days: 학습 기간 (일수). None이면 config/agents의 period 사용
+        output_path: 출력 CSV 경로
     """
+    # days가 None이면 config의 period 사용
+    if days is None:
+        period_str = common_params.get("period", "2y")
+        # period 문자열을 일수로 변환
+        if period_str.endswith("y"):
+            years = int(period_str[:-1])
+            days = years * 365
+        elif period_str.endswith("m"):
+            months = int(period_str[:-1])
+            days = months * 30
+        elif period_str.endswith("d"):
+            days = int(period_str[:-1])
+        else:
+            days = 2 * 365  # 기본값: 2년
+    
     print(f"[{datetime.now()}] 데이터 생성 시작: {ticker}, days={days}")
     
     # ----------------------------------------------------------------
@@ -30,33 +50,66 @@ def generate_ensemble_data(ticker="NVDA", days=365, output_path="data/processed/
     print("1. 에이전트 초기화 중...")
     
     # TechnicalAgent
-    tech_agent = TechnicalAgent(ticker=ticker)
-    if os.path.exists(os.path.join(dir_info["model_dir"], f"{ticker}_TechnicalAgent.pt")):
+    tech_cfg = agents_info.get("TechnicalAgent", {})
+    tech_agent = TechnicalAgent(
+        agent_id="TechnicalAgent",
+        ticker=ticker,
+        gamma=tech_cfg.get("gamma", 0.3),
+        delta_limit=tech_cfg.get("delta_limit", 0.05)
+    )
+    tech_model_path = os.path.join(dir_info["model_dir"], f"{ticker}_TechnicalAgent.pt")
+    if os.path.exists(tech_model_path):
         try:
-            tech_agent.load_model(os.path.join(dir_info["model_dir"], f"{ticker}_TechnicalAgent.pt"))
+            tech_agent.load_model(tech_model_path)
         except:
-             pass 
+            pass
     else:
         print("TechnicalAgent 모델이 없습니다. Pretrain 실행...")
         tech_agent.pretrain()
         
     # MacroAgent
-    macro_agent = MacroAgent(ticker=ticker, base_date=datetime.today())
-    if not macro_agent.model_path or not os.path.exists(macro_agent.model_path):
-         print("MacroAgent 모델이 없습니다. Pretrain 실행...")
-         macro_agent.pretrain()
+    macro_cfg = agents_info.get("MacroAgent", {})
+    macro_window = macro_cfg.get("window_size", 40)
+    macro_agent = MacroAgent(
+        agent_id="MacroAgent",
+        ticker=ticker,
+        base_date=datetime.today(),
+        window=macro_window,
+        gamma=macro_cfg.get("gamma", 0.5),
+        delta_limit=macro_cfg.get("delta_limit", 0.1)
+    )
+    macro_model_path = os.path.join(dir_info["model_dir"], f"{ticker}_MacroAgent.pt")
+    macro_scaler_x_path = os.path.join(dir_info["model_dir"], "scalers", f"{ticker}_MacroAgent_xscaler.pkl")
+    
+    if os.path.exists(macro_model_path) and os.path.exists(macro_scaler_x_path):
+        try:
+            macro_agent.load_model()
+            # MacroAgent는 load_model에서 스케일러를 로드하지 않으므로 수동 로드 필요할 수 있음
+            # 하지만 predict() 내부에서 로드 로직이 있으므로, 파일 존재 여부만 확인하면 됨
+            print("MacroAgent 모델 및 스케일러 확인 완료")
+        except:
+            pass
     else:
-         # macro_agent.load_assets() # Removed method
-         macro_agent.load_model() # Use load_model instead
+        print("MacroAgent 모델 또는 스케일러가 없습니다. Pretrain 실행...")
+        macro_agent.pretrain()
          
     # SentimentalAgent
-    senti_agent = SentimentalAgent(ticker=ticker)
-    if os.path.exists(os.path.join(dir_info["model_dir"], f"{ticker}_SentimentalAgent.pt")):
-        # SentimentalAgent.predict 내부에서 로드함
-        pass
+    sent_cfg = agents_info.get("SentimentalAgent", {})
+    senti_agent = SentimentalAgent(
+        ticker=ticker,
+        agent_id="SentimentalAgent",
+        gamma=sent_cfg.get("gamma", 0.3),
+        delta_limit=sent_cfg.get("delta_limit", 0.05)
+    )
+    senti_model_path = os.path.join(dir_info["model_dir"], f"{ticker}_SentimentalAgent.pt")
+    if os.path.exists(senti_model_path):
+        try:
+            senti_agent.load_model(senti_model_path)
+        except:
+            pass
     else:
-         print("SentimentalAgent 모델이 없습니다. Pretrain 실행...")
-         senti_agent.pretrain()
+        print("SentimentalAgent 모델이 없습니다. Pretrain 실행...")
+        senti_agent.pretrain()
          
     print("에이전트 초기화 완료.")
 
@@ -88,13 +141,36 @@ def generate_ensemble_data(ticker="NVDA", days=365, output_path="data/processed/
 
     # 2-2. MacroAgent Data
     macro_agent.searcher(ticker) 
-    macro_full_df = macro_agent.macro_df 
-    macro_full_df['Date'] = pd.to_datetime(macro_full_df['Date']).dt.normalize()
+    # macro_df는 None이므로 raw CSV를 직접 읽어서 사용
+    macro_raw_path = os.path.join(os.path.dirname(dir_info["data_dir"]), "raw", f"{ticker}_MacroAgent_raw.csv")
+    if not os.path.exists(macro_raw_path):
+        raise FileNotFoundError(f"MacroAgent raw CSV not found: {macro_raw_path}")
+    macro_full_df = pd.read_csv(macro_raw_path)
+    # Date 컬럼이 문자열이면 datetime으로 변환
+    if 'Date' in macro_full_df.columns:
+        if macro_full_df['Date'].dtype == 'object':
+            macro_full_df['Date'] = pd.to_datetime(macro_full_df['Date'], errors='coerce')
+        macro_full_df['Date'] = pd.to_datetime(macro_full_df['Date']).dt.normalize()
     
     # 2-3. SentimentalAgent Data
-    senti_sd = senti_agent.run_dataset(days=days+365)
+    # window_size(40일)를 위한 여유분만 추가
+    senti_window = agents_info.get("SentimentalAgent", {}).get("window_size", 40)
+    senti_sd = senti_agent.run_dataset(days=days + senti_window + 30)  # window + 여유분 30일
+    
+    # run_dataset 반환값 None 체크
+    if senti_sd is None:
+        raise ValueError("SentimentalAgent.run_dataset() returned None")
+    if not hasattr(senti_sd, 'raw_df') or senti_sd.raw_df is None:
+        raise ValueError("SentimentalAgent StockData.raw_df is None")
+    if not hasattr(senti_sd, 'feature_cols') or senti_sd.feature_cols is None:
+        raise ValueError("SentimentalAgent StockData.feature_cols is None")
+    
     senti_raw = senti_sd.raw_df
-    senti_raw['date'] = pd.to_datetime(senti_raw['date']).dt.normalize()
+    # date 컬럼이 문자열이면 datetime으로 변환
+    if 'date' in senti_raw.columns:
+        if senti_raw['date'].dtype == 'object':
+            senti_raw['date'] = pd.to_datetime(senti_raw['date'], errors='coerce')
+        senti_raw['date'] = pd.to_datetime(senti_raw['date']).dt.normalize()
     
     # Sentimental feature columns
     senti_cols = senti_sd.feature_cols
@@ -149,8 +225,9 @@ def generate_ensemble_data(ticker="NVDA", days=365, output_path="data/processed/
         # 3-1. Technical Prediction
         # -------------------------------------
         try:
-            # tech_last_dates_dt에서 curr_date와 일치하는 인덱스 찾기
-            matches = np.where(tech_last_dates_dt == curr_date)[0]
+            # tech_last_dates_dt에서 curr_date와 일치하는 인덱스 찾기 (날짜 형식 통일)
+            curr_date_normalized = pd.to_datetime(curr_date).normalize()
+            matches = np.where(tech_last_dates_dt == curr_date_normalized)[0]
             if len(matches) > 0:
                 t_idx = matches[0]
                 X_batch = tech_X_all[t_idx] # (Win, F)
@@ -165,45 +242,57 @@ def generate_ensemble_data(ticker="NVDA", days=365, output_path="data/processed/
                 pred_tech = np.nan; conf_tech = 0; unc_tech = 0
         except Exception as e:
             pred_tech = np.nan; conf_tech = 0; unc_tech = 0
+            if i < 5:  # 처음 몇 개만 오류 로그
+                print(f"    [ERROR] TechnicalAgent 예측 실패: {e}")
 
         # -------------------------------------
         # 3-2. Macro Prediction
         # -------------------------------------
         try:
-            m_match = macro_full_df[macro_full_df['Date'] == curr_date]
+            # 날짜 형식 통일
+            curr_date_normalized = pd.to_datetime(curr_date).normalize()
+            m_match = macro_full_df[macro_full_df['Date'] == curr_date_normalized]
             if not m_match.empty:
                 m_idx = m_match.index[0]
                 if m_idx >= w_macro - 1: 
-                    feat_cols = list(macro_agent.scaler_X.feature_names_in_)
-                    df_slice = macro_full_df.iloc[m_idx - w_macro + 1 : m_idx + 1]
-                    
-                    X_slice = pd.DataFrame(index=df_slice.index)
-                    for c in feat_cols:
-                        if c in df_slice.columns:
-                            X_slice[c] = df_slice[c]
-                        else:
-                            X_slice[c] = 0.0
-                    
-                    X_sc = macro_agent.scaler_X.transform(X_slice)
-                    X_in = np.expand_dims(X_sc, axis=0)
-                    X_tensor = torch.FloatTensor(X_in).to(macro_agent.device)
-                    
-                    target_macro = macro_agent.predict(X_tensor, current_price=curr_close)
-                    pred_macro = target_macro.next_close
-                    conf_macro = target_macro.confidence
-                    unc_macro = target_macro.uncertainty
+                    # scaler_X None 체크
+                    if not hasattr(macro_agent, 'scaler_X') or macro_agent.scaler_X is None:
+                        pred_macro = np.nan; conf_macro = 0; unc_macro = 0
+                    else:
+                        feat_cols = list(macro_agent.scaler_X.feature_names_in_)
+                        df_slice = macro_full_df.iloc[m_idx - w_macro + 1 : m_idx + 1]
+                        
+                        X_slice = pd.DataFrame(index=df_slice.index)
+                        for c in feat_cols:
+                            if c in df_slice.columns:
+                                X_slice[c] = df_slice[c]
+                            else:
+                                X_slice[c] = 0.0
+                        
+                        X_sc = macro_agent.scaler_X.transform(X_slice)
+                        X_in = np.expand_dims(X_sc, axis=0)
+                        X_tensor = torch.FloatTensor(X_in).to(macro_agent.device)
+                        
+                        target_macro = macro_agent.predict(X_tensor, current_price=curr_close)
+                        pred_macro = target_macro.next_close
+                        conf_macro = target_macro.confidence
+                        unc_macro = target_macro.uncertainty
                 else:
                      pred_macro = np.nan; conf_macro = 0; unc_macro = 0
             else:
                  pred_macro = np.nan; conf_macro = 0; unc_macro = 0
         except Exception as e:
             pred_macro = np.nan; conf_macro = 0; unc_macro = 0
+            if i < 5:  # 처음 몇 개만 오류 로그
+                print(f"    [ERROR] MacroAgent 예측 실패: {e}")
 
         # -------------------------------------
         # 3-3. Sentimental Prediction
         # -------------------------------------
         try:
-            s_match = senti_raw[senti_raw['date'] == curr_date]
+            # 날짜 형식 통일
+            curr_date_normalized = pd.to_datetime(curr_date).normalize()
+            s_match = senti_raw[senti_raw['date'] == curr_date_normalized]
             if not s_match.empty:
                 s_idx = s_match.index[0]
                 if s_idx >= w_senti - 1:
@@ -220,6 +309,8 @@ def generate_ensemble_data(ticker="NVDA", days=365, output_path="data/processed/
                 pred_senti = np.nan; conf_senti = 0; unc_senti = 0
         except Exception as e:
             pred_senti = np.nan; conf_senti = 0; unc_senti = 0
+            if i < 5:  # 처음 몇 개만 오류 로그
+                print(f"    [ERROR] SentimentalAgent 예측 실패: {e}")
 
         # 결과 저장
         row = {
@@ -241,17 +332,56 @@ def generate_ensemble_data(ticker="NVDA", days=365, output_path="data/processed/
         }
         results.append(row)
         
+        # 디버깅: 처음 몇 개만 상세 로그
+        if i < 5:
+            tech_str = f"{pred_tech:.2f}" if not np.isnan(pred_tech) else "NaN"
+            macro_str = f"{pred_macro:.2f}" if not np.isnan(pred_macro) else "NaN"
+            senti_str = f"{pred_senti:.2f}" if not np.isnan(pred_senti) else "NaN"
+            print(f"  [DEBUG {i}] Date={curr_date.date()}, Tech={tech_str}, Macro={macro_str}, Senti={senti_str}")
+        
     # 4. CSV 저장
     df_out = pd.DataFrame(results)
     print(f"4. 데이터 생성 완료: {len(df_out)}행")
     
-    # 결측치 제거
-    df_final = df_out.dropna()
-    print(f"   결측치 제거 후: {len(df_final)}행")
+    # 디버깅: 예측 성공률 확인
+    if len(df_out) > 0:
+        tech_success = df_out['Tech_Pred'].notna().sum()
+        macro_success = df_out['Macro_Pred'].notna().sum()
+        senti_success = df_out['Senti_Pred'].notna().sum()
+        print(f"   예측 성공률: Tech={tech_success}/{len(df_out)} ({tech_success/len(df_out)*100:.1f}%), "
+              f"Macro={macro_success}/{len(df_out)} ({macro_success/len(df_out)*100:.1f}%), "
+              f"Senti={senti_success}/{len(df_out)} ({senti_success/len(df_out)*100:.1f}%)")
     
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    # 결측치 제거: 필수 컬럼만 체크
+    # 최소 2개 이상의 에이전트 예측이 있어야 유효한 데이터로 간주
+    required_cols = ['Last_Close', 'Next_Close']  # 필수: 가격 정보
+    pred_cols = ['Tech_Pred', 'Macro_Pred', 'Senti_Pred']
+    
+    # 최소 2개 이상의 예측이 있는 행만 유지
+    df_out['valid_pred_count'] = df_out[pred_cols].notna().sum(axis=1)
+    df_final = df_out[df_out['valid_pred_count'] >= 2].drop(columns=['valid_pred_count'])
+    
+    print(f"   결측치 제거 후: {len(df_final)}행 (최소 2개 이상의 에이전트 예측 필요)")
+    
+    if len(df_final) == 0:
+        print(f"   [WARN] 유효한 데이터가 없습니다. 예측 실패 원인을 확인하세요.")
+        # 원본 데이터 일부 저장 (디버깅용)
+        debug_path = output_path.replace('.csv', '_debug.csv')
+        df_out.to_csv(debug_path, index=False)
+        print(f"   디버깅용 원본 데이터 저장: {debug_path}")
+    
+    # 저장 디렉토리 생성
+    output_dir = os.path.dirname(output_path)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 1) 기존 output_path로 저장 (ensemble_train.csv)
     df_final.to_csv(output_path, index=False)
     print(f"   저장 완료: {output_path}")
+    
+    # 2) ensemble_dataset.csv로도 저장 (입력 데이터셋)
+    dataset_path = os.path.join(output_dir, f"{ticker}_ensemble_dataset.csv")
+    df_final.to_csv(dataset_path, index=False)
+    print(f"   저장 완료: {dataset_path}")
 
 if __name__ == "__main__":
     generate_ensemble_data()

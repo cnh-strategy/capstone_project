@@ -14,23 +14,19 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from agents.debate_agent import DebateAgent
 from core.data_set import build_dataset
 from core.metrics import calculate_metrics, calculate_direction_accuracy, calculate_profitability
-from config.agents import agents_info, dir_info
+from config.agents import agents_info, dir_info, common_params
 
 class RollingBacktester:
     def __init__(
         self,
         ticker: str,
         start_date: str,
-        train_days: int,
         predict_days: int,
         rounds: int = 3,
         output_dir: str = "data/backtests",
         auto_analyze: bool = True,
     ):
         self.ticker = ticker.upper()
-        self.start_date = start_date
-        self.start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        self.train_days = train_days
         self.predict_days = predict_days
         self.rounds = rounds
         self.output_dir = output_dir
@@ -38,12 +34,62 @@ class RollingBacktester:
         self.results: List[Dict[str, Any]] = []
         self.csv_path: Optional[str] = None
 
+        # config에서 period 가져오기 (예: "2y")
+        self.period_str = common_params.get("period", "2y")
+        self.train_days = self._parse_period(self.period_str)
+        
+        print(f"[INFO] Config Period: {self.period_str} -> Train Days: {self.train_days}")
+
+        # start_date가 없으면 자동 계산
+        if start_date is None:
+            # 넉넉하게 2배 기간 전부터 오늘까지 평일을 구함
+            today = datetime.today()
+            lookback = max(30, predict_days * 2)
+            temp_start = today - timedelta(days=lookback)
+            
+            # 평일(월~금)만 추출
+            candidates = self._generate_trading_days(temp_start, lookback)
+            
+            # 오늘보다 과거인 날짜만 필터링
+            candidates = [d for d in candidates if d < today]
+            
+            if len(candidates) < predict_days:
+                # 데이터가 너무 부족하면 그냥 predict_days 전으로 강제 설정
+                self.start_dt = today - timedelta(days=predict_days + 2)
+                print(f"[WARN] 거래일 계산 부족으로 단순 계산된 시작일 사용: {self.start_dt.strftime('%Y-%m-%d')}")
+            else:
+                # 뒤에서부터 predict_days 만큼 가져오기
+                # 예: predict_days=5이면, candidates[-5]가 시작일
+                self.start_dt = candidates[-predict_days]
+                print(f"[INFO] 자동 계산된 시작일(Start Date): {self.start_dt.strftime('%Y-%m-%d')} (오늘로부터 {predict_days} 거래일 전)")
+            
+            self.start_date = self.start_dt.strftime("%Y-%m-%d")
+        else:
+            self.start_date = start_date
+            self.start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+
         self.predict_dates = self._generate_trading_days(self.start_dt, self.predict_days)
         if not self.predict_dates:
             raise ValueError("예측할 거래일을 찾을 수 없습니다. start_date를 확인하세요.")
         self.end_date = self.predict_dates[-1].strftime("%Y-%m-%d")
 
         os.makedirs(self.output_dir, exist_ok=True)
+
+    def _parse_period(self, period: str) -> int:
+        """
+        '2y', '1y', '6mo' 등의 문자열을 일수(int)로 변환
+        """
+        period = period.lower()
+        if period.endswith("y"):
+            return int(period[:-1]) * 365
+        elif period.endswith("mo"):
+            return int(period[:-2]) * 30
+        elif period.endswith("d"):
+            return int(period[:-1])
+        else:
+            # 기본값 2년
+            print(f"[WARN] Unknown period format '{period}', defaulting to 730 days")
+            return 730
 
     @staticmethod
     def _generate_trading_days(start_dt: datetime, count: int) -> List[datetime]:
@@ -59,11 +105,11 @@ class RollingBacktester:
         """
         Lookback(train_days) + Predict(predict_days) 기간을 한 번에 수집합니다.
         """
-        total_days = self.train_days + self.predict_days + 30  # 여유분
+        total_days = self.train_days + self.predict_days + 60  # 여유분 60일
         total_years = max(int(total_days / 365) + 1, 1)
 
         print(
-            f"Preparing data for {self.ticker}: train_days={self.train_days}, "
+            f"Preparing data for {self.ticker}: train_days={self.train_days} (from config), "
             f"predict_days={self.predict_days}, total_years≈{total_years}"
         )
 
@@ -103,7 +149,7 @@ class RollingBacktester:
                 result = agent.run(force_pretrain=True)
                 result["simulation_date"] = sim_date
 
-                self._collect_result(sim_date, result)
+                self._collect_result(sim_date, result, agent)
                 self.save_results()
 
             except Exception as e:
@@ -116,32 +162,42 @@ class RollingBacktester:
             print(f"{'='*60}")
             self.analyze()
 
-    def _collect_result(self, date: str, result: Dict[str, Any]):
+    def _collect_result(self, date: str, result: Dict[str, Any], agent: Any = None):
         """
         라운드별 예측 결과를 평탄화하여 저장
         """
+        # 실제 종가 조회 (yfinance)
+        actual_close = np.nan
+        try:
+            import yfinance as yf
+            # date 다음날까지 조회해야 date 당일 데이터가 나옴 (yfinance 특성)
+            next_day = (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+            df = yf.download(self.ticker, start=date, end=next_day, progress=False)
+            if not df.empty:
+                # MultiIndex 처리
+                val = df["Close"].iloc[0]
+                if isinstance(val, pd.Series):
+                    actual_close = float(val.iloc[0])
+                else:
+                    actual_close = float(val)
+        except Exception as e:
+            print(f"[WARN] 실제 종가 조회 실패({date}): {e}")
+
         row = {
             "Date": date,
             "Ticker": self.ticker,
-            "Actual_Close": result.get("last_price"),
+            "Actual_Close": actual_close,
             "Ensemble_Pred": result.get("ensemble_next_close"),
-            "Mean_Pred": result.get("mean_next_close"),
         }
 
-        agents_data = result.get("agents", {})
-        for k, v in agents_data.items():
-            simple_key = k.replace("_next_close", "")
-            row[f"{simple_key}_R{self.rounds}_Pred"] = v
-
-        history: List[Dict[str, Any]] = result.get("round_history", [])
-        for entry in history:
-            round_idx = entry.get("round")
-            if round_idx is None:
-                continue
-            for agent_id in ["TechnicalAgent", "MacroAgent", "SentimentalAgent"]:
-                key = entry.get(f"{agent_id}_next_close")
-                if key is not None:
-                    row[f"{agent_id}_R{round_idx}_Pred"] = key
+        # Agent 인스턴스에서 라운드별 예측값 수집
+        if agent and hasattr(agent, "opinions"):
+            for round_idx, opinions in agent.opinions.items():
+                for agent_id, opinion in opinions.items():
+                    # {Agent_id}_R{round}_Pred 형식
+                    key = f"{agent_id}_R{round_idx}_Pred"
+                    if opinion and opinion.target:
+                        row[key] = float(opinion.target.next_close)
 
         self.results.append(row)
 
@@ -273,15 +329,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--start",
         type=str,
-        default=datetime.today().strftime("%Y-%m-%d"),
-        help="첫 번째 예측일 (YYYY-MM-DD). 기본값은 오늘",
+        default=None,
+        help="첫 번째 예측일 (YYYY-MM-DD). 지정하지 않으면 '오늘 - predict_days' 거래일 전으로 자동 설정됨",
     )
-    parser.add_argument(
-        "--train-days",
-        type=int,
-        default=365 * 3,
-        help="학습에 사용할 Lookback 일수 (기본 3년)",
-    )
+    # train-days 인자 제거 (config 사용)
     parser.add_argument(
         "--predict-days",
         type=int,
@@ -301,7 +352,6 @@ if __name__ == "__main__":
     runner = RollingBacktester(
         ticker=args.ticker,
         start_date=args.start,
-        train_days=args.train_days,
         predict_days=args.predict_days,
         rounds=args.rounds,
         auto_analyze=not args.no_analyze,
