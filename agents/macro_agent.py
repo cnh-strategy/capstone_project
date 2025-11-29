@@ -506,11 +506,23 @@ class MacroAgent(BaseAgent, nn.Module):
 
         ticker = self.ticker
 
-        # 1) data/raw CSV 로드
-        raw_csv_path = os.path.join(os.path.dirname(self.data_dir), "raw", f"{ticker}_{self.agent_id}_raw.csv")
+        # 1) data/raw CSV 로드 (백테스팅 모드면 필터링된 임시 파일 우선 사용)
+        raw_dir = os.path.join(os.path.dirname(self.data_dir), "raw")
+        raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
+        
+        # 백테스팅 모드: 필터링된 임시 데이터셋 우선 사용
+        if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
+            temp_dir = os.path.join(raw_dir, "backtest_temp")
+            date_str = self.simulation_date.replace("-", "")
+            temp_path = os.path.join(temp_dir, f"{ticker}_{self.agent_id}_raw_{date_str}.csv")
+            if os.path.exists(temp_path):
+                raw_csv_path = temp_path
+                print(f"[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 ({self.simulation_date} 이전)")
+        
         if not os.path.exists(raw_csv_path):
             print(f"⚙️ {ticker} {self.agent_id} raw CSV not found. Running searcher() to generate it...")
             _ = self.searcher(ticker, rebuild=True)
+            raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
             if not os.path.exists(raw_csv_path):
                 raise FileNotFoundError(f"Raw CSV not found after searcher: {raw_csv_path}")
         

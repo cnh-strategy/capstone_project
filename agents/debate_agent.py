@@ -459,6 +459,18 @@ class DebateAgent:
 
     def summarize_debate(self, ensemble_result: Dict) -> str:
         """
+        토론 요약 생성 (백테스팅 모드에서는 스킵)
+        """
+        # 백테스팅 모드 확인
+        is_backtest = False
+        for agent in self.agents.values():
+            if hasattr(agent, 'test_mode') and agent.test_mode:
+                is_backtest = True
+                break
+        
+        if is_backtest:
+            return "[백테스팅 모드] Debate 요약 스킵됨"
+        """
         전체 토론 과정(Opinion -> Rebuttal -> Revise)을 요약하고 최종 결론을 도출합니다.
         
         Args:

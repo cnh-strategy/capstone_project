@@ -921,11 +921,23 @@ class TechnicalAgent(BaseAgent, nn.Module):
         ticker = self.ticker
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
         
-        # 1) data/raw CSV 로드
-        raw_csv_path = os.path.join(os.path.dirname(self.data_dir), "raw", f"{ticker}_{self.agent_id}_raw.csv")
+        # 1) data/raw CSV 로드 (백테스팅 모드면 필터링된 임시 파일 우선 사용)
+        raw_dir = os.path.join(os.path.dirname(self.data_dir), "raw")
+        raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
+        
+        # 백테스팅 모드: 필터링된 임시 데이터셋 우선 사용
+        if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
+            temp_dir = os.path.join(raw_dir, "backtest_temp")
+            date_str = self.simulation_date.replace("-", "")
+            temp_path = os.path.join(temp_dir, f"{ticker}_{self.agent_id}_raw_{date_str}.csv")
+            if os.path.exists(temp_path):
+                raw_csv_path = temp_path
+                print(f"[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 ({self.simulation_date} 이전)")
+        
         if not os.path.exists(raw_csv_path):
             print(f"⚙️ {ticker} {self.agent_id} raw CSV not found. Running searcher() to generate it...")
             _ = self.searcher(ticker, rebuild=True)
+            raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
             if not os.path.exists(raw_csv_path):
                 raise FileNotFoundError(f"Raw CSV not found after searcher: {raw_csv_path}")
         
@@ -944,15 +956,10 @@ class TechnicalAgent(BaseAgent, nn.Module):
         y_all = (close_prices[1:] / close_prices[:-1] - 1.0).reshape(-1, 1).astype(np.float32)
         X_all = X_all[:-1]  # 마지막 행 제외 (타겟이 없음)
         
-        # 백테스팅 모드: simulation_date 이전 데이터만 필터링
+        # 백테스팅 모드: 이미 필터링된 데이터셋을 사용하므로 추가 필터링 불필요
+        # (rolling_backtest.py에서 _prepare_filtered_datasets()로 이미 필터링됨)
         if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
-            sim_date = datetime.strptime(self.simulation_date, "%Y-%m-%d")
-            print(f"[INFO] 백테스팅 모드: {self.simulation_date} 이전 데이터만 사용")
-            dates = df_raw["Date"].values[:-1]  # 마지막 제외
-            valid_mask = pd.to_datetime(dates) <= sim_date
-            X_all = X_all[valid_mask]
-            y_all = y_all[valid_mask]
-            print(f"[INFO] 필터링 후 데이터: {len(X_all)}개 샘플")
+            print(f"[INFO] 백테스팅 모드: {self.simulation_date} 이전 데이터 사용 중 (이미 필터링됨)")
         
         # 2) Window 처리 (시퀀스 생성)
         window_size = self.window_size

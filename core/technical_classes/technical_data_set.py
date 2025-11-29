@@ -82,7 +82,11 @@ def _load_builder(spec: str):
 # 통합 함수 (아연수정)
 def build_dataset(ticker: str = "TSLA", save_dir=dir_info["data_dir"], period: str = "5y", interval: str = "1d"):
     os.makedirs(save_dir, exist_ok=True)
+    # raw 테크니컬 피처 저장용 디렉토리 (data/raw)
+    raw_root = os.path.join(os.path.dirname(save_dir), "raw")
+    os.makedirs(raw_root, exist_ok=True)
     df = fetch_ticker_data(ticker, period=period, interval=interval)
+    # 원시 OHLCV + 공통 파생지표는 여전히 processed/raw_data 경로에 저장
     df.to_csv(os.path.join(save_dir, f"{ticker}_raw_data.csv"), index=True)
 
     for agent_id, cfg in agents_info.items():
@@ -92,10 +96,53 @@ def build_dataset(ticker: str = "TSLA", save_dir=dir_info["data_dir"], period: s
         spec = cfg.get("feature_builder") if agent_id == "TechnicalAgent" else None
         if spec:
             builder = _load_builder(spec)
-            feat = builder(df_agent[["Open","High","Low","Close","Volume"]])
+            feat = builder(df_agent[["Open", "High", "Low", "Close", "Volume"]])
             if not isinstance(feat, pd.DataFrame):
                 raise TypeError("feature_builder는 DataFrame을 반환해야 합니다.")
-            df_agent = df_agent.join(feat, how="left").replace([np.inf, -np.inf], np.nan).ffill().dropna()
+
+            # === (1) 스케일링/윈도우 처리 전 RAW 테크니컬 피처를 data/raw에 저장 ===
+            # 형식 통일:
+            #   - 첫 컬럼: Date
+            #   - 마지막 컬럼: 종가(Close)
+            try:
+                raw_tech = feat.copy()
+
+                # 인덱스를 Date 컬럼으로 복원
+                raw_tech.index.name = "Date"
+                raw_tech.reset_index(inplace=True)
+
+                # 필요 시 ticker 컬럼 유지
+                if "ticker" not in raw_tech.columns:
+                    raw_tech.insert(1, "ticker", ticker)
+
+                # 원본 df_agent 에서 Close 를 가져와 마지막 컬럼으로 추가
+                try:
+                    close_df = df_agent[["Close"]].copy()
+                    close_df.index.name = "Date"
+                    close_df.reset_index(inplace=True)
+                    # Date 기준으로 병합 (이미 정렬된 상태)
+                    raw_tech = raw_tech.merge(close_df, on="Date", how="left")
+                except Exception as e:
+                    print(f"⚠️ Failed to attach Close column for TechnicalAgent raw features: {e}")
+
+                # Close 를 항상 마지막 컬럼으로 이동
+                if "Close" in raw_tech.columns:
+                    cols = [c for c in raw_tech.columns if c != "Close"] + ["Close"]
+                    raw_tech = raw_tech[cols]
+
+                raw_csv_path = os.path.join(raw_root, f"{ticker}_TechnicalAgent_raw.csv")
+                raw_tech.to_csv(raw_csv_path, index=False)
+                print(f"✅ {ticker} TechnicalAgent raw features saved to {raw_csv_path} ({len(raw_tech)} rows)")
+            except Exception as e:
+                print(f"⚠️ Failed to save TechnicalAgent raw features: {e}")
+
+            # === (2) 기존 로직: 테크니컬 피처를 원본 df에 조인 후 processed용 시퀀스 생성 ===
+            df_agent = (
+                df_agent.join(feat, how="left")
+                .replace([np.inf, -np.inf], np.nan)
+                .ffill()
+                .dropna()
+            )
 
         col = cfg["data_cols"]
         X = df_agent[col]

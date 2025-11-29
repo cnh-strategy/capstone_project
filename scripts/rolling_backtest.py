@@ -123,6 +123,11 @@ class RollingBacktester:
     def run_loop(self):
         """
         Predict Period를 거래일 단위로 순회하며 시뮬레이션 수행
+        
+        각 시점별로:
+        1. 전체 데이터셋에서 해당 시점 이전 데이터만 필터링
+        2. 필터링된 데이터셋으로 모델 학습
+        3. 학습된 모델로 예측 수행
         """
         for day_idx, sim_dt in enumerate(self.predict_dates, start=1):
             sim_date = sim_dt.strftime("%Y-%m-%d")
@@ -133,6 +138,9 @@ class RollingBacktester:
             print(f"🚀 [{day_idx}/{len(self.predict_dates)}] Running Backtest for {sim_date}")
             print(f"    Train window: {train_start} ~ {sim_date}")
             print(f"{'='*60}")
+
+            # 각 시점별로 필터링된 데이터셋 생성
+            self._prepare_filtered_datasets(sim_date)
 
             agent = DebateAgent(ticker=self.ticker, rounds=self.rounds)
 
@@ -151,9 +159,21 @@ class RollingBacktester:
 
                 self._collect_result(sim_date, result, agent)
                 self.save_results()
+                
+                # 백테스팅 모델 파일 삭제 (다음 날짜에서 깨끗한 상태로 재학습)
+                self._cleanup_backtest_models(sim_date)
+                
+                # 필터링된 임시 데이터셋 삭제
+                self._cleanup_filtered_datasets(sim_date)
 
             except Exception as e:
                 print(f"❌ Error on {sim_date}: {e}")
+                # 에러 발생 시에도 정리
+                try:
+                    self._cleanup_backtest_models(sim_date)
+                    self._cleanup_filtered_datasets(sim_date)
+                except:
+                    pass
                 continue
 
         if self.auto_analyze:
@@ -161,6 +181,123 @@ class RollingBacktester:
             print("📊 Starting automatic analysis...")
             print(f"{'='*60}")
             self.analyze()
+
+    def _prepare_filtered_datasets(self, sim_date: str):
+        """
+        각 시점별로 전체 데이터셋에서 해당 시점 이전 데이터만 필터링하여 임시 데이터셋 생성
+        
+        Args:
+            sim_date: 시뮬레이션 날짜 (YYYY-MM-DD)
+        """
+        import os
+        import pandas as pd
+        from config.agents import dir_info
+        
+        sim_date_dt = pd.to_datetime(sim_date)
+        raw_dir = os.path.join(os.path.dirname(dir_info["data_dir"]), "raw")
+        temp_dir = os.path.join(raw_dir, "backtest_temp")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        ticker = self.ticker
+        agents = ["TechnicalAgent", "MacroAgent"]
+        
+        for agent_id in agents:
+            # 원본 raw CSV 경로
+            original_path = os.path.join(raw_dir, f"{ticker}_{agent_id}_raw.csv")
+            if not os.path.exists(original_path):
+                continue
+            
+            # 임시 필터링된 CSV 경로
+            temp_path = os.path.join(temp_dir, f"{ticker}_{agent_id}_raw_{sim_date.replace('-', '')}.csv")
+            
+            try:
+                # 원본 데이터 로드
+                df = pd.read_csv(original_path)
+                df["Date"] = pd.to_datetime(df["Date"])
+                df = df.sort_values("Date").reset_index(drop=True)
+                
+                # simulation_date 이전 데이터만 필터링
+                df_filtered = df[df["Date"] < sim_date_dt].copy()
+                
+                if len(df_filtered) > 0:
+                    # 필터링된 데이터 저장
+                    df_filtered.to_csv(temp_path, index=False)
+                    print(f"[INFO] 필터링된 데이터셋 생성: {agent_id} ({len(df_filtered)}행, {sim_date} 이전)")
+                else:
+                    print(f"[WARN] 필터링된 데이터가 없음: {agent_id} ({sim_date})")
+                    
+            except Exception as e:
+                print(f"[WARN] 데이터셋 필터링 실패 ({agent_id}): {e}")
+    
+    def _cleanup_filtered_datasets(self, sim_date: str):
+        """
+        필터링된 임시 데이터셋 삭제
+        
+        Args:
+            sim_date: 시뮬레이션 날짜 (YYYY-MM-DD)
+        """
+        import os
+        import glob
+        from config.agents import dir_info
+        
+        raw_dir = os.path.join(os.path.dirname(dir_info["data_dir"]), "raw")
+        temp_dir = os.path.join(raw_dir, "backtest_temp")
+        
+        if not os.path.exists(temp_dir):
+            return
+        
+        # 해당 날짜의 임시 파일 삭제
+        date_str = sim_date.replace("-", "")
+        pattern = os.path.join(temp_dir, f"{self.ticker}_*_raw_{date_str}.csv")
+        temp_files = glob.glob(pattern)
+        
+        for file_path in temp_files:
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                print(f"[WARN] 임시 데이터셋 삭제 실패 ({file_path}): {e}")
+    
+    def _cleanup_backtest_models(self, sim_date: str):
+        """
+        백테스팅 모델 파일 삭제 (각 날짜 처리 후 호출)
+        다음 날짜에서 깨끗한 상태로 재학습하기 위함
+        """
+        import os
+        from config.agents import dir_info
+        
+        model_dir = dir_info["model_dir"]
+        ticker = self.ticker
+        
+        # 삭제할 모델 파일 목록
+        model_files = [
+            os.path.join(model_dir, f"{ticker}_TechnicalAgent.pt"),
+            os.path.join(model_dir, f"{ticker}_MacroAgent.pt"),
+            os.path.join(model_dir, f"{ticker}_SentimentalAgent.pt"),
+            os.path.join(model_dir, f"{ticker}_ensemble_lightgbm.pkl"),
+        ]
+        
+        # MacroAgent 스케일러 파일
+        scaler_dir = os.path.join(model_dir, "scalers")
+        scaler_files = [
+            os.path.join(scaler_dir, f"{ticker}_MacroAgent_xscaler.pkl"),
+            os.path.join(scaler_dir, f"{ticker}_MacroAgent_yscaler.pkl"),
+        ]
+        
+        # TechnicalAgent, SentimentalAgent 스케일러 (BaseAgent 사용)
+        # 스케일러는 ticker별로 저장되므로 삭제하지 않음 (재사용 가능)
+        # 필요시 추가 가능
+        
+        deleted_count = 0
+        for file_path in model_files + scaler_files:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"[WARN] 모델 파일 삭제 실패 ({file_path}): {e}")
+        
+        if deleted_count > 0:
+            print(f"[INFO] 백테스팅 모델 파일 {deleted_count}개 삭제 완료 ({sim_date})")
 
     def _collect_result(self, date: str, result: Dict[str, Any], agent: Any = None):
         """

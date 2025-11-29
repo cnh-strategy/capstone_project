@@ -8,6 +8,32 @@
 #    각 에이전트 구현에서 선택적으로 사용합니다.
 # ===============================================================
 
+# 공통 파라미터 (모든 Agent에서 사용)
+common_params = {
+    # Monte Carlo Dropout
+    "n_samples": 30,                    # Monte Carlo Dropout 샘플 수
+    # LLM 설정
+    "temperature": 0.2,                 # LLM temperature
+    "preferred_models": ["gpt-5-mini", "gpt-4.1-mini"],  # 모델 폴백 우선순위
+    # Loss 함수
+    "huber_loss_delta": 1.0,            # HuberLoss delta 파라미터
+    # 데이터 스케일링
+    "y_scale_factor": 100.0,            # 타겟 스케일링 배수 (수익률 * 100)
+    # 평가 설정
+    "eval_split_ratio": 0.8,            # 평가 데이터 분할 비율 (80% 학습, 20% 검증)
+    # 기본값
+    "default_current_price": 100.0,     # 기본 현재가 (데이터 없을 때)
+    "sigma_min": 1e-6,                  # 최소 불확실성 (0으로 나누기 방지)
+    # Fine-tuning
+    "fine_tune_lr": 1e-4,               # Fine-tuning learning rate
+    "fine_tune_epochs": 10,             # Fine-tuning epochs (BaseAgent 기본값)
+    # Confidence 계산
+    "confidence_formula": "1.0 / (1.0 + sigma)",  # Confidence 계산 공식
+    # 데이터 수집 기간 (모든 에이전트 공통)
+    "period": "2y",              # 일반 모드: searcher + pretrain 모두 동일한 기간 사용
+    "period_test": "2y",         # 백테스팅 모드: searcher + pretrain 모두 동일한 기간 사용
+}
+
 agents_info = {
     # -----------------------------------------------------------
     # TechnicalAgent: 기술적 분석 기반 (예: TCN/LSTM 등)
@@ -22,7 +48,7 @@ agents_info = {
             ],
         "feature_builder": "core.technical_classes.technical:build_features_technical", # 수정
         "input_dim": 13,
-        "window_size": 55,              # lookback
+        "window_size": 40,              # lookback
         "rnn_units1": 64,               # 1층 hidden size
         "rnn_units2": 32,               # 2층 hidden size
         "dropout": 0.18778570103014075,
@@ -30,13 +56,26 @@ agents_info = {
         "patience": 8,
         "learning_rate": 4.2471233429729313e-4,
         "batch_size": 64,
-        "period": "3y",
+        # period 제거 → common_params["period"] 사용
         "interval": "1d",
         "x_scaler": "MinMaxScaler",
         "y_scaler": "StandardScaler",
         "gamma": 0.3,
         "delta_limit": 0.05,
-        "seed": 1234
+        "seed": 1234,
+        # TechnicalAgent 전용 파라미터
+        "fine_tune_epochs": 20,         # Fine-tuning epochs (TechnicalAgent)
+        # period_searcher, period_pretrain 제거 → common_params["period"] 사용
+        # Explainability 파라미터
+        "occlusion_batch_size": 32,     # Occlusion 계산 시 배치 크기
+        "top_k_features": 5,            # 상위 k개 피처 추출
+        "shap_weight_time": 0.20,       # 시간 중요도에서 SHAP 가중치
+        "shap_weight_feat": 0.30,       # 피처 중요도에서 SHAP 가중치
+        "attention_weights": [0.4, 0.25, 0.15],  # 시간 중요도 융합 가중치 [attn, GI, occ]
+        "feature_weights": [0.5, 0.2],  # 피처 중요도 융합 가중치 [GI, occ]
+        "pack_idea_top_time": 8,        # _pack_idea에서 상위 시간 개수
+        "pack_idea_top_feat": 6,        # _pack_idea에서 상위 피처 개수
+        "pack_idea_coverage": 0.8,       # _pack_idea에서 커버리지 비율
     },
 
     # -----------------------------------------------------------
@@ -61,7 +100,7 @@ agents_info = {
         "learning_rate": 0.0005,  # 5e-4
         "batch_size": 16,
         "loss_fn": "L1Loss",  # Loss function type
-        "period": "3y",
+        # period 제거 → common_params["period"] 사용
         "interval": "1d",
         # 스케일러
         "x_scaler": "StandardScaler",
@@ -69,6 +108,14 @@ agents_info = {
         # 합의/수렴 관련
         "gamma": 0.5,
         "delta_limit": 0.1,
+        # MacroAgent 전용 파라미터
+        "fine_tune_epochs": 5,           # Fine-tuning epochs (MacroAgent)
+        "searcher_buffer_days": 50,     # searcher에서 window + buffer_days (파생변수 계산용 여유분, 최적화 유지)
+        # backtest_years, normal_years 제거 → common_params["period"], common_params["period_test"] 사용
+        "recent_days": 14,               # 최근 며칠치 데이터 사용
+        "return_clip_min": -0.5,         # 수익률 클리핑 최소값
+        "return_clip_max": 0.5,         # 수익률 클리핑 최대값
+        "minmax_scaler_range": (-1, 1), # MinMaxScaler feature_range
     },
 
     # -----------------------------------------------------------
@@ -91,7 +138,7 @@ agents_info = {
         "epochs": 50,
         "learning_rate": 5e-4,      # 0.0005
         "batch_size": 32,
-        "period": "3y",
+        # period 제거 → common_params["period"] 사용
         "interval": "1d",
         # 스케일러
         "x_scaler": "StandardScaler",
@@ -99,6 +146,10 @@ agents_info = {
         # 합의/수렴 관련
         "gamma": 0.3,               # 수렴율
         "delta_limit": 0.05,
+        # SentimentalAgent 전용 파라미터
+        # run_dataset_days 제거 → common_params["period"] 사용
+        "return_clip_min": -0.5,    # 수익률 클리핑 최소값
+        "return_clip_max": 0.5,     # 수익률 클리핑 최대값
     },
 }
 

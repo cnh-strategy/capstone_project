@@ -881,7 +881,37 @@ class BaseAgent:
 
     # OpenAI API 호출
     def _ask_with_fallback(self, msg_sys: dict, msg_user: dict, schema_obj: dict) -> dict:
-        """모델 폴백 포함 OpenAI Responses API 호출"""
+        """모델 폴백 포함 OpenAI Responses API 호출
+        
+        백테스팅 모드일 때는 LLM 호출을 스킵하고 더미 응답을 반환합니다.
+        """
+        # 백테스팅 모드: LLM 호출 스킵
+        if hasattr(self, 'test_mode') and self.test_mode:
+            # schema_obj에서 필요한 필드 추출하여 더미 응답 생성
+            dummy_response = {}
+            if schema_obj and isinstance(schema_obj, dict):
+                props = schema_obj.get("properties", {})
+                for key in props.keys():
+                    if key == "reason":
+                        dummy_response[key] = f"[백테스팅 모드] {self.agent_id} 예측 근거"
+                    elif key == "stance":
+                        dummy_response[key] = "SUPPORT"  # 기본값
+                    elif key == "message":
+                        dummy_response[key] = f"[백테스팅 모드] {self.agent_id} 메시지"
+                    else:
+                        # 기본값 설정
+                        prop_type = props[key].get("type", "string")
+                        if prop_type == "string":
+                            dummy_response[key] = ""
+                        elif prop_type == "number":
+                            dummy_response[key] = 0.0
+                        else:
+                            dummy_response[key] = None
+            else:
+                dummy_response = {"reason": f"[백테스팅 모드] {self.agent_id} 응답"}
+            
+            return dummy_response
+        
         if not msg_sys or not msg_user:
             raise ValueError("Invalid messages: system or user message is None.")
 

@@ -124,18 +124,41 @@ def build_dataset(
     - agent_id == 'TechnicalAgent' / '테크니컬' / 'technical' (추후)
     """
     os.makedirs(save_dir, exist_ok=True)
-    # 공통 RAW는 테크니컬 전용 fetch로 통일
-    raw = _techds.fetch_ticker_data(
-        ticker,
-        period=period or "5y",
-        interval=interval or "1d",
-    )
-    raw.to_csv(os.path.join(save_dir, f"{ticker}_raw_data.csv"), index=True)
+    
+    # agent_id가 지정되면 해당 에이전트만 처리, 없으면 모든 에이전트 처리
+    agents_to_process = []
+    if agent_id:
+        # agent_id 정규화
+        agent_id_norm = str(agent_id).lower()
+        if agent_id_norm in {"macroagent", "macro", "매크로"}:
+            agents_to_process = ["MacroAgent"]
+        elif agent_id_norm in {"sentimentalagent", "sentimental", "센티멘탈"}:
+            agents_to_process = ["SentimentalAgent"]
+        elif agent_id_norm in {"technicalagent", "technical", "테크니컬"}:
+            agents_to_process = ["TechnicalAgent"]
+        else:
+            # 정확히 일치하는 경우
+            if agent_id in agents_info:
+                agents_to_process = [agent_id]
+            else:
+                raise ValueError(f"지원하지 않는 agent_id: {agent_id}")
+    else:
+        # agent_id가 없으면 모든 에이전트 처리
+        agents_to_process = list(agents_info.keys())
+    
+    # 공통 RAW는 테크니컬 전용 fetch로 통일 (TechnicalAgent가 처리 대상인 경우만)
+    if "TechnicalAgent" in agents_to_process:
+        raw = _techds.fetch_ticker_data(
+            ticker,
+            period=period or "5y",
+            interval=interval or "1d",
+        )
+        raw.to_csv(os.path.join(save_dir, f"{ticker}_raw_data.csv"), index=True)
 
     # Agent별 데이터셋을 CSV로 저장
-    for aid, _ in agents_info.items():
+    for aid in agents_to_process:
         # ---------- macro_agent ----------
-        if aid in {"MacroAgent","macroagent", "macro", "매크로"}:
+        if aid == "MacroAgent":
             if not _HAS_MACRO or macro_dataset is None:
                 raise ImportError(
                     "macro_dataset 모듈을 찾을 수 없습니다. core/macro_classes 확인 필요 "
@@ -145,31 +168,51 @@ def build_dataset(
             print(f"✅ {ticker} MacroAgent dataset saved (macro_dataset 호출 via {_MACRO_SRC})")
 
         # ---------- sentimental_agent ----------
-        elif aid in {"SentimentalAgent","sentimentalagent", "sentimental", "센티멘탈"}:
+        elif aid == "SentimentalAgent":
             df = _fetch_ticker_data_for_sentimental(ticker, period, interval)
 
             # 원본 CSV 저장(후속처리 참고용)
             df.to_csv(os.path.join(save_dir, f"{ticker}_raw_data.csv"), index=True, encoding="utf-8")
 
-            # 사용할 피처 컬럼
-            if agent_id in agents_info and "data_cols" in agents_info[agent_id]:
-                feature_cols = agents_info[agent_id]["data_cols"]
-                window_size = agents_info[agent_id].get("window_size", 14)
+            # 사용할 피처 컬럼 (SentimentalAgent의 FEATURE_COLS 사용)
+            if aid in agents_info:
+                # config에서 window_size 가져오기
+                window_size = agents_info[aid].get("window_size", 40)
+                # SentimentalAgent는 FEATURE_COLS를 사용하므로 직접 정의
+                feature_cols = [
+                    "return_1d",
+                    "hl_range",
+                    "Volume",
+                    "news_count_1d",
+                    "news_count_7d",
+                    "sentiment_mean_1d",
+                    "sentiment_mean_7d",
+                    "sentiment_vol_7d",
+                ]
             else:
-                # fallback: 네 초기 코드 기반으로 합리적 기본 피처
+                # fallback: 기본 피처
                 feature_cols = [
                     "returns", "sma_5", "sma_20", "rsi", "volume_z",
                     "USD_KRW", "NASDAQ", "VIX",
                     "sentiment_mean", "sentiment_vol",
                     "Open", "High", "Low", "Close", "Volume",
                 ]
-                window_size = 14
+                window_size = 40
 
             # 타깃: 다음날 수익률
             returns = df["Close"].pct_change().shift(-1)
             valid_mask = ~returns.isna()
             y = returns[valid_mask].to_numpy().reshape(-1, 1)
-            X = df.loc[valid_mask, feature_cols]
+            
+            # feature_cols가 df에 없는 경우를 대비해 존재하는 컬럼만 사용
+            available_cols = [c for c in feature_cols if c in df.columns]
+            if len(available_cols) < len(feature_cols):
+                print(f"[WARN] 일부 피처 컬럼이 없습니다. 사용 가능한 컬럼: {available_cols}")
+                # 기본 피처로 대체
+                feature_cols = ["returns", "Close", "Volume", "sentiment_mean", "sentiment_vol"]
+                available_cols = [c for c in feature_cols if c in df.columns]
+            
+            X = df.loc[valid_mask, available_cols]
 
             # 시퀀스 생성
             X_seq, y_seq = create_sequences(X, y, window_size=window_size)
@@ -192,26 +235,29 @@ def build_dataset(
                         "target": float(y_seq[sample_idx, 0]) if time_idx == time_steps - 1 else np.nan,
                         "date": window_dates[time_idx].strftime("%Y-%m-%d"),
                     }
-                    for feat_idx, feat_name in enumerate(feature_cols):
+                    for feat_idx, feat_name in enumerate(available_cols):
                         row[feat_name] = float(X_seq[sample_idx, time_idx, feat_idx])
                     flattened.append(row)
 
-            csv_path = os.path.join(save_dir, f"{ticker}_{agent_id}_dataset.csv")
+            csv_path = os.path.join(save_dir, f"{ticker}_{aid}_dataset.csv")
             _save_agent_csv(flattened, csv_path)
-            print(f"✅ {ticker} {agent_id} dataset saved to CSV ({samples} samples, {len(feature_cols)} features)")
+            print(f"✅ {ticker} {aid} dataset saved to CSV ({samples} samples, {len(available_cols)} features)")
 
         # ---------- technical_agent ----------
-        elif aid in {"TechnicalAgent","technicalagent", "technical", "테크니컬"}:
+        elif aid == "TechnicalAgent":
+            # common_params에서 period 가져오기
+            from config.agents import common_params
+            period_to_use = period or common_params.get("period", "2y")
             _techds.build_dataset(
                 ticker=ticker,
                 save_dir=save_dir,
-                period=period or agents_info["TechnicalAgent"].get("period", "5y"),
+                period=period_to_use,
                 interval=interval or agents_info["TechnicalAgent"].get("interval", "1d"),
             )
             print(f"✅ {ticker} TechnicalAgent dataset saved via technical_data_set")
 
         else:
-            raise ValueError(f"지원하지 않는 agent_id: {agent_id}")
+            raise ValueError(f"지원하지 않는 agent_id: {aid}")
 
 
 def load_dataset(ticker: str, agent_id: str, save_dir: str = dir_info["data_dir"], return_dates: bool = False) -> Tuple[np.ndarray, np.ndarray, List[str]]:
