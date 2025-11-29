@@ -29,11 +29,11 @@ Thumbs.db
 # *.h5
 # *.keras
 # *.npz
- data/backtests/analysis
- data/pretrain
- data/processed
- data/raw/news
+ data/backtests/analysis/
+ data/pretrain/
+ data/processed/
+ data/raw/news/
 
-models/scalers
+models/scalers/
 # notebooks/data/
 # SentimentalAgent/
