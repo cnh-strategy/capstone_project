@@ -186,26 +186,38 @@ revised_price = β_i × my_price + (1-β_i) × weighted_others
 프로젝트에는 롤링 백테스팅 기능이 포함되어 있습니다. 이 기능을 통해 과거 데이터를 사용하여 모델의 성능을 평가할 수 있습니다.
 
 #### 사용 방법
+
+**새로운 백테스트 모듈 (권장)**:
 ```bash
 # 기본 사용법
-python scripts/rolling_backtest.py --ticker TSLA --predict-days 5 --rounds 3
+python backtest/scripts/rolling_backtest.py --ticker TSLA --predict-days 5
 
 # 시작 날짜 지정
-python scripts/rolling_backtest.py --ticker TSLA --start 2024-01-01 --predict-days 10
+python backtest/scripts/rolling_backtest.py --ticker TSLA --start 2024-01-01 --predict-days 10
 
 # 분석 스킵
-python scripts/rolling_backtest.py --ticker TSLA --predict-days 5 --no-analyze
+python backtest/scripts/rolling_backtest.py --ticker TSLA --predict-days 5 --no-analyze
+```
+
+**기존 스크립트 (레거시)**:
+```bash
+python scripts/rolling_backtest.py --ticker TSLA --predict-days 5 --rounds 3
 ```
 
 #### 주요 기능
-- **Look-ahead bias 방지**: 각 거래일마다 해당 날짜 이전 데이터만 사용
+- **독립된 디렉토리**: 백테스트 관련 모든 파일이 `backtest/` 폴더에 저장
+- **Look-ahead bias 방지**: 각 거래일마다 해당 날짜 이전 데이터만 사용 (데이터 누수 방지)
 - **자동 분석**: 백테스트 완료 후 자동으로 성능 지표 및 차트 생성
 - **다중 라운드 지원**: DebateAgent의 여러 라운드 토론 시뮬레이션
+- **LLM 호출 스킵**: 백테스트 모드에서는 LLM 호출 없이 예측만 수행
 - **결과 저장**: CSV 형식으로 백테스트 결과 저장
 
 #### 출력 파일
-- `data/backtests/rolling_{TICKER}_{START}_{END}.csv`: 백테스트 결과
-- `data/backtests/analysis/rolling_{TICKER}_{START}_{END}_*.png`: 분석 차트
+- **새 백테스트 모듈**: `backtest/data/backtests/rolling_{TICKER}_{START}_{END}.csv`
+- **분석 차트**: `backtest/data/backtests/analysis/*.png`
+- **기존 스크립트**: `data/backtests/rolling_{TICKER}_{START}_{END}.csv`
+
+자세한 내용은 [backtest/README.md](backtest/README.md)를 참조하세요.
 
 ## 🚀 향후 계획
 

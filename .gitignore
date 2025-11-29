@@ -40,5 +40,48 @@ Thumbs.db
 # notebooks/data/
 # SentimentalAgent/
 
-# Backtest temporary files
+# Backtest files
 data/raw/backtest_temp/
+backtest/data/raw/backtest_temp/
+backtest/models/
+backtest/data/processed/
+backtest/data/backtests/*.csv
+backtest/data/backtests/analysis/
+
+# Data files (large files)
+data/raw/*.csv
+data/processed/*.csv
+data/backtests/*.csv
+data/backtests/analysis/
+
+# Model files (large files)
+models/*.pt
+models/*.pkl
+models/scalers/*.pkl
+
+# Test files
+test*.py
+test*.ipynb
+*_test.ipynb
+test1.ipynb
+test_get_ensemble.py
+
+# Analysis markdown files
+*_analysis.md
+pretrain_*.md
+agent_predict_analysis.md
+BACKTEST_*.md
+PARAMETER_*.md
+PERIOD_*.md
+
+# Temporary files
+=0.2.40
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

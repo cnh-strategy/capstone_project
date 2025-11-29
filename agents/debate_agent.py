@@ -26,9 +26,16 @@ from agents.base_agent import BaseAgent
 from agents.macro_agent import MacroAgent
 from agents.technical_agent import TechnicalAgent
 from agents.sentimental_agent import SentimentalAgent
+from core.technical_classes.technical_data_set import load_dataset as load_dataset_tech
 
 import yfinance as yf
 import statistics
+import pandas as pd
+import numpy as np
+import torch
+from datetime import timedelta
+import joblib
+import lightgbm as lgb
 
 
 
@@ -43,13 +50,15 @@ class DebateAgent:
     여러 에이전트 간의 토론을 조율하여 최종 예측을 생성합니다.
     """
 
-    def __init__(self, ticker: str, rounds: int = 3):
+    def __init__(self, ticker: str, rounds: int = 3, data_dir: Optional[str] = None, model_dir: Optional[str] = None):
         """
         DebateAgent 초기화
 
         Args:
             ticker: 분석할 티커 예: "NVDA"
             rounds: 토론 라운드 수
+            data_dir: 데이터 디렉토리 (None이면 기본값 사용)
+            model_dir: 모델 디렉토리 (None이면 기본값 사용)
         """
         if not ticker or str(ticker).strip() == "":
             raise ValueError("DebateAgent: ticker must not be None or empty")
@@ -57,6 +66,12 @@ class DebateAgent:
         # ---- 1) ticker 정리 ----
         self.ticker = str(ticker).upper()
         self.symbol = self.ticker
+        
+        # ---- 1-1) dir 정보 저장 (인스턴스 변수로) ----
+        # dir 파라미터가 제공되면 사용, 없으면 기본값 사용
+        self.data_dir = data_dir if data_dir is not None else dir_info["data_dir"]
+        self.model_dir = model_dir if model_dir is not None else dir_info["model_dir"]
+        self.scaler_dir = os.path.join(self.model_dir, "scalers")
 
         # ---- 2) OpenAI Client 초기화 ----
         load_dotenv()
@@ -79,10 +94,16 @@ class DebateAgent:
         macro_cfg = agents_info.get("MacroAgent", {})
         sent_cfg = agents_info.get("SentimentalAgent", {})
         
+        # dir 파라미터가 제공되면 사용, 없으면 None (기본값 사용)
+        agent_data_dir = self.data_dir
+        agent_model_dir = self.model_dir
+        
         self.agents = {
             "TechnicalAgent": TechnicalAgent(
                 agent_id="TechnicalAgent",
                 ticker=self.ticker,
+                data_dir=agent_data_dir,
+                model_dir=agent_model_dir,
                 gamma=tech_cfg.get("gamma", 0.3),  # config에서 가져오기
                 delta_limit=tech_cfg.get("delta_limit", 0.05)  # config에서 가져오기
             ),
@@ -92,6 +113,8 @@ class DebateAgent:
                 ticker=self.ticker,
                 base_date=datetime.today(),
                 window=macro_window,
+                data_dir=agent_data_dir,
+                model_dir=agent_model_dir,
                 gamma=macro_cfg.get("gamma", 0.5),  # config에서 가져오기
                 delta_limit=macro_cfg.get("delta_limit", 0.1)  # config에서 가져오기
             ),
@@ -99,6 +122,9 @@ class DebateAgent:
             "SentimentalAgent": SentimentalAgent(
                 ticker=self.ticker,
                 agent_id="SentimentalAgent",
+                data_dir=agent_data_dir,
+                model_dir=agent_model_dir,
+                news_dir=None,  # None이면 SentimentalAgent.__init__에서 자동 계산
                 gamma=sent_cfg.get("gamma", 0.3),  # config에서 가져오기
                 delta_limit=sent_cfg.get("delta_limit", 0.05)  # config에서 가져오기
             ),
@@ -133,59 +159,6 @@ class DebateAgent:
         # else:
         #     print("[INFO] Ensemble Model 파일이 없습니다. run() 시점에 학습을 시도합니다.")
 
-    def ensure_ensemble_model(self):
-        """
-        티커별 앙상블 모델이 존재하는지 확인하고, 없거나 오래되었으면 자동으로 학습합니다.
-        """
-        import joblib
-        # 스크립트 모듈 import (함수형 호출)
-        try:
-            from scripts.gen_training_data import generate_ensemble_data
-            from scripts.train_meta_model import train_meta_model
-        except ImportError:
-            print("[WARN] 앙상블 학습 스크립트를 import할 수 없어 자동 학습을 건너뜁니다.")
-            return
-
-        model_filename = f"{self.ticker}_ensemble_lightgbm.pkl"
-        model_path = os.path.join(dir_info["model_dir"], model_filename)
-        data_path = os.path.join(dir_info["data_dir"], f"{self.ticker}_ensemble_train.csv")
-
-        # 모델이 없으면 학습 시작
-        if not os.path.exists(model_path):
-            print(f"\n{'='*60}")
-            print(f"[INFO] {self.ticker} 전용 앙상블 모델이 없습니다. 자동 학습을 시작합니다.")
-            print(f"{'='*60}")
-            
-            try:
-                # 1. 학습 데이터 생성
-                print(f"[Step 1/2] 학습 데이터 생성 중... ({self.ticker})")
-                # DebateAgent 내부 에이전트들을 활용하기보다, 스크립트가 독립적으로 수행하도록 함
-                # (메모리 관리 및 독립성 위해)
-                # days=None이면 config/agents의 period 사용
-                generate_ensemble_data(ticker=self.ticker, days=None, output_path=data_path)
-                
-                # 2. 모델 학습
-                print(f"[Step 2/2] LightGBM 모델 학습 중...")
-                train_meta_model(data_path=data_path, model_out_path=model_path)
-                
-                print(f"[INFO] {self.ticker} 앙상블 모델 학습 완료!")
-                
-            except Exception as e:
-                print(f"[ERROR] 앙상블 모델 자동 학습 중 오류 발생: {e}")
-                print("[INFO] 기본 평균 방식을 사용합니다.")
-                return
-
-        # 모델 로드 시도
-        if os.path.exists(model_path):
-            try:
-                self.ensemble_model = joblib.load(model_path)
-                print(f"[INFO] Ensemble Model 로드 완료: {model_path}")
-            except Exception as e:
-                print(f"[WARN] Ensemble Model 로드 실패: {e}")
-                self.ensemble_model = None
-        else:
-            print("[WARN] 모델 파일이 생성되지 않았습니다.")
-
     def _check_agent_ready(self, agent_id: str, ticker: str) -> bool:
         """
         에이전트가 준비되었는지 확인 (모델 및 스케일러 파일 존재 여부)
@@ -197,7 +170,7 @@ class DebateAgent:
         Returns:
             bool: 에이전트가 준비되었으면 True, 아니면 False
         """
-        model_path = os.path.join(dir_info["model_dir"], f"{ticker}_{agent_id}.pt")
+        model_path = os.path.join(self.model_dir, f"{ticker}_{agent_id}.pt")
 
         # 모델 파일 확인
         if not os.path.exists(model_path):
@@ -205,8 +178,8 @@ class DebateAgent:
 
         # MacroAgent는 별도 스케일러 파일 확인
         if agent_id == "MacroAgent":
-            scaler_X_path = os.path.join(dir_info["model_dir"], "scalers", f"{ticker}_{agent_id}_xscaler.pkl")
-            scaler_y_path = os.path.join(dir_info["model_dir"], "scalers", f"{ticker}_{agent_id}_yscaler.pkl")
+            scaler_X_path = os.path.join(self.model_dir, "scalers", f"{ticker}_{agent_id}_xscaler.pkl")
+            scaler_y_path = os.path.join(self.model_dir, "scalers", f"{ticker}_{agent_id}_yscaler.pkl")
             if not os.path.exists(scaler_X_path) or not os.path.exists(scaler_y_path):
                 return False
 
@@ -244,52 +217,24 @@ class DebateAgent:
             needs_pretrain = force_pretrain or (not is_ready)
 
             # === 2단계: 에이전트별 데이터 수집 및 학습 ===
-            if agent_id == "SentimentalAgent":
-                # SentimentalAgent: pretrain 먼저 → 이후 run_dataset
-                if needs_pretrain:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [SentimentalAgent] pretrain 실행 (모델/스케일러 생성)")
-                    agent.pretrain()
-                else:
-                    model_path = os.path.join(dir_info["model_dir"], f"{ticker}_{agent_id}.pt")
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [SentimentalAgent] 기존 모델 사용: {model_path}")
-                
-                # pretrain 이후 최신 데이터로 run_dataset (중복 방지)
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] [SentimentalAgent] run_dataset 실행 (최신 데이터 수집)")
-                cfg = agents_info.get(agent_id, {})
-                # common_params에서 period 가져오기
-                period_str = common_params.get("period", "2y")
-                # period 문자열을 일수로 변환
-                if period_str.endswith("y"):
-                    years = int(period_str[:-1])
-                    days = years * 365
-                elif period_str.endswith("m"):
-                    months = int(period_str[:-1])
-                    days = months * 30
-                elif period_str.endswith("d"):
-                    days = int(period_str[:-1])
-                else:
-                    days = 2 * 365  # 기본값
-                sd = agent.run_dataset(days=days)
-                agent.stockdata = sd
-                
-                # 예측 (config에서 n_samples 가져오기)
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] [SentimentalAgent] predict 실행 (MC Dropout 포함)")
-                n_samples = common_params.get("n_samples", 30)
-                target = agent.predict(sd, n_samples=n_samples)
+            # 모든 에이전트: searcher 먼저 → 필요시 pretrain
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] searcher 실행 (데이터셋 준비)")
+            X = agent.searcher(ticker, rebuild=rebuild)
+            
+            if needs_pretrain:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] pretrain 실행 (모델/스케일러 생성)")
+                agent.pretrain()
             else:
-                # Technical/Macro: searcher 먼저 → 필요시 pretrain
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] searcher 실행 (데이터셋 준비)")
-                X = agent.searcher(ticker, rebuild=rebuild)
-                
-                if needs_pretrain:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] pretrain 실행 (모델/스케일러 생성)")
-                    agent.pretrain()
-                else:
-                    model_path = os.path.join(dir_info["model_dir"], f"{ticker}_{agent_id}.pt")
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] 기존 모델 사용: {model_path}")
-                
-                # 예측
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] predict 실행")
+                model_path = os.path.join(self.model_dir, f"{ticker}_{agent_id}.pt")
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] 기존 모델 사용: {model_path}")
+            
+            # 예측
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] predict 실행")
+            if agent_id == "SentimentalAgent":
+                # SentimentalAgent는 MC Dropout을 위해 n_samples 사용
+                n_samples = common_params.get("n_samples", 30)
+                target = agent.predict(agent.stockdata, n_samples=n_samples)
+            else:
                 target = agent.predict(X)
 
             print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] reviewer_draft 실행")
@@ -416,10 +361,9 @@ class DebateAgent:
         
         프로세스:
         1. (선택) 공통 데이터셋 생성 – 현재는 각 Agent 내부 pretrain/searcher 에서 처리
-        2. 앙상블 모델 준비 (없으면 자동 학습)
-        3. Round 0: 초기 Opinion 수집
-        4. Round 1~N: Rebuttal → Revise 반복
-        5. 최종 Ensemble 예측 생성
+        2. Round 0: 초기 Opinion 수집
+        3. Round 1~N: Rebuttal → Revise 반복
+        4. 최종 Ensemble 예측 생성 (내부에서 앙상블 모델 자동 준비)
         """
 
         if not self._data_built:
@@ -427,9 +371,6 @@ class DebateAgent:
             self._data_built = True
         else:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 데이터셋 이미 생성됨, 스킵")
-
-        # 앙상블 모델 준비 (티커별)
-        self.ensure_ensemble_model()
 
         # Round 0: 초기 Opinion 수집
         print(f"\n{'='*80}")
@@ -447,7 +388,7 @@ class DebateAgent:
             self.get_revise(round)
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Round {round} 토론 완료")
 
-        # 최종 Ensemble 예측
+        # 최종 Ensemble 예측 (내부에서 앙상블 모델 자동 준비)
         print(f"\n{'='*80}")
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 최종 Ensemble 예측")
         print(f"{'='*80}")
@@ -552,9 +493,378 @@ class DebateAgent:
                 - currency: 통화 코드
                 - last_price: 현재가
         """
-        import statistics
-        import pandas as pd
-        import numpy as np
+        # -------------------------------------------------------
+        # 앙상블 모델 준비 (없으면 자동 학습)
+        # -------------------------------------------------------
+        if not hasattr(self, 'ensemble_model') or self.ensemble_model is None:
+            model_filename = f"{self.ticker}_ensemble.pt"
+            model_path = os.path.join(self.model_dir, model_filename)
+            data_path = os.path.join(self.data_dir, f"{self.ticker}_ensemble_train.csv")
+
+            # 모델이 없으면 학습 시작
+            if not os.path.exists(model_path):
+                print(f"\n{'='*60}")
+                print(f"[INFO] {self.ticker} 전용 앙상블 모델이 없습니다. 자동 학습을 시작합니다.")
+                print(f"{'='*60}")
+                
+                try:
+                    # 1. 학습 데이터 생성 (무조건 재생성)
+                    print(f"[Step 1/3] 학습 데이터 생성 중... ({self.ticker})")
+                    
+                    # 기존 파일이 있으면 삭제
+                    if os.path.exists(data_path):
+                        os.remove(data_path)
+                        print(f"  기존 파일 삭제: {data_path}")
+                    
+                    # 1-1. 학습된 모델/스케일러 로드
+                    print("  1-1. 학습된 모델/스케일러 로드 중...")
+                    
+                    # TechnicalAgent 모델 로드
+                    tech_model_path = os.path.join(self.model_dir, f"{self.ticker}_TechnicalAgent.pt")
+                    if not os.path.exists(tech_model_path):
+                        raise FileNotFoundError(f"TechnicalAgent 모델이 없습니다: {tech_model_path}")
+                    
+                    tech_cfg = agents_info.get("TechnicalAgent", {})
+                    tech_agent = TechnicalAgent(
+                        agent_id="TechnicalAgent",
+                        ticker=self.ticker,
+                        data_dir=self.data_dir,
+                        model_dir=self.model_dir,
+                        gamma=tech_cfg.get("gamma", 0.3),
+                        delta_limit=tech_cfg.get("delta_limit", 0.05)
+                    )
+                    tech_agent.load_model(tech_model_path)
+                    
+                    # MacroAgent 모델/스케일러 로드
+                    macro_model_path = os.path.join(self.model_dir, f"{self.ticker}_MacroAgent.pt")
+                    macro_scaler_x_path = os.path.join(self.model_dir, "scalers", f"{self.ticker}_MacroAgent_xscaler.pkl")
+                    macro_scaler_y_path = os.path.join(self.model_dir, "scalers", f"{self.ticker}_MacroAgent_yscaler.pkl")
+                    
+                    if not os.path.exists(macro_model_path) or not os.path.exists(macro_scaler_x_path):
+                        raise FileNotFoundError(f"MacroAgent 모델/스케일러가 없습니다: {macro_model_path}")
+                    
+                    macro_cfg = agents_info.get("MacroAgent", {})
+                    macro_window = macro_cfg.get("window_size", 40)
+                    macro_agent = MacroAgent(
+                        agent_id="MacroAgent",
+                        ticker=self.ticker,
+                        base_date=datetime.today(),
+                        window=macro_window,
+                        data_dir=self.data_dir,
+                        model_dir=self.model_dir,
+                        gamma=macro_cfg.get("gamma", 0.5),
+                        delta_limit=macro_cfg.get("delta_limit", 0.1)
+                    )
+                    macro_agent.load_model()
+                    
+                    # SentimentalAgent 모델 로드
+                    senti_model_path = os.path.join(self.model_dir, f"{self.ticker}_SentimentalAgent.pt")
+                    if not os.path.exists(senti_model_path):
+                        raise FileNotFoundError(f"SentimentalAgent 모델이 없습니다: {senti_model_path}")
+                    
+                    sent_cfg = agents_info.get("SentimentalAgent", {})
+                    senti_agent = SentimentalAgent(
+                        ticker=self.ticker,
+                        agent_id="SentimentalAgent",
+                        data_dir=self.data_dir,
+                        model_dir=self.model_dir,
+                        gamma=sent_cfg.get("gamma", 0.3),
+                        delta_limit=sent_cfg.get("delta_limit", 0.05)
+                    )
+                    senti_agent.load_model(senti_model_path)
+                    
+                    print("  모델/스케일러 로드 완료.")
+                    
+                    # 1-2. 입력 데이터 로드 (data/processed에서)
+                    print("  1-2. 입력 데이터 로드 중 (data/processed)...")
+                    
+                    # TechnicalAgent Data
+                    tech_dataset_path = os.path.join(self.data_dir, f"{self.ticker}_TechnicalAgent_dataset.csv")
+                    if not os.path.exists(tech_dataset_path):
+                        raise FileNotFoundError(f"TechnicalAgent 데이터셋이 없습니다: {tech_dataset_path}")
+                    
+                    tech_X_all, tech_y_all, tech_cols, tech_dates = load_dataset_tech(
+                        self.ticker, agent_id="TechnicalAgent", save_dir=self.data_dir
+                    )
+                    
+                    # tech_dates 구조 확인 및 평탄화
+                    tech_last_dates = []
+                    if tech_dates is not None and len(tech_dates) > 0:
+                        if isinstance(tech_dates[0], (list, tuple, np.ndarray)):
+                            tech_last_dates = [d[-1] for d in tech_dates]
+                        elif isinstance(tech_dates[0], str):
+                            tech_last_dates = tech_dates
+                    tech_last_dates_dt = pd.to_datetime(tech_last_dates).normalize()
+                    
+                    # MacroAgent Data (dataset.csv 사용)
+                    macro_dataset_path = os.path.join(self.data_dir, f"{self.ticker}_MacroAgent_dataset.csv")
+                    if not os.path.exists(macro_dataset_path):
+                        raise FileNotFoundError(f"MacroAgent 데이터셋이 없습니다: {macro_dataset_path}")
+                    
+                    macro_df = pd.read_csv(macro_dataset_path)
+                    if 'date' in macro_df.columns:
+                        # 날짜 형식 통일 (normalize로 시간 제거)
+                        macro_df['date'] = pd.to_datetime(macro_df['date'], errors='coerce').dt.normalize()
+                        macro_df = macro_df.sort_values(['sample_id', 'time_step'])
+                        # 결측치 제거
+                        macro_df = macro_df[macro_df['date'].notna()].copy()
+                    
+                    # SentimentalAgent Data (dataset.csv 사용)
+                    senti_dataset_path = os.path.join(self.data_dir, f"{self.ticker}_SentimentalAgent_dataset.csv")
+                    if not os.path.exists(senti_dataset_path):
+                        raise FileNotFoundError(f"SentimentalAgent 데이터셋이 없습니다: {senti_dataset_path}")
+                    
+                    senti_df = pd.read_csv(senti_dataset_path)
+                    if 'date' in senti_df.columns:
+                        senti_df['date'] = pd.to_datetime(senti_df['date'], errors='coerce')
+                        senti_df = senti_df.sort_values(['sample_id', 'time_step'])
+                    
+                    # 가격 데이터 다운로드 (실제 종가 확인용)
+                    print("  1-3. 가격 데이터 다운로드 중...")
+                    period_str = common_params.get("period", "2y")
+                    if period_str.endswith("y"):
+                        years = int(period_str[:-1])
+                        days = years * 365
+                    elif period_str.endswith("m"):
+                        months = int(period_str[:-1])
+                        days = months * 30
+                    elif period_str.endswith("d"):
+                        days = int(period_str[:-1])
+                    else:
+                        days = 2 * 365
+                    
+                    end_date = datetime.today()
+                    start_date = end_date - timedelta(days=days + 60)
+                    df_price = yf.download(self.ticker, start=start_date, end=end_date, progress=False)
+                    if isinstance(df_price.columns, pd.MultiIndex):
+                        df_price.columns = [c[0] for c in df_price.columns]
+                    df_price = df_price.reset_index()
+                    df_price['Date'] = pd.to_datetime(df_price['Date']).dt.normalize()
+                    df_price = df_price.sort_values('Date')
+                    
+                    # 1-4. 일별 예측 수행
+                    print(f"  1-4. 일별 예측 수행 중...")
+                    results = []
+                    
+                    w_tech = tech_agent.window_size
+                    w_macro = macro_agent.window_size
+                    w_senti = senti_agent.window_size
+                    
+                    # TechnicalAgent: 날짜별 매칭
+                    for t_idx, tech_date_list in enumerate(tech_dates):
+                        if not tech_date_list:
+                            continue
+                        curr_date_str = tech_date_list[-1] if isinstance(tech_date_list, list) else str(tech_date_list)
+                        curr_date = pd.to_datetime(curr_date_str).normalize()
+                        
+                        # 가격 데이터에서 해당 날짜 찾기
+                        price_row = df_price[df_price['Date'] == curr_date]
+                        if price_row.empty:
+                            continue
+                        idx_price = price_row.index[0]
+                        curr_close = float(price_row['Close'].iloc[0])
+                        
+                        if idx_price + 1 >= len(df_price):
+                            continue
+                        next_close_actual = float(df_price.iloc[idx_price + 1]['Close'])
+                        
+                        # Technical Prediction
+                        try:
+                            X_batch = tech_X_all[t_idx]
+                            X_in = np.expand_dims(X_batch, axis=0)
+                            target_tech = tech_agent.predict(X_in, current_price=curr_close)
+                            pred_tech = target_tech.next_close
+                            conf_tech = target_tech.confidence
+                            unc_tech = target_tech.uncertainty
+                        except Exception as e:
+                            pred_tech = np.nan; conf_tech = 0; unc_tech = 0
+                        
+                        # Macro Prediction (해당 날짜의 sample 찾기) - 다른 에이전트와 동일하게 원본 데이터 전달
+                        pred_macro = np.nan; conf_macro = 0; unc_macro = 0
+                        try:
+                            # 날짜 형식 통일 (normalize로 시간 제거)
+                            curr_date_normalized = pd.to_datetime(curr_date).normalize() if not isinstance(curr_date, pd.Timestamp) else curr_date.normalize()
+                            
+                            # macro_df의 date 컬럼도 normalize
+                            if 'date' in macro_df.columns:
+                                macro_df_date_norm = pd.to_datetime(macro_df['date'], errors='coerce').dt.normalize()
+                                macro_samples = macro_df[macro_df_date_norm == curr_date_normalized]['sample_id'].unique()
+                            else:
+                                macro_samples = []
+                            
+                            if len(macro_samples) > 0:
+                                macro_sample_id = macro_samples[0]
+                                macro_sample = macro_df[macro_df['sample_id'] == macro_sample_id].sort_values('time_step')
+                                if len(macro_sample) >= w_macro:
+                                    # 피처 컬럼 추출 (sample_id, time_step, target, date 제외)
+                                    feat_cols = [c for c in macro_sample.columns if c not in ['sample_id', 'time_step', 'target', 'date']]
+                                    feat_cols = [c for c in feat_cols if pd.api.types.is_numeric_dtype(macro_sample[c])]
+                                    
+                                    if len(feat_cols) == 0:
+                                        if t_idx < 5:
+                                            print(f"  [DEBUG] Macro: 피처 컬럼이 없습니다 (날짜: {curr_date_normalized})")
+                                    else:
+                                        # 윈도우 데이터 추출 (T, F) 형태 - predict 내부에서 스케일링
+                                        X_values = macro_sample[feat_cols].values[-w_macro:]
+                                        
+                                        # predict에 원본 데이터 전달 (내부에서 스케일링 처리)
+                                        target_macro = macro_agent.predict(X_values, current_price=curr_close)
+                                        pred_macro = target_macro.next_close
+                                        conf_macro = target_macro.confidence
+                                        unc_macro = target_macro.uncertainty
+                            else:
+                                # 디버깅: 날짜 매칭 실패 시 정보 출력
+                                if t_idx < 5:
+                                    available_dates = pd.to_datetime(macro_df['date'], errors='coerce').dt.normalize().unique() if 'date' in macro_df.columns else []
+                                    print(f"  [DEBUG] Macro: 날짜 매칭 실패 (찾는 날짜: {curr_date_normalized}, 사용 가능한 날짜 수: {len(available_dates)})")
+                        except Exception as e:
+                            # 디버깅을 위해 에러 메시지 출력 (첫 몇 개만)
+                            if t_idx < 5:
+                                print(f"  [DEBUG] Macro 예측 실패 (날짜: {curr_date}): {e}")
+                                import traceback
+                                traceback.print_exc()
+                            pass
+                        
+                        # Sentimental Prediction (해당 날짜의 sample 찾기)
+                        pred_senti = np.nan; conf_senti = 0; unc_senti = 0
+                        try:
+                            senti_samples = senti_df[senti_df['date'] == curr_date]['sample_id'].unique()
+                            if len(senti_samples) > 0:
+                                senti_sample_id = senti_samples[0]
+                                senti_sample = senti_df[senti_df['sample_id'] == senti_sample_id].sort_values('time_step')
+                                if len(senti_sample) >= w_senti:
+                                    # 피처 컬럼 추출
+                                    feat_cols = [c for c in senti_sample.columns if c not in ['sample_id', 'time_step', 'target', 'date']]
+                                    feat_cols = [c for c in feat_cols if pd.api.types.is_numeric_dtype(senti_sample[c])]
+                                    
+                                    # 윈도우 데이터 추출
+                                    X_values = senti_sample[feat_cols].values[-w_senti:]
+                                    X_in = np.expand_dims(X_values, axis=0)
+                                    target_senti = senti_agent.predict(X_in, current_price=curr_close)
+                                    pred_senti = target_senti.next_close
+                                    conf_senti = target_senti.confidence
+                                    unc_senti = target_senti.uncertainty
+                        except Exception as e:
+                            pass
+                        
+                        # 결과 저장
+                        row = {
+                            "Date": curr_date,
+                            "Last_Close": curr_close,
+                            "Next_Close": next_close_actual,
+                            "Tech_Pred": pred_tech,
+                            "Tech_Conf": conf_tech,
+                            "Tech_Unc": unc_tech,
+                            "Macro_Pred": pred_macro,
+                            "Macro_Conf": conf_macro,
+                            "Macro_Unc": unc_macro,
+                            "Senti_Pred": pred_senti,
+                            "Senti_Conf": conf_senti,
+                            "Senti_Unc": unc_senti
+                        }
+                        results.append(row)
+                    
+                    # 1-5. 예측 데이터 통합 및 결측치 제거
+                    print("  1-5. 예측 데이터 통합 및 결측치 제거 중...")
+                    df_out = pd.DataFrame(results)
+                    
+                    # 최소 2개 이상의 에이전트 예측이 있어야 유효한 데이터로 간주
+                    pred_cols = ['Tech_Pred', 'Macro_Pred', 'Senti_Pred']
+                    df_out['valid_pred_count'] = df_out[pred_cols].notna().sum(axis=1)
+                    df_final = df_out[df_out['valid_pred_count'] >= 2].drop(columns=['valid_pred_count'])
+                    
+                    # 필수 컬럼(Last_Close, Next_Close)의 결측치 제거
+                    df_final = df_final.dropna(subset=['Last_Close', 'Next_Close'])
+                    
+                    output_dir = os.path.dirname(data_path)
+                    os.makedirs(output_dir, exist_ok=True)
+                    df_final.to_csv(data_path, index=False)
+                    print(f"  학습 데이터 저장 완료: {len(df_final)}행 (결측치 제거 전: {len(df_out)}행)")
+                    
+                    if len(df_final) == 0:
+                        print(f"  [WARN] 유효한 데이터가 없습니다. 예측 실패 원인을 확인하세요.")
+                        # 디버깅용 원본 데이터 저장
+                        debug_path = data_path.replace('.csv', '_debug.csv')
+                        df_out.to_csv(debug_path, index=False)
+                        print(f"  디버깅용 원본 데이터 저장: {debug_path}")
+                    
+                    # 2. 모델 학습
+                    print(f"[Step 2/3] LightGBM 모델 학습 중...")
+                    if not os.path.exists(data_path):
+                        raise FileNotFoundError(f"학습 데이터 파일이 없습니다: {data_path}")
+                    
+                    df = pd.read_csv(data_path)
+                    
+                    if len(df) == 0:
+                        raise ValueError(f"학습 데이터가 비어있습니다: {data_path}")
+                    
+                    # Feature Engineering
+                    df['Tech_Ret'] = ((df['Tech_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
+                    df['Macro_Ret'] = ((df['Macro_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
+                    df['Senti_Ret'] = ((df['Senti_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
+                    
+                    df['Tech_Conf'] = df['Tech_Conf'].fillna(0.0)
+                    df['Tech_Unc'] = df['Tech_Unc'].fillna(0.0)
+                    df['Macro_Conf'] = df['Macro_Conf'].fillna(0.0)
+                    df['Macro_Unc'] = df['Macro_Unc'].fillna(0.0)
+                    df['Senti_Conf'] = df['Senti_Conf'].fillna(0.0)
+                    df['Senti_Unc'] = df['Senti_Unc'].fillna(0.0)
+                    
+                    df['Target_Ret'] = (df['Next_Close'] - df['Last_Close']) / df['Last_Close']
+                    
+                    feature_cols = [
+                        'Tech_Ret', 'Tech_Conf', 'Tech_Unc',
+                        'Macro_Ret', 'Macro_Conf', 'Macro_Unc',
+                        'Senti_Ret', 'Senti_Conf', 'Senti_Unc'
+                    ]
+                    
+                    df_clean = df.dropna(subset=['Target_Ret'])
+                    
+                    if len(df_clean) == 0:
+                        raise ValueError("Target_Ret가 모두 결측치입니다. 학습 데이터를 확인하세요.")
+                    
+                    X = df_clean[feature_cols]
+                    y = df_clean['Target_Ret']
+                    
+                    # LightGBM 학습
+                    model = lgb.LGBMRegressor(
+                        n_estimators=100,
+                        learning_rate=0.05,
+                        max_depth=3,
+                        random_state=42,
+                        n_jobs=-1,
+                        verbosity=-1  # LightGBM 로그 출력 억제
+                    )
+                    
+                    model.fit(
+                        X, y,
+                        eval_metric='mse',
+                        callbacks=[lgb.log_evaluation(period=0)]  # 로그 출력 억제
+                    )
+                    
+                    # 모델 저장
+                    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+                    joblib.dump(model, model_path)
+                    print(f"[Step 3/3] {self.ticker} 앙상블 모델 학습 완료!")
+                    
+                except Exception as e:
+                    print(f"[ERROR] 앙상블 모델 자동 학습 중 오류 발생: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    print("[INFO] 기본 평균 방식을 사용합니다.")
+                    self.ensemble_model = None
+
+            # 모델 로드 시도
+            if os.path.exists(model_path):
+                try:
+                    self.ensemble_model = joblib.load(model_path)
+                    print(f"[INFO] Ensemble Model 로드 완료: {model_path}")
+                except Exception as e:
+                    print(f"[WARN] Ensemble Model 로드 실패: {e}")
+                    self.ensemble_model = None
+            else:
+                print("[WARN] 모델 파일이 생성되지 않았습니다.")
+                self.ensemble_model = None
 
         # 최종 라운드의 의견 가져오기
         final_round = max(self.opinions.keys()) if self.opinions else 0

@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import math
 
@@ -31,9 +31,12 @@ def _normalize_symbol(ticker: str) -> str:
     return f"{ticker}.US"
 
 
-def get_news_cache_path(ticker: str, start: date, end: date) -> Path:
+def get_news_cache_path(ticker: str, start: date, end: date, news_dir: Optional[Path] = None) -> Path:
     """뉴스 캐시 파일 경로를 한 곳에서만 정의"""
-    news_dir = ROOT / "data" / "raw" / "news"
+    if news_dir is None:
+        news_dir = ROOT / "data" / "raw" / "news"
+    else:
+        news_dir = Path(news_dir)
     news_dir.mkdir(parents=True, exist_ok=True)
 
     symbol = _normalize_symbol(ticker)

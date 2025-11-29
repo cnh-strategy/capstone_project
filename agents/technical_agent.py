@@ -814,12 +814,27 @@ class TechnicalAgent(BaseAgent, nn.Module):
         cfg = agents_info.get(agent_id, {})
         
         # common_params에서 period 가져오기
-        period_to_use = common_params.get("period", "2y")
+        # TechnicalAgent는 ma_200(200일 이동평균)을 사용하므로, 
+        # dropna 후에도 다른 에이전트와 비슷한 시작일자를 확보하기 위해 기간을 늘림
+        base_period = common_params.get("period", "2y")
+        # ma_200을 위해 최소 200 거래일(약 280일) + 실제 기간이 필요
+        # 다른 에이전트와 시작일자를 맞추기 위해 약 1년 추가
+        if base_period.endswith("y"):
+            years = int(base_period[:-1])
+            period_to_use = f"{years + 1}y"  # 예: "2y" -> "3y" (dropna 후 약 2y 데이터 확보)
+        elif base_period.endswith("m"):
+            months = int(base_period[:-1])
+            period_to_use = f"{months + 12}m"  # 예: "24m" -> "36m"
+        else:
+            period_to_use = base_period
         interval_to_use = cfg.get("interval", "1d")
 
         need_build = rebuild or (not os.path.exists(raw_csv_path))
         if need_build:
-            print(f"⚙️ {ticker} {agent_id} raw CSV not found. Building..." if not os.path.exists(raw_csv_path) else f"⚙️ {ticker} {agent_id} rebuild requested. Building raw CSV...")
+            if not os.path.exists(raw_csv_path):
+                print(f"[{agent_id}] Raw CSV 파일이 없어 생성 중...")
+            else:
+                print(f"[{agent_id}] Rebuild 요청됨. Raw CSV 재생성 중...")
             
             # 1) 데이터 다운로드
             df = self._fetch_ticker_data(ticker, period_to_use, interval_to_use)
@@ -829,21 +844,48 @@ class TechnicalAgent(BaseAgent, nn.Module):
             if not isinstance(feat, pd.DataFrame):
                 raise TypeError("_build_features_technical는 DataFrame을 반환해야 합니다.")
 
-            # 3) Raw CSV 저장 (Date 첫 컬럼, Close 마지막 컬럼)
+            # 3) period에 맞춰 데이터 필터링 (다른 에이전트와 시작일자 통일)
+            # base_period 기준으로 오늘부터 역산하여 필터링
+            end_date = pd.Timestamp.today().normalize()
+            if base_period.endswith("y"):
+                years = int(base_period[:-1])
+                days = years * 365
+            elif base_period.endswith("m"):
+                months = int(base_period[:-1])
+                days = months * 30
+            elif base_period.endswith("d"):
+                days = int(base_period[:-1])
+            else:
+                days = 2 * 365  # 기본값
+            start_date = end_date - pd.Timedelta(days=days)
+            
+            # 4) Raw CSV 저장 (Date 첫 컬럼, Close 마지막 컬럼)
             try:
                 os.makedirs(os.path.dirname(raw_csv_path), exist_ok=True)
                 raw_tech = feat.copy()
                 raw_tech.index.name = "Date"
                 raw_tech.reset_index(inplace=True)
                 
+                # Date 컬럼을 datetime으로 변환 후 period 기간에 맞춰 필터링
+                raw_tech["Date"] = pd.to_datetime(raw_tech["Date"])
+                raw_tech = raw_tech[raw_tech["Date"] >= start_date].copy()
+                raw_tech = raw_tech.sort_values("Date").reset_index(drop=True)
+                
                 # ticker 컬럼 추가
                 if "ticker" not in raw_tech.columns:
                     raw_tech.insert(1, "ticker", ticker)
                 
-                # Close 컬럼 추가 (마지막으로)
+                # Close 컬럼 추가 (마지막으로) - 필터링된 기간에 맞춰서
                 close_df = df[["Close"]].copy()
                 close_df.index.name = "Date"
                 close_df.reset_index(inplace=True)
+                close_df["Date"] = pd.to_datetime(close_df["Date"])
+                close_df = close_df[close_df["Date"] >= start_date].copy()
+                close_df = close_df.sort_values("Date").reset_index(drop=True)
+                
+                # Date 형식을 문자열로 통일하여 merge
+                raw_tech["Date"] = raw_tech["Date"].dt.strftime("%Y-%m-%d")
+                close_df["Date"] = close_df["Date"].dt.strftime("%Y-%m-%d")
                 raw_tech = raw_tech.merge(close_df, on="Date", how="left")
                 
                 # Close를 마지막 컬럼으로 이동
@@ -852,11 +894,14 @@ class TechnicalAgent(BaseAgent, nn.Module):
                     raw_tech = raw_tech[cols]
                 
                 raw_tech.to_csv(raw_csv_path, index=False)
-                print(f"✅ {ticker} TechnicalAgent raw features saved to {raw_csv_path} ({len(raw_tech)} rows)")
+                print(f"✅ [{agent_id}] Raw CSV 저장 완료: {raw_csv_path} ({len(raw_tech):,} rows, period: {base_period})")
             except Exception as e:
-                print(f"⚠️ Failed to save TechnicalAgent raw features: {e}")
+                print(f"❌ [{agent_id}] Raw CSV 저장 실패: {e}")
         
         # 4) Raw CSV에서 최신 window_size만큼 직접 추출
+        if not os.path.exists(raw_csv_path):
+            raise FileNotFoundError(f"Raw CSV not found: {raw_csv_path}")
+        
         df_raw = pd.read_csv(raw_csv_path)
         df_raw["Date"] = pd.to_datetime(df_raw["Date"])
         df_raw = df_raw.sort_values("Date").reset_index(drop=True)
@@ -873,27 +918,20 @@ class TechnicalAgent(BaseAgent, nn.Module):
         
         X_latest = X_all[-window_size:].reshape(1, window_size, -1)  # (1, T, F)
         
+        print(f"✅ [{agent_id}] Searcher 완료: 윈도우 shape {X_latest.shape}")
+        
         # 날짜 추출
         dates_all = df_raw["Date"].values[-window_size:].tolist()
         dates_all = [[str(d) for d in dates_all]]
 
-        # StockData 구성
+        # StockData 구성 (통일된 패턴)
         self.stockdata = StockData(ticker=ticker)
         self.stockdata.feature_cols = feature_cols
+        self.stockdata.window_size = window_size
         
-        # 날짜 정보 저장
-        last_dates = dates_all[0] if dates_all else []
-        setattr(self.stockdata, f"{agent_id}_dates_all", dates_all or [])
-        setattr(self.stockdata, f"{agent_id}_dates", last_dates or [])
-        
-        # last_price 안전 변환
+        # last_price (CSV의 마지막 Close 값 사용)
         try:
-            data = yf.download(ticker, period=period_to_use, interval=interval_to_use, auto_adjust=True, progress=False)
-            if data is not None and not data.empty:
-                last_val = data["Close"].iloc[-1]
-                self.stockdata.last_price = float(last_val.item() if hasattr(last_val, "item") else last_val)
-            else:
-                self.stockdata.last_price = None
+            self.stockdata.last_price = float(df_raw["Close"].iloc[-1])
         except Exception:
             self.stockdata.last_price = None
 
@@ -903,9 +941,15 @@ class TechnicalAgent(BaseAgent, nn.Module):
         except Exception:
             self.stockdata.currency = "USD"
 
-        df_latest = pd.DataFrame(X_latest[0], columns=feature_cols)  # (T, F)
+        # feature_dict (마지막 윈도우)
+        df_latest = pd.DataFrame(X_latest[0], columns=feature_cols)
         feature_dict = {col: df_latest[col].tolist() for col in df_latest.columns}
         setattr(self.stockdata, agent_id, feature_dict)
+        
+        # 날짜 정보 저장 (TechnicalAgent 전용)
+        last_dates = dates_all[0] if dates_all else []
+        setattr(self.stockdata, f"{agent_id}_dates_all", dates_all or [])
+        setattr(self.stockdata, f"{agent_id}_dates", last_dates or [])
 
         return torch.tensor(X_latest, dtype=torch.float32)
 
@@ -935,7 +979,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 print(f"[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 ({self.simulation_date} 이전)")
         
         if not os.path.exists(raw_csv_path):
-            print(f"⚙️ {ticker} {self.agent_id} raw CSV not found. Running searcher() to generate it...")
+            print(f"[{self.agent_id}] Raw CSV 파일이 없어 searcher() 실행 중...")
             _ = self.searcher(ticker, rebuild=True)
             raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
             if not os.path.exists(raw_csv_path):
@@ -956,10 +1000,16 @@ class TechnicalAgent(BaseAgent, nn.Module):
         y_all = (close_prices[1:] / close_prices[:-1] - 1.0).reshape(-1, 1).astype(np.float32)
         X_all = X_all[:-1]  # 마지막 행 제외 (타겟이 없음)
         
-        # 백테스팅 모드: 이미 필터링된 데이터셋을 사용하므로 추가 필터링 불필요
-        # (rolling_backtest.py에서 _prepare_filtered_datasets()로 이미 필터링됨)
+        # 백테스팅 모드: 데이터 누수 방지 - sim_date 당일 수익률이 타겟에 포함되지 않도록
+        # 마지막 타겟 제거 (sim_date-1 → sim_date 수익률이므로)
         if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
-            print(f"[INFO] 백테스팅 모드: {self.simulation_date} 이전 데이터 사용 중 (이미 필터링됨)")
+            if len(y_all) > 0:
+                # 마지막 타겟 제거 (sim_date 당일 수익률)
+                y_all = y_all[:-1]
+                X_all = X_all[:-1]
+                print(f"[INFO] 백테스팅 모드: {self.simulation_date} 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)")
+            else:
+                print(f"[INFO] 백테스팅 모드: {self.simulation_date} 이전 데이터 사용 중 (타겟 없음)")
         
         # 2) Window 처리 (시퀀스 생성)
         window_size = self.window_size
@@ -986,12 +1036,29 @@ class TechnicalAgent(BaseAgent, nn.Module):
         model.train()
         
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        huber_delta = common_params.get("huber_loss_delta", 1.0)
-        loss_fn = torch.nn.HuberLoss(delta=huber_delta)
+        
+        # Loss 함수: config에서 가져오기
+        cfg = agents_info.get(self.agent_id, {})
+        loss_fn_name = cfg.get("loss_fn", "HuberLoss")
+        if loss_fn_name == "HuberLoss":
+            huber_delta = common_params.get("huber_loss_delta", 1.0)
+            loss_fn = torch.nn.HuberLoss(delta=huber_delta)
+        elif loss_fn_name == "L1Loss":
+            loss_fn = torch.nn.L1Loss()
+        elif loss_fn_name == "MSELoss":
+            loss_fn = torch.nn.MSELoss()
+        else:
+            print(f"[WARN] 알 수 없는 loss_fn: {loss_fn_name}, HuberLoss 사용")
+            huber_delta = common_params.get("huber_loss_delta", 1.0)
+            loss_fn = torch.nn.HuberLoss(delta=huber_delta)
         
         train_loader = DataLoader(TensorDataset(X_train, y_train.view(-1, 1)),
                                   batch_size=batch_size, shuffle=True)
         
+        # 에포크 출력 주기 (config에서 가져오기)
+        log_interval = common_params.get("pretrain_log_interval", 5)
+        
+        final_loss = None
         for epoch in range(epochs):
             total_loss = 0.0
             for Xb, yb in train_loader:
@@ -1002,8 +1069,11 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 optimizer.step()
                 total_loss += loss.item()
             
-            if (epoch + 1) % 5 == 0:
-                print(f"  Epoch {epoch+1:03d} | Loss: {total_loss/len(train_loader):.6f}")
+            avg_loss = total_loss / len(train_loader)
+            final_loss = avg_loss
+            
+            if (epoch + 1) % log_interval == 0 or (epoch + 1) == epochs:
+                print(f"  Epoch {epoch+1:03d}/{epochs} | Loss: {avg_loss:.6f}")
         
         # 6) 모델 저장
         os.makedirs(self.model_dir, exist_ok=True)
@@ -1013,29 +1083,33 @@ class TechnicalAgent(BaseAgent, nn.Module):
         # model_loaded 플래그 설정
         self.model_loaded = True
         
-        # 7) 전처리된 데이터 저장 (선택적)
-        dataset_path = os.path.join(self.data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
-        flattened_data = []
-        dates_list = df_raw["Date"].values[:-1]  # 마지막 제외
+        # 완료 메시지 출력
+        final_loss_str = f" (Final Loss: {final_loss:.6f})" if final_loss is not None else ""
+        print(f"✅ {self.agent_id} 모델 학습 및 저장 완료: {model_path}{final_loss_str}")
         
-        for sample_idx in range(len(X_seq)):
-            for time_idx in range(window_size):
-                date_idx = sample_idx + time_idx
-                row = {
-                    'sample_id': sample_idx,
-                    'time_step': time_idx,
-                    'date': str(dates_list[date_idx]) if date_idx < len(dates_list) else None,
-                    'target': y_seq[sample_idx, 0] if time_idx == window_size - 1 else np.nan,
-                }
-                for feat_idx, feat_name in enumerate(feature_cols):
-                    row[feat_name] = X_seq[sample_idx, time_idx, feat_idx]
-                flattened_data.append(row)
-        
-        dataset_df = pd.DataFrame(flattened_data)
-        os.makedirs(self.data_dir, exist_ok=True)
-        dataset_df.to_csv(dataset_path, index=False)
-        print(f"✅ {self.agent_id} 모델 학습 및 저장 완료: {model_path}")
-        print(f"✅ 전처리된 데이터 저장 완료: {dataset_path}")
+        # 7) 전처리된 데이터 저장 (config에서 설정)
+        if common_params.get("pretrain_save_dataset", True):
+            dataset_path = os.path.join(self.data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
+            flattened_data = []
+            dates_list = df_raw["Date"].values[:-1]  # 마지막 제외
+            
+            for sample_idx in range(len(X_seq)):
+                for time_idx in range(window_size):
+                    date_idx = sample_idx + time_idx
+                    row = {
+                        'sample_id': sample_idx,
+                        'time_step': time_idx,
+                        'date': str(dates_list[date_idx]) if date_idx < len(dates_list) else None,
+                        'target': y_seq[sample_idx, 0] if time_idx == window_size - 1 else np.nan,
+                    }
+                    for feat_idx, feat_name in enumerate(feature_cols):
+                        row[feat_name] = X_seq[sample_idx, time_idx, feat_idx]
+                    flattened_data.append(row)
+            
+            dataset_df = pd.DataFrame(flattened_data)
+            os.makedirs(self.data_dir, exist_ok=True)
+            dataset_df.to_csv(dataset_path, index=False)
+            print(f"✅ 전처리된 데이터 저장 완료: {dataset_path}")
 
     def predict(self, X, n_samples: Optional[int] = None, current_price: Optional[float] = None, X_last: Optional[np.ndarray] = None):
         """
@@ -1093,9 +1167,17 @@ class TechnicalAgent(BaseAgent, nn.Module):
         else:
             raise TypeError(f"Unsupported input type: {type(X)}")
 
+        # 형태 정규화 및 스케일링 (통일된 처리)
+        # (T, F) → (1, T, F)로 정규화 (스케일링 전에 차원 통일)
+        if X_raw_np.ndim == 2:
+            X_raw_np = X_raw_np[None, :, :]  # (T, F) → (1, T, F)
+        elif X_raw_np.ndim == 3 and X_raw_np.shape[0] != 1:
+            raise ValueError(f"예상하지 못한 배치 크기: {X_raw_np.shape[0]}, (1, T, F) 형태만 지원합니다.")
+        
+        # (1, T, F) 형태로 스케일링
         X_scaled, _ = self.scaler.transform(X_raw_np)
         device = next(model.parameters()).device
-        X_tensor = torch.tensor(X_scaled, dtype=torch.float32, device=device)
+        X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(device)
 
         # 3) Monte Carlo Dropout 추론
         model.train()  # dropout 활성화
@@ -1129,6 +1211,14 @@ class TechnicalAgent(BaseAgent, nn.Module):
         # 학습 타깃은 "다음날 수익률(%)"이므로 스케일 팩터로 나눠서 사용
         y_scale_factor = common_params.get("y_scale_factor", 100.0)
         predicted_return = float(mean_pred[-1]) / y_scale_factor
+        
+        # 수익률 클리핑 (agents_info에서 가져오기)
+        cfg = agents_info.get(self.agent_id, {})
+        return_clip_min = cfg.get("return_clip_min", -0.5)
+        return_clip_max = cfg.get("return_clip_max", 0.5)
+        predicted_return_raw = predicted_return
+        predicted_return = np.clip(predicted_return, return_clip_min, return_clip_max)
+        
         predicted_price = current_price * (1 + predicted_return)
 
         # 6) Target 생성
@@ -1137,6 +1227,11 @@ class TechnicalAgent(BaseAgent, nn.Module):
             uncertainty=sigma,
             confidence=float(confidence),
         )
+        
+        # 통일된 예측 결과 로그 출력 (불필요한 로그 제거)
+        # clipped_info = f" (클리핑: {predicted_return_raw:.4f} → {predicted_return:.4f})" if predicted_return_raw != predicted_return else ""
+        # print(f"[{self.agent_id}] Predict 완료: next_close={predicted_price:.2f}, return={predicted_return*100:.2f}%{clipped_info}, uncertainty={sigma:.4f}, confidence={confidence:.4f}")
+        
         return target
 
     def reviewer_draft(self, stock_data: StockData = None, target: Target = None) -> Opinion:

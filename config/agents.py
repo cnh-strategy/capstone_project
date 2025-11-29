@@ -8,7 +8,7 @@
 #    각 에이전트 구현에서 선택적으로 사용합니다.
 # ===============================================================
 
-# 공통 파라미터 (모든 Agent에서 사용)
+    # 공통 파라미터 (모든 Agent에서 사용)
 common_params = {
     # Monte Carlo Dropout
     "n_samples": 30,                    # Monte Carlo Dropout 샘플 수
@@ -32,6 +32,9 @@ common_params = {
     # 데이터 수집 기간 (모든 에이전트 공통)
     "period": "2y",              # 일반 모드: searcher + pretrain 모두 동일한 기간 사용
     "period_test": "2y",         # 백테스팅 모드: searcher + pretrain 모두 동일한 기간 사용
+    # Pretrain 출력 설정
+    "pretrain_log_interval": 5,        # 에포크 출력 주기 (몇 에포크마다 출력할지)
+    "pretrain_save_dataset": True,      # 전처리된 데이터셋 CSV 저장 여부
 }
 
 agents_info = {
@@ -40,6 +43,19 @@ agents_info = {
     # -----------------------------------------------------------
     "TechnicalAgent": {
         "description": "TECH(13) → LSTM×2 + time-attention 모델 사용",
+        # 모델 구조
+        "model_architecture": {
+            "type": "LSTM_with_TimeAttention",
+            "layers": [
+                {"type": "LSTM", "input_dim": "input_dim", "hidden_dim": "rnn_units1", "name": "lstm1"},
+                {"type": "Dropout", "rate": "dropout"},
+                {"type": "LSTM", "input_dim": "rnn_units1", "hidden_dim": "rnn_units2", "name": "lstm2"},
+                {"type": "Dropout", "rate": "dropout"},
+                {"type": "TimeAttention", "hidden_dim": "rnn_units2", "name": "attn_vec"},
+                {"type": "Linear", "input_dim": "rnn_units2", "output_dim": 1, "name": "fc"}
+            ],
+            "output": "next_day_return"
+        },
         "data_cols": [
             "weekofyear_sin","weekofyear_cos","log_ret_lag1",
             "ret_3d","mom_10","ma_200",
@@ -63,8 +79,13 @@ agents_info = {
         "gamma": 0.3,
         "delta_limit": 0.05,
         "seed": 1234,
+        # Loss 함수
+        "loss_fn": "HuberLoss",         # Loss function type (HuberLoss, L1Loss, MSELoss)
         # TechnicalAgent 전용 파라미터
         "fine_tune_epochs": 20,         # Fine-tuning epochs (TechnicalAgent)
+        # 수익률 클리핑
+        "return_clip_min": -0.5,        # 수익률 클리핑 최소값 (-50%)
+        "return_clip_max": 0.5,         # 수익률 클리핑 최대값 (+50%)
         # period_searcher, period_pretrain 제거 → common_params["period"] 사용
         # Explainability 파라미터
         "occlusion_batch_size": 32,     # Occlusion 계산 시 배치 크기
@@ -84,6 +105,22 @@ agents_info = {
     # -----------------------------------------------------------
     "MacroAgent": {
         "description": "거시경제 데이터 기반 시장 분석 모델",
+        # 모델 구조
+        "model_architecture": {
+            "type": "LSTM_Stacked_Dense",
+            "layers": [
+                {"type": "LSTM", "input_dim": "input_dim", "hidden_dim": "hidden_dims[0]", "name": "lstm1"},
+                {"type": "Dropout", "rate": "dropout_rates[0]"},
+                {"type": "LSTM", "input_dim": "hidden_dims[0]", "hidden_dim": "hidden_dims[1]", "name": "lstm2"},
+                {"type": "Dropout", "rate": "dropout_rates[1]"},
+                {"type": "LSTM", "input_dim": "hidden_dims[1]", "hidden_dim": "hidden_dims[2]", "name": "lstm3"},
+                {"type": "Dropout", "rate": "dropout_rates[2]"},
+                {"type": "Linear", "input_dim": "hidden_dims[2]", "output_dim": 32, "name": "fc1", "activation": "ReLU"},
+                {"type": "Linear", "input_dim": 32, "output_dim": "output_dim", "name": "fc2"}
+            ],
+            "output": "next_day_return",
+            "note": "마지막 시점만 사용 (h3[:, -1, :])"
+        },
         # 모델/피처 관련
         # "input_dim": 169,  # 제거: 코드에서 자동 계산
         "hidden_dims": [128, 64, 32],  # LSTM 3층 hidden dimensions
@@ -113,8 +150,9 @@ agents_info = {
         "searcher_buffer_days": 50,     # searcher에서 window + buffer_days (파생변수 계산용 여유분, 최적화 유지)
         # backtest_years, normal_years 제거 → common_params["period"], common_params["period_test"] 사용
         "recent_days": 14,               # 최근 며칠치 데이터 사용
-        "return_clip_min": -0.5,         # 수익률 클리핑 최소값
-        "return_clip_max": 0.5,         # 수익률 클리핑 최대값
+        # 수익률 클리핑
+        "return_clip_min": -0.5,         # 수익률 클리핑 최소값 (-50%)
+        "return_clip_max": 0.5,          # 수익률 클리핑 최대값 (+50%)
         "minmax_scaler_range": (-1, 1), # MinMaxScaler feature_range
     },
 
@@ -123,6 +161,17 @@ agents_info = {
     # -----------------------------------------------------------
     "SentimentalAgent": {
         "description": "투자자 심리 및 뉴스 감성 기반 시장 예측 모델",
+        # 모델 구조
+        "model_architecture": {
+            "type": "SentimentalLSTM",
+            "layers": [
+                {"type": "LSTM", "input_dim": "input_dim", "hidden_dim": "d_model", "num_layers": "num_layers", "name": "lstm"},
+                {"type": "Dropout", "rate": "dropout"},
+                {"type": "Linear", "input_dim": "d_model", "output_dim": 1, "name": "fc"}
+            ],
+            "output": "next_day_return",
+            "note": "SentimentalLSTM 클래스 사용, BaseAgent의 _build_model()에서 생성"
+        },
         # 모델/피처 관련
         "input_dim": 8,
         "d_model": 64,
@@ -146,10 +195,13 @@ agents_info = {
         # 합의/수렴 관련
         "gamma": 0.3,               # 수렴율
         "delta_limit": 0.05,
+        # Loss 함수
+        "loss_fn": "HuberLoss",     # Loss function type (HuberLoss, L1Loss, MSELoss)
         # SentimentalAgent 전용 파라미터
         # run_dataset_days 제거 → common_params["period"] 사용
-        "return_clip_min": -0.5,    # 수익률 클리핑 최소값
-        "return_clip_max": 0.5,     # 수익률 클리핑 최대값
+        # 수익률 클리핑
+        "return_clip_min": -0.5,        # 수익률 클리핑 최소값 (-50%)
+        "return_clip_max": 0.5,         # 수익률 클리핑 최대값 (+50%)
     },
 }
 

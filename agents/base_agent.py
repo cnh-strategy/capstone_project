@@ -105,7 +105,9 @@ class BaseAgent:
         self.data_dir = data_dir
         self.model_dir = model_dir
         self.ticker = ticker
-        self.scaler = DataScaler(agent_id)
+        # DataScaler에 model_dir 전달 (scaler_dir은 model_dir/scalers)
+        scaler_dir = os.path.join(model_dir, "scalers")
+        self.scaler = DataScaler(agent_id, scaler_dir=scaler_dir)
         self.window_size = agents_info[agent_id]["window_size"]
         # 모델 폴백 우선순위 (config에서 가져오기)
         self.preferred_models = preferred_models or common_params.get("preferred_models", ["gpt-5-mini", "gpt-4.1-mini"])
@@ -792,6 +794,9 @@ class BaseAgent:
             if self.model is None and hasattr(self, "forward"):
                 self.model = self
 
+            # model_loaded 플래그 설정
+            self.model_loaded = True
+
             return True
 
         except Exception as e:
@@ -845,10 +850,21 @@ class BaseAgent:
         model.train()
 
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        # Huber Loss 사용 - 이상치에 덜 민감하고 더 안정적인 학습
-        # config에서 delta 값 가져오기
-        huber_delta = common_params.get("huber_loss_delta", 1.0)
-        loss_fn = torch.nn.HuberLoss(delta=huber_delta)
+        
+        # Loss 함수: config에서 가져오기
+        cfg = agents_info.get(self.agent_id, {})
+        loss_fn_name = cfg.get("loss_fn", "HuberLoss")
+        if loss_fn_name == "HuberLoss":
+            huber_delta = common_params.get("huber_loss_delta", 1.0)
+            loss_fn = torch.nn.HuberLoss(delta=huber_delta)
+        elif loss_fn_name == "L1Loss":
+            loss_fn = torch.nn.L1Loss()
+        elif loss_fn_name == "MSELoss":
+            loss_fn = torch.nn.MSELoss()
+        else:
+            print(f"[WARN] 알 수 없는 loss_fn: {loss_fn_name}, HuberLoss 사용")
+            huber_delta = common_params.get("huber_loss_delta", 1.0)
+            loss_fn = torch.nn.HuberLoss(delta=huber_delta)
         train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
 
         # --------------------------
@@ -1034,9 +1050,12 @@ class BaseAgent:
 
 class DataScaler:
     """학습/추론용 정규화 유틸리티 (BaseAgent 내부용)"""
-    def __init__(self, agent_id):
+    def __init__(self, agent_id, scaler_dir: Optional[str] = None):
         self.agent_id = agent_id
-        self.save_dir = dir_info["scaler_dir"]
+        # scaler_dir이 제공되면 사용, 없으면 기본값 (dir_info 사용)
+        if scaler_dir is None:
+            scaler_dir = dir_info.get("scaler_dir", os.path.join(dir_info["model_dir"], "scalers"))
+        self.save_dir = scaler_dir
         self.x_scaler = agents_info[self.agent_id]["x_scaler"]
         self.y_scaler = agents_info[self.agent_id]["y_scaler"]
 

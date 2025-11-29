@@ -12,6 +12,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import yfinance as yf
+from torch.utils.data import DataLoader, TensorDataset
 
 # BaseAgent
 from agents.base_agent import BaseAgent, StockData, Target, Opinion, Rebuttal
@@ -29,10 +30,7 @@ from core.data_set import load_dataset, build_dataset
 # 프롬프트
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 
-from config.agents import agents_info, dir_info
-
-# config
-from config.agents import agents_info, dir_info
+from config.agents import agents_info, dir_info, common_params
 
 CFG_S = agents_info["SentimentalAgent"]
 
@@ -57,8 +55,16 @@ DROPOUT = CFG_S["dropout"]
 
 class SentimentalAgent(BaseAgent):
 
-    def __init__(self, ticker, agent_id="SentimentalAgent", **kwargs):
+    def __init__(self, ticker, agent_id="SentimentalAgent", news_dir=None, **kwargs):
         super().__init__(ticker=ticker, agent_id=agent_id, **kwargs)
+        
+        # news_dir 설정 (없으면 기본값: data_dir의 부모/raw/news)
+        if news_dir is None:
+            # data_dir이 "backtest/data/processed"면 "backtest/data/raw/news"
+            # data_dir이 "data/processed"면 "data/raw/news"
+            base_dir = os.path.dirname(self.data_dir)  # "backtest/data" or "data"
+            news_dir = os.path.join(base_dir, "raw", "news")
+        self.news_dir = news_dir
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -90,11 +96,182 @@ class SentimentalAgent(BaseAgent):
     # PRETRAIN
     # -------------------------------------------------------
     def pretrain(self):
-        print(f"[SentimentalAgent] Building pretrain dataset with news for {self.ticker}...")
-        build_pretrain_dataset(self.ticker)
-
-        print(f"[SentimentalAgent] Pretraining LSTM for {self.ticker}...")
-        super().pretrain()
+        """SentimentalAgent 사전학습 루틴 - data/raw CSV에서 직접 로드하여 scaling/window 처리"""
+        epochs = agents_info[self.agent_id]["epochs"]
+        lr = agents_info[self.agent_id]["learning_rate"]
+        batch_size = agents_info[self.agent_id]["batch_size"]
+        
+        if not self.ticker:
+            raise ValueError("SentimentalAgent.pretrain: ticker가 설정되지 않았습니다.")
+        
+        ticker = self.ticker
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
+        
+        # 1) data/raw CSV 로드 (백테스팅 모드면 필터링된 임시 파일 우선 사용)
+        raw_dir = os.path.join(os.path.dirname(self.data_dir), "raw")
+        raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
+        
+        # 백테스팅 모드: 필터링된 임시 데이터셋 우선 사용
+        if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
+            temp_dir = os.path.join(raw_dir, "backtest_temp")
+            date_str = self.simulation_date.replace("-", "")
+            temp_path = os.path.join(temp_dir, f"{ticker}_{self.agent_id}_raw_{date_str}.csv")
+            if os.path.exists(temp_path):
+                raw_csv_path = temp_path
+                print(f"[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 ({self.simulation_date} 이전)")
+        
+        if not os.path.exists(raw_csv_path):
+            print(f"[{self.agent_id}] Raw CSV 파일이 없어 searcher() 실행 중...")
+            _ = self.searcher(ticker, rebuild=True)
+            raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
+            if not os.path.exists(raw_csv_path):
+                raise FileNotFoundError(f"Raw CSV not found after searcher: {raw_csv_path}")
+        
+        # raw CSV 읽기 (Date 첫 컬럼, Close 마지막 컬럼)
+        df_raw = pd.read_csv(raw_csv_path)
+        df_raw["Date"] = pd.to_datetime(df_raw["Date"])
+        df_raw = df_raw.sort_values("Date").reset_index(drop=True)
+        
+        # 2) 피처 컬럼 추출 (Date, Close 제외)
+        feature_cols = list(FEATURE_COLS)
+        X_all = df_raw[feature_cols].values.astype(np.float32)
+        
+        # 3) 타겟 생성 (다음날 수익률)
+        close_prices = df_raw["Close"].values
+        y_all = (close_prices[1:] / close_prices[:-1] - 1.0).reshape(-1, 1).astype(np.float32)
+        X_all = X_all[:-1]  # 마지막 행 제외 (타겟이 없음)
+        
+        # 백테스팅 모드: 데이터 누수 방지 - sim_date 당일 수익률이 타겟에 포함되지 않도록
+        # 마지막 타겟 제거 (sim_date-1 → sim_date 수익률이므로)
+        if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
+            if len(y_all) > 0:
+                # 마지막 타겟 제거 (sim_date 당일 수익률)
+                y_all = y_all[:-1]
+                X_all = X_all[:-1]
+                print(f"[INFO] 백테스팅 모드: {self.simulation_date} 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)")
+            else:
+                print(f"[INFO] 백테스팅 모드: {self.simulation_date} 이전 데이터 사용 중 (타겟 없음)")
+        
+        # 4) Window 처리 (시퀀스 생성)
+        window_size = self.window_size
+        if len(X_all) < window_size:
+            raise ValueError(f"데이터 길이({len(X_all)}) < 윈도우 크기({window_size})")
+        
+        def _create_sequences(X, y, win: int):
+            Xs, ys = [], []
+            for i in range(len(X) - win):
+                Xs.append(X[i : i + win])
+                ys.append(y[i + win])
+            return np.array(Xs), np.array(ys)
+        
+        X_seq, y_seq = _create_sequences(X_all, y_all, window_size)
+        print(f"[INFO] 시퀀스 생성 완료: {X_seq.shape}, {y_seq.shape}")
+        
+        # 5) 타깃 스케일 조정
+        y_scale_factor = common_params.get("y_scale_factor", 100.0)
+        y_seq = y_seq * y_scale_factor
+        
+        # 6) Scaling (BaseAgent의 통합 스케일러 사용)
+        self.scaler.fit_scalers(X_seq, y_seq)
+        self.scaler.save(ticker)
+        
+        X_train, y_train = map(torch.tensor, self.scaler.transform(X_seq, y_seq))
+        X_train, y_train = X_train.float(), y_train.float()
+        
+        # 7) 모델 생성 및 초기화
+        if getattr(self, "model", None) is None:
+            input_dim = X_seq.shape[-1]
+            self.model = SentimentalLSTM(
+                input_dim=input_dim,
+                hidden_dim=self.hidden_dim,
+                num_layers=self.num_layers,
+                dropout=self.dropout,
+            )
+        
+        model = self.model
+        model.train()
+        
+        # 8) 학습 준비
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        
+        # Loss 함수: config에서 가져오기
+        cfg = agents_info.get(self.agent_id, {})
+        loss_fn_name = cfg.get("loss_fn", "HuberLoss")
+        if loss_fn_name == "HuberLoss":
+            huber_delta = common_params.get("huber_loss_delta", 1.0)
+            loss_fn = torch.nn.HuberLoss(delta=huber_delta)
+        elif loss_fn_name == "L1Loss":
+            loss_fn = torch.nn.L1Loss()
+        elif loss_fn_name == "MSELoss":
+            loss_fn = torch.nn.MSELoss()
+        else:
+            print(f"[WARN] 알 수 없는 loss_fn: {loss_fn_name}, HuberLoss 사용")
+            huber_delta = common_params.get("huber_loss_delta", 1.0)
+            loss_fn = torch.nn.HuberLoss(delta=huber_delta)
+        
+        train_loader = DataLoader(TensorDataset(X_train, y_train.view(-1, 1)),
+                                  batch_size=batch_size, shuffle=True)
+        
+        # 9) 학습 루프
+        # 에포크 출력 주기 (config에서 가져오기)
+        log_interval = common_params.get("pretrain_log_interval", 5)
+        
+        final_loss = None
+        for epoch in range(epochs):
+            total_loss = 0.0
+            for Xb, yb in train_loader:
+                y_pred = model(Xb)
+                loss = loss_fn(y_pred, yb)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            
+            avg_loss = total_loss / len(train_loader)
+            final_loss = avg_loss
+            
+            if (epoch + 1) % log_interval == 0 or (epoch + 1) == epochs:
+                print(f"  Epoch {epoch+1:03d}/{epochs} | Loss: {avg_loss:.6f}")
+        
+        # 10) 모델 저장
+        os.makedirs(self.model_dir, exist_ok=True)
+        model_path = os.path.join(self.model_dir, f"{ticker}_{self.agent_id}.pt")
+        torch.save({"model_state_dict": model.state_dict()}, model_path)
+        
+        # model_loaded 플래그 설정
+        self.model_loaded = True
+        
+        # 완료 메시지 출력
+        final_loss_str = f" (Final Loss: {final_loss:.6f})" if final_loss is not None else ""
+        print(f"✅ {self.agent_id} 모델 학습 및 저장 완료: {model_path}{final_loss_str}")
+        
+        # 11) 전처리된 데이터 저장 (config에서 설정)
+        if common_params.get("pretrain_save_dataset", True):
+            dataset_path = os.path.join(self.data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
+            flattened_data = []
+            dates_list = df_raw["Date"].values[:-1]  # 마지막 제외
+            
+            # 스케일된 데이터는 X_train, y_train에서 가져오기
+            X_scaled_np = X_train.cpu().numpy()
+            y_scaled_np = y_train.cpu().numpy()
+            
+            for sample_idx in range(len(X_seq)):
+                for time_idx in range(window_size):
+                    date_idx = sample_idx + time_idx
+                    row = {
+                        'sample_id': sample_idx,
+                        'time_step': time_idx,
+                        'date': str(dates_list[date_idx]) if date_idx < len(dates_list) else None,
+                        'target': float(y_scaled_np[sample_idx]) if time_idx == window_size - 1 else np.nan,
+                    }
+                    for feat_idx, feat_name in enumerate(feature_cols):
+                        row[feat_name] = float(X_scaled_np[sample_idx, time_idx, feat_idx])
+                    flattened_data.append(row)
+            
+            dataset_df = pd.DataFrame(flattened_data)
+            os.makedirs(self.data_dir, exist_ok=True)
+            dataset_df.to_csv(dataset_path, index=False)
+            print(f"✅ 전처리된 데이터 저장 완료: {dataset_path}")
 
     # -------------------------------------------------------
     # _BUILD_MODEL
@@ -188,7 +365,7 @@ class SentimentalAgent(BaseAgent):
             df_price=df_price,
             ticker=self.ticker,
             asof_kst=end.date(),
-            base_dir=os.path.join("data", "raw", "news"),
+            base_dir=self.news_dir,
         )
         if isinstance(df_merged, tuple):
             df_feat = df_merged[0]
@@ -198,38 +375,22 @@ class SentimentalAgent(BaseAgent):
         df_feat = df_feat.sort_values("date").reset_index(drop=True)
 
         # ---------------------------------------
-        # FEATURE_COLS 자동 보정
+        # FEATURE_COLS 검증 (merge_price_with_news_features에서 이미 생성됨)
         # ---------------------------------------
         required = list(FEATURE_COLS)
-        print("[SentimentalAgent.run_dataset] missing(before):",
-              [c for c in required if c not in df_feat.columns])
-
-        # return_1d
-        if "return_1d" not in df_feat.columns:
-            df_feat["return_1d"] = df_feat["close"].pct_change().fillna(0)
-
-        # hl_range
-        if "hl_range" not in df_feat.columns:
-            df_feat["hl_range"] = ((df_feat["high"] - df_feat["low"]) /
-                                   df_feat["close"].replace(0, np.nan)).fillna(0)
-
-        # Volume (대문자)
-        if "Volume" not in df_feat.columns:
-            df_feat["Volume"] = df_feat["volume"].fillna(0)
-
-        # 뉴스 1일 feature (없으면 0)
+        missing = [c for c in required if c not in df_feat.columns]
+        
+        # 뉴스 피처가 없는 경우 기본값 설정
         for col in ["news_count_1d", "sentiment_mean_1d"]:
             if col not in df_feat.columns:
                 df_feat[col] = 0.0
-
-        # 마지막 검증
+        
+        # 최종 검증
         missing_after = [c for c in required if c not in df_feat.columns]
         if missing_after:
             raise ValueError(
                 f"[SentimentalAgent.run_dataset] FEATURE_COLS 부족: {missing_after}"
             )
-
-        print("[SentimentalAgent.run_dataset] all FEATURE_COLS present.")
 
         # ---------------------------------------
         # 입력 행렬 생성
@@ -283,15 +444,26 @@ class SentimentalAgent(BaseAgent):
         return sd
 
     # -------------------------------------------------------
-    # searcher (DebateAgent에서 호출) :
-    #   - 여기서는 run_dataset() 기반으로 최신 가격/뉴스 사용
+    # 내부 헬퍼: _ensure_sentimental_csv
+    #   - CSV 기반 캐싱 패턴 통일을 위한 데이터 수집 메서드
     # -------------------------------------------------------
-    def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
-        if ticker and ticker != self.ticker:
-            self.ticker = str(ticker).upper()
-
+    def _ensure_sentimental_csv(self, ticker: str, rebuild: bool = False) -> None:
+        """
+        SentimentalAgent 전용 CSV 생성 메서드
+        - 주가 데이터 + 뉴스 데이터 수집 및 병합
+        - CSV 저장 (Date 첫 컬럼, Close 마지막 컬럼)
+        """
+        raw_csv_path = os.path.join(os.path.dirname(self.data_dir), "raw", f"{ticker}_{self.agent_id}_raw.csv")
+        
+        if not rebuild and os.path.exists(raw_csv_path):
+            return
+        
+        if not os.path.exists(raw_csv_path):
+            print(f"[{self.agent_id}] Raw CSV 파일이 없어 생성 중...")
+        else:
+            print(f"[{self.agent_id}] Rebuild 요청됨. Raw CSV 재생성 중...")
+        
         # common_params에서 period 가져오기
-        from config.agents import common_params
         period_str = common_params.get("period", "2y")
         # period 문자열을 일수로 변환
         if period_str.endswith("y"):
@@ -304,12 +476,246 @@ class SentimentalAgent(BaseAgent):
             days = int(period_str[:-1])
         else:
             days = 2 * 365  # 기본값
-        sd = self.run_dataset(days=days)
-        self.stockdata = sd
+        
+        # 1) 날짜 범위
+        end = pd.Timestamp.today().normalize()
+        start = end - pd.Timedelta(days=days)
 
-        X_last = sd.X_seq  # (1, T, F)
-        X_tensor = torch.tensor(X_last, dtype=torch.float32)
-        return X_tensor
+        # 2) 가격 데이터 (yfinance)
+        df_price = yf.download(ticker, start=start, end=end)
+        if isinstance(df_price.columns, pd.MultiIndex):
+            df_price.columns = [c[0].lower() for c in df_price.columns]
+        else:
+            df_price.columns = [c.lower() for c in df_price.columns]
+
+        df_price = df_price.rename(columns={
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "volume": "volume",
+        })
+
+        df_price["date"] = df_price.index
+        df_price = df_price.reset_index(drop=True)
+
+        # 3) 뉴스 + 가격 병합
+        from core.sentimental_classes.news import update_news_db
+        
+        # df_price의 시작 날짜를 확인하여 뉴스 수집 기간에 반영
+        if not df_price.empty:
+            if 'date' in df_price.columns:
+                price_start_date = pd.to_datetime(df_price['date']).min()
+            else:
+                price_start_date = df_price.index.min()
+        else:
+            price_start_date = None
+
+        # 뉴스 DB 가져오기 (없으면 생성)
+        df_news = update_news_db(ticker, base_dir=self.news_dir, target_start_date=price_start_date)
+        
+        if df_news.empty:
+            print(f"[WARN] {ticker} 뉴스 데이터가 없습니다. 감성 피처를 0으로 채웁니다.")
+            df_merged = df_price.copy()
+            df_merged["news_count_7d"] = 0
+            df_merged["sentiment_mean_7d"] = 0.0
+            df_merged["sentiment_vol_7d"] = 0.0
+            df_merged["news_count_1d"] = 0
+            df_merged["sentiment_mean_1d"] = 0.0
+        else:
+            # 일별 집계
+            daily_stats = df_news.groupby('date').agg(
+                count=('sentiment_score', 'count'),
+                mean=('sentiment_score', 'mean')
+            )
+            
+            # 날짜 인덱스 채우기 (뉴스가 없는 날은 0)
+            idx = pd.date_range(daily_stats.index.min(), daily_stats.index.max())
+            daily_stats = daily_stats.reindex(idx, fill_value=0)
+            daily_stats.index.name = 'date'
+            
+            daily_stats['news_count_1d'] = daily_stats['count']
+            daily_stats['sentiment_mean_1d'] = daily_stats['mean']
+            
+            # Rolling 7d
+            daily_stats['news_count_7d'] = daily_stats['count'].rolling(7).sum().fillna(0)
+            daily_stats['sentiment_mean_7d'] = daily_stats['mean'].rolling(7).mean().fillna(0)
+            daily_stats['sentiment_vol_7d'] = daily_stats['mean'].rolling(7).std().fillna(0)
+            
+            daily_stats = daily_stats.reset_index()  # date 컬럼 복원
+            
+            # 주가 데이터와 병합
+            df_price_copy = df_price.copy()
+            if 'date' not in df_price_copy.columns:
+                df_price_copy['date'] = df_price_copy.index
+            
+            # df_price의 date는 datetime일 수도 있고 string일 수도 있음. 통일 및 TZ 제거
+            df_price_copy['date'] = pd.to_datetime(df_price_copy['date'])
+            if df_price_copy['date'].dt.tz is not None:
+                df_price_copy['date'] = df_price_copy['date'].dt.tz_localize(None)
+                
+            # daily_stats의 date도 TZ 제거
+            if daily_stats['date'].dt.tz is not None:
+                daily_stats['date'] = daily_stats['date'].dt.tz_localize(None)
+            
+            # Left Join
+            df_merged = pd.merge(df_price_copy, daily_stats, on='date', how='left')
+            
+            # 결측치 처리 (뉴스가 없었던 날)
+            fill_cols = ['news_count_1d', 'sentiment_mean_1d', 'news_count_7d', 'sentiment_mean_7d', 'sentiment_vol_7d']
+            for col in fill_cols:
+                if col in df_merged.columns:
+                    df_merged[col] = df_merged[col].fillna(0)
+
+        df_feat = df_merged.sort_values("date").reset_index(drop=True)
+
+        # 4) FEATURE_COLS 자동 보정
+        required = list(FEATURE_COLS)
+        print("[SentimentalAgent._ensure_sentimental_csv] missing(before):",
+              [c for c in required if c not in df_feat.columns])
+
+        # return_1d
+        if "return_1d" not in df_feat.columns:
+            df_feat["return_1d"] = df_feat["close"].pct_change().fillna(0)
+
+        # hl_range
+        if "hl_range" not in df_feat.columns:
+            df_feat["hl_range"] = ((df_feat["high"] - df_feat["low"]) /
+                                   df_feat["close"].replace(0, np.nan)).fillna(0)
+
+        # Volume (대문자)
+        if "Volume" not in df_feat.columns:
+            df_feat["Volume"] = df_feat["volume"].fillna(0)
+
+        # 뉴스 1일 feature (없으면 0)
+        for col in ["news_count_1d", "sentiment_mean_1d"]:
+            if col not in df_feat.columns:
+                df_feat[col] = 0.0
+
+        # 마지막 검증
+        missing_after = [c for c in required if c not in df_feat.columns]
+        if missing_after:
+            raise ValueError(
+                f"[SentimentalAgent._ensure_sentimental_csv] FEATURE_COLS 부족: {missing_after}"
+            )
+
+        print("[SentimentalAgent._ensure_sentimental_csv] all FEATURE_COLS present.")
+
+        # 5) Raw CSV 저장 (Date 첫 컬럼, Close 마지막 컬럼)
+        try:
+            os.makedirs(os.path.dirname(raw_csv_path), exist_ok=True)
+            df_raw = df_feat.copy()
+            if "date" in df_raw.columns:
+                df_raw = df_raw.rename(columns={"date": "Date"})
+            if "close" in df_raw.columns:
+                df_raw = df_raw.rename(columns={"close": "Close"})
+
+            # 저장할 피처 구성: Date + FEATURE_COLS + Close
+            cols_to_save = []
+            if "Date" in df_raw.columns:
+                cols_to_save.append("Date")
+
+            # FEATURE_COLS 순서를 유지하면서 존재하는 것만 추가
+            for col in FEATURE_COLS:
+                if col in df_raw.columns and col not in ("Date", "Close"):
+                    cols_to_save.append(col)
+
+            # 마지막에 Close 컬럼 추가
+            if "Close" in df_raw.columns:
+                cols_to_save.append("Close")
+
+            # period에 맞춰 데이터 필터링 (다른 에이전트와 시작일자 통일)
+            df_raw["Date"] = pd.to_datetime(df_raw["Date"])
+            end_date = pd.Timestamp.today().normalize()
+            # period_str을 일수로 변환 (이미 위에서 계산됨)
+            start_date = end - pd.Timedelta(days=days)  # 위에서 계산한 start_date 사용
+            
+            # period 기간에 맞춰 필터링
+            df_raw = df_raw[df_raw["Date"] >= start_date].copy()
+            df_raw = df_raw.sort_values("Date").reset_index(drop=True)
+            df_raw["Date"] = df_raw["Date"].dt.strftime("%Y-%m-%d")
+
+            df_raw[cols_to_save].to_csv(raw_csv_path, index=False)
+            print(f"✅ [{self.agent_id}] Raw CSV 저장 완료: {raw_csv_path} ({len(df_raw):,} rows, period: {period_str})")
+        except Exception as e:
+            print(f"❌ [{self.agent_id}] Raw CSV 저장 실패: {e}")
+
+    # -------------------------------------------------------
+    # searcher (통일된 CSV 기반 캐싱 패턴)
+    # -------------------------------------------------------
+    def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
+        """SentimentalAgent 전용 searcher - CSV 기반 캐싱 패턴 (다른 에이전트와 통일)"""
+        agent_id = self.agent_id
+        ticker = ticker or self.ticker
+        if not ticker:
+            raise ValueError(f"{agent_id}: ticker가 지정되지 않았습니다.")
+        
+        self.ticker = str(ticker).upper()
+        
+        raw_csv_path = os.path.join(os.path.dirname(self.data_dir), "raw", f"{ticker}_{agent_id}_raw.csv")
+        cfg = agents_info.get(agent_id, {})
+        
+        # 1) Raw CSV 보장 (데이터 수집/전처리)
+        self._ensure_sentimental_csv(ticker, rebuild=rebuild)
+        
+        # 2) Raw CSV에서 최신 window_size만큼 직접 추출
+        if not os.path.exists(raw_csv_path):
+            raise FileNotFoundError(f"Raw CSV not found: {raw_csv_path}")
+        
+        df_raw = pd.read_csv(raw_csv_path)
+        df_raw["Date"] = pd.to_datetime(df_raw["Date"])
+        df_raw = df_raw.sort_values("Date").reset_index(drop=True)
+        
+        feature_cols = list(FEATURE_COLS)
+        window_size = cfg.get("window_size", self.window_size)
+        
+        # 피처 추출 (Date, Close 제외)
+        X_all = df_raw[feature_cols].values.astype(np.float32)
+        
+        # 최신 window_size만큼 추출
+        if len(X_all) < window_size:
+            raise ValueError(f"데이터 길이({len(X_all)}) < 윈도우 크기({window_size})")
+        
+        X_latest = X_all[-window_size:].reshape(1, window_size, -1)  # (1, T, F)
+        
+        print(f"✅ [{agent_id}] Searcher 완료: 윈도우 shape {X_latest.shape}")
+        
+        # StockData 구성
+        self.stockdata = StockData(ticker=ticker)
+        self.stockdata.feature_cols = feature_cols
+        self.stockdata.window_size = window_size
+        
+        # last_price (CSV의 마지막 Close 값 사용)
+        try:
+            self.stockdata.last_price = float(df_raw["Close"].iloc[-1])
+        except Exception:
+            self.stockdata.last_price = None
+
+        # 통화코드
+        try:
+            self.stockdata.currency = yf.Ticker(ticker).info.get("currency", "USD")
+        except Exception:
+            self.stockdata.currency = "USD"
+
+        # X_seq 설정 (predict()에서 필요)
+        self.stockdata.X_seq = X_latest  # (1, T, F) 형태
+        
+        # feature_dict (마지막 윈도우)
+        df_latest = pd.DataFrame(X_latest[0], columns=feature_cols)
+        feature_dict = {col: df_latest[col].tolist() for col in df_latest.columns}
+        setattr(self.stockdata, agent_id, feature_dict)
+        
+        # 뉴스 피처 정보 저장 (선택적)
+        if len(df_raw) > 0:
+            last_row = df_raw.iloc[-1]
+            self.stockdata.news_feats = {
+                "news_count_7d": float(last_row.get("news_count_7d", 0)),
+                "sentiment_mean_7d": float(last_row.get("sentiment_mean_7d", 0)),
+                "sentiment_vol_7d": float(last_row.get("sentiment_vol_7d", 0)),
+            }
+            self.stockdata.raw_df = df_raw
+
+        return torch.tensor(X_latest, dtype=torch.float32)
 
     # -------------------------------------------------------
     # predict
@@ -330,13 +736,20 @@ class SentimentalAgent(BaseAgent):
             n_samples = common_params.get("n_samples", 30)
         
         # -----------------------------
-        # 0) 입력 정리 (StockData 래핑)
+        # 0) 입력 정리 (StockData 래핑) - 통일된 처리
         # -----------------------------
         if isinstance(X, StockData):
             sd = X
             X_in = getattr(sd, "X_seq", None)
             if X_in is None:
-                raise ValueError("StockData에 X_seq가 없습니다. run_dataset()을 먼저 호출하세요.")
+                # StockData에 X_seq가 없으면 agent_id로 찾기 (다른 에이전트와 통일)
+                X_in = getattr(sd, self.agent_id, None)
+                if isinstance(X_in, dict):
+                    # dict 형태면 DataFrame으로 변환
+                    df = pd.DataFrame(X_in)
+                    X_in = df.values
+            if X_in is None:
+                raise ValueError(f"StockData에 {self.agent_id} 데이터가 없습니다. searcher()를 먼저 호출하세요.")
             if current_price is None and getattr(sd, "last_price", None) is not None:
                 current_price = float(sd.last_price)
         else:
@@ -354,39 +767,33 @@ class SentimentalAgent(BaseAgent):
         else:
             raise TypeError(f"Unsupported input type for predict: {type(X_in)}")
 
-        # run_dataset() 기준: X_seq.shape == (1, T, F)
-        if X_raw_np.ndim == 3 and X_raw_np.shape[0] == 1:
-            X_seq_np = X_raw_np[0]        # (T, F)
-        elif X_raw_np.ndim == 2:
-            X_seq_np = X_raw_np           # (T, F)
+        # -----------------------------
+        # 1) 모델 준비 (BaseAgent.load_model() 사용)
+        # -----------------------------
+        if not self.ticker:
+            raise ValueError("ticker가 설정되지 않았습니다. 먼저 searcher(ticker)를 호출하세요.")
+        
+        # 모델 파일 확인
+        model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
+        if not os.path.exists(model_path):
+            print(f"[{self.agent_id}] 모델이 없어 pretrain()을 실행합니다...")
+            self.pretrain()
         else:
-            raise ValueError(f"예상하지 못한 입력 shape: {X_raw_np.shape}, (T,F) 또는 (1,T,F)만 지원합니다.")
-
-        # -----------------------------
-        # 1) 모델 준비 (load_model()에 의존하지 않음)
-        # -----------------------------
+            # 모델이 있으면 로드 (이미 로드되었는지 확인)
+            if not hasattr(self, "model_loaded") or not self.model_loaded:
+                # 모델이 없으면 생성
+                if getattr(self, "model", None) is None:
+                    self.model = SentimentalLSTM(
+                        input_dim=len(FEATURE_COLS),
+                        hidden_dim=self.hidden_dim,
+                        num_layers=self.num_layers,
+                        dropout=self.dropout,
+                    )
+                self.load_model(model_path)
+        
         model = getattr(self, "model", None)
         if model is None:
-            # __init__에서 hidden_dim, num_layers, dropout 세팅해둔 상태라고 가정
-            self.model = SentimentalLSTM(
-                input_dim=len(FEATURE_COLS),
-                hidden_dim=self.hidden_dim,
-                num_layers=self.num_layers,
-                dropout=self.dropout,
-            )
-            model = self.model
-
-        # state_dict 직접 로드
-        model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
-        if os.path.exists(model_path) and not getattr(self, "model_loaded", False):
-            try:
-                ckpt = torch.load(model_path, map_location="cpu")
-                state_dict = ckpt.get("model_state_dict", ckpt)
-                model.load_state_dict(state_dict, strict=False)
-                self.model_loaded = True
-                print(f" SentimentalAgent 모델(state_dict) 로드 완료 ({model_path})")
-            except Exception as e:
-                print(f"[SentimentalAgent] 모델 state_dict 로드 실패(무시하고 진행): {e}")
+            raise RuntimeError(f"{self.agent_id} 모델이 초기화되지 않음")
 
         # -----------------------------
         # 1-1) 스케일러 로드
@@ -396,14 +803,17 @@ class SentimentalAgent(BaseAgent):
         self.scaler.load(self.ticker)
 
         # -----------------------------
-        # 2) 입력 스케일링
+        # 2) 입력 형태 정규화 및 스케일링 (통일된 처리)
         # -----------------------------
-        X_scaled, _ = self.scaler.transform(X_seq_np)     # (T, F)
+        # (T, F) → (1, T, F)로 정규화 (스케일링 전에 차원 통일)
+        if X_raw_np.ndim == 2:
+            X_raw_np = X_raw_np[None, :, :]  # (T, F) → (1, T, F)
+        elif X_raw_np.ndim == 3 and X_raw_np.shape[0] != 1:
+            raise ValueError(f"예상하지 못한 배치 크기: {X_raw_np.shape[0]}, (1, T, F) 형태만 지원합니다.")
+        
+        # (1, T, F) 형태로 스케일링
+        X_scaled, _ = self.scaler.transform(X_raw_np)
         X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
-
-        # [T, F] → [1, T, F]
-        if X_tensor.dim() == 2:
-            X_tensor = X_tensor.unsqueeze(0)
 
         device = getattr(self, "device", torch.device("cpu"))
         X_tensor = X_tensor.to(device)
@@ -446,10 +856,11 @@ class SentimentalAgent(BaseAgent):
         y_scale_factor = common_params.get("y_scale_factor", 100.0)
         predicted_return = float(mean_pred[-1]) / y_scale_factor  # 3.5 → 0.035
         
-        # 수익률이 비정상적으로 큰 경우 클리핑 (config에서 범위 가져오기)
+        # 수익률 클리핑 (agents_info에서 가져오기)
         cfg = agents_info.get(self.agent_id, {})
         return_clip_min = cfg.get("return_clip_min", -0.5)
         return_clip_max = cfg.get("return_clip_max", 0.5)
+        predicted_return_raw = predicted_return
         predicted_return = np.clip(predicted_return, return_clip_min, return_clip_max)
 
         # current_price 추론
@@ -470,6 +881,10 @@ class SentimentalAgent(BaseAgent):
             uncertainty=sigma,
             confidence=confidence,
         )
+        
+        # 통일된 예측 결과 로그 출력 (불필요한 로그 제거)
+        # clipped_info = f" (클리핑: {predicted_return_raw:.4f} → {predicted_return:.4f})" if predicted_return_raw != predicted_return else ""
+        # print(f"[{self.agent_id}] Predict 완료: next_close={predicted_price:.2f}, return={predicted_return*100:.2f}%{clipped_info}, uncertainty={sigma:.4f}, confidence={confidence:.4f}")
 
         if hasattr(self, "targets"):
             self.targets.append(target)
@@ -489,8 +904,7 @@ class SentimentalAgent(BaseAgent):
         sd = getattr(self, "stockdata", None)
         if sd is None or getattr(sd, "X_seq", None) is None:
             cfg = agents_info.get(self.agent_id, {})
-            # common_params에서 period 가져오기
-            from config.agents import common_params
+            # common_params에서 period 가져오기 (파일 상단에서 이미 import됨)
             period_str = common_params.get("period", "2y")
             # period 문자열을 일수로 변환
             if period_str.endswith("y"):
@@ -505,7 +919,7 @@ class SentimentalAgent(BaseAgent):
                 days = 2 * 365  # 기본값
             sd = self.run_dataset(days=days)
 
-        # config에서 n_samples 가져오기
+        # config에서 n_samples 가져오기 (파일 상단에서 이미 import됨)
         n_samples = common_params.get("n_samples", 30)
         target = self.predict(sd, n_samples=n_samples)
         cols = list(getattr(sd, "feature_cols", self.feature_cols))
@@ -647,7 +1061,7 @@ class SentimentalAgent(BaseAgent):
         # [New] 최근 뉴스 헤드라인 조회 및 추가 (XAI용)
         news_summary = []
         try:
-            db_path = os.path.join("data/raw/news", f"{self.ticker}_news_db.csv")
+            db_path = os.path.join(self.news_dir, f"{self.ticker}_news_db.csv")
             if os.path.exists(db_path):
                 df_news = pd.read_csv(db_path)
                 df_news['date'] = pd.to_datetime(df_news['date'])

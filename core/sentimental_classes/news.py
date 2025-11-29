@@ -16,21 +16,61 @@ def get_pipeline():
         # GPU 사용 가능 시 device=0
         device = 0 if torch.cuda.is_available() else -1
         print(f"[SentimentalAgent] Loading FinBERT pipeline on device {device}...")
-        _sentiment_pipeline = pipeline(
-            "text-classification",
-            model="ProsusAI/finbert",
-            return_all_scores=True,
-            device=device,
-            tokenizer="ProsusAI/finbert", # 토크나이저 명시
-            framework="pt" # PyTorch 프레임워크 명시
-        )
+        
+        # FP16 지원 여부 확인 및 적용
+        use_fp16 = False
+        if torch.cuda.is_available():
+            # CUDA가 있으면 FP16 시도 (대부분의 GPU에서 지원)
+            use_fp16 = True
+            print(f"[SentimentalAgent] Attempting to use FP16 (Mixed Precision) for faster inference")
+        
+        # FP16으로 pipeline 생성 시도, 실패 시 FP32로 폴백
+        model_kwargs = {"torch_dtype": torch.float16} if use_fp16 else {}
+        try:
+            _sentiment_pipeline = pipeline(
+                "text-classification",
+                model="ProsusAI/finbert",
+                return_all_scores=True,
+                device=device,
+                tokenizer="ProsusAI/finbert", # 토크나이저 명시
+                framework="pt", # PyTorch 프레임워크 명시
+                model_kwargs=model_kwargs
+            )
+            if use_fp16:
+                print(f"[SentimentalAgent] FP16 pipeline created successfully")
+        except Exception as e:
+            if use_fp16:
+                print(f"[WARN] FP16 pipeline creation failed: {e}")
+                print(f"[SentimentalAgent] Falling back to FP32...")
+                _sentiment_pipeline = pipeline(
+                    "text-classification",
+                    model="ProsusAI/finbert",
+                    return_all_scores=True,
+                    device=device,
+                    tokenizer="ProsusAI/finbert",
+                    framework="pt"
+                )
+            else:
+                raise
+        
+        # 모델 컴파일 (PyTorch 2.0+)
+        if hasattr(torch, 'compile') and torch.cuda.is_available():
+            try:
+                print(f"[SentimentalAgent] Compiling model with torch.compile for faster inference...")
+                _sentiment_pipeline.model = torch.compile(_sentiment_pipeline.model, mode="reduce-overhead")
+                print(f"[SentimentalAgent] Model compilation completed")
+            except Exception as e:
+                print(f"[WARN] Model compilation failed (continuing without compilation): {e}")
+        
     return _sentiment_pipeline
 
 def analyze_sentiment(titles):
     """뉴스 제목 리스트에 대해 감성 점수 계산 (Batch)"""
     pipe = get_pipeline()
     # 배치 크기 설정 (GPU 메모리에 따라 조절)
-    results = pipe(titles, batch_size=32, truncation=True, max_length=64)
+    # GPU 환경에서는 더 큰 배치 크기로 처리 속도 향상
+    batch_size = 128 if torch.cuda.is_available() else 32
+    results = pipe(titles, batch_size=batch_size, truncation=True, max_length=64)
     
     scores = []
     labels = []
@@ -260,5 +300,16 @@ def merge_price_with_news_features(
     for col in fill_cols:
         if col in df_merged.columns:
             df_merged[col] = df_merged[col].fillna(0)
+    
+    # 파생 피처 생성 (FEATURE_COLS에 필요한 것들)
+    if "return_1d" not in df_merged.columns and "close" in df_merged.columns:
+        df_merged["return_1d"] = df_merged["close"].pct_change().fillna(0)
+    
+    if "hl_range" not in df_merged.columns and all(c in df_merged.columns for c in ["high", "low", "close"]):
+        df_merged["hl_range"] = ((df_merged["high"] - df_merged["low"]) / 
+                                  df_merged["close"].replace(0, np.nan)).fillna(0)
+    
+    if "Volume" not in df_merged.columns and "volume" in df_merged.columns:
+        df_merged["Volume"] = df_merged["volume"].fillna(0)
             
     return df_merged

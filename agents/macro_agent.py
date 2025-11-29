@@ -44,8 +44,7 @@ _stock_features = ["ret1", "ma5", "ma10"]
 # 모든 피처 리스트 합치기 및 정렬
 FINAL_FEATURES = sorted(_macro_base_features + _macro_derived_features + _stock_features)
 
-model_dir: str = dir_info["model_dir"]
-data_dir: str = dir_info["data_dir"]
+# 모듈 레벨 변수 제거 (인스턴스 변수 사용)
 
 
 class MacroAgent(BaseAgent, nn.Module):
@@ -55,14 +54,17 @@ class MacroAgent(BaseAgent, nn.Module):
                  ticker=None,
                  agent_id='MacroAgent',
                  data_dir=None,
+                 model_dir=None,
                  **kwargs):
         # 1) nn.Module 먼저 초기화
         nn.Module.__init__(self)
 
-        # 2) BaseAgent 초기화
+        # 2) BaseAgent 초기화 (model_dir도 전달)
         if data_dir is None:
-            data_dir = dir_info.get("data_dir", "data")
-        BaseAgent.__init__(self, agent_id=agent_id, ticker=ticker, data_dir=data_dir, **kwargs)
+            data_dir = dir_info.get("data_dir", "data/processed")
+        if model_dir is None:
+            model_dir = dir_info.get("model_dir", "models")
+        BaseAgent.__init__(self, agent_id=agent_id, ticker=ticker, data_dir=data_dir, model_dir=model_dir, **kwargs)
 
         # Config에서 하이퍼파라미터 가져오기
         cfg = agents_info.get(agent_id, {})
@@ -75,10 +77,12 @@ class MacroAgent(BaseAgent, nn.Module):
         self.ticker = ticker
 
         # 모델 경로 (ticker가 있으면 설정, 없으면 나중에 searcher에서 설정)
+        # self.model_dir은 BaseAgent.__init__에서 설정됨
         if ticker:
-            self.model_path = os.path.join(model_dir, f"{ticker}_{agent_id}.pt")
-            self.scaler_X_path = os.path.join(model_dir, "scalers", f"{ticker}_{agent_id}_xscaler.pkl")
-            self.scaler_y_path = os.path.join(model_dir, "scalers", f"{ticker}_{agent_id}_yscaler.pkl")
+            self.model_path = os.path.join(self.model_dir, f"{ticker}_{agent_id}.pt")
+            scaler_dir = os.path.join(self.model_dir, "scalers")
+            self.scaler_X_path = os.path.join(scaler_dir, f"{ticker}_{agent_id}_xscaler.pkl")
+            self.scaler_y_path = os.path.join(scaler_dir, f"{ticker}_{agent_id}_yscaler.pkl")
         else:
             self.model_path = None
             self.scaler_X_path = None
@@ -267,12 +271,12 @@ class MacroAgent(BaseAgent, nn.Module):
         - raw CSV는 data/raw에 저장된다.
         - processed CSV는 pretrain에서 생성된다.
         """
-        csv_path = os.path.join(data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
+        csv_path = os.path.join(self.data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
 
         if not rebuild and os.path.exists(csv_path):
             return
 
-        print(f"[INFO] MacroAgent.searcher: {ticker} 매크로 데이터셋 CSV 생성 중...")
+        print(f"[{self.agent_id}] Raw CSV 생성 중...")
 
         # ------------------------------------------------------------------
         # 1) 기간 설정 - config.common_params["period"] 를 사용
@@ -295,7 +299,7 @@ class MacroAgent(BaseAgent, nn.Module):
                 progress=False,
             )
         except Exception as e:
-            print(f"[WARN] MacroAgent.searcher: 매크로 데이터 다운로드 실패: {e}")
+            print(f"[WARN] [{self.agent_id}] 매크로 데이터 다운로드 실패: {e}")
             df_macro = pd.DataFrame()
 
         if isinstance(df_macro.columns, pd.MultiIndex):
@@ -361,7 +365,7 @@ class MacroAgent(BaseAgent, nn.Module):
             df_price = df_price.reset_index()
             df_price["Date"] = pd.to_datetime(df_price["Date"]).dt.strftime("%Y-%m-%d")
         except Exception as e:
-            print(f"[WARN] MacroAgent.searcher: 종가 데이터 다운로드 실패({ticker}): {e}")
+            print(f"[WARN] [{self.agent_id}] 종가 데이터 다운로드 실패({ticker}): {e}")
             df_price = pd.DataFrame(columns=["Date", ticker])
 
         # 주가 기반 파생 피처 (FINAL_FEATURES 의 stock 피처 이름과 일치하도록)
@@ -377,7 +381,7 @@ class MacroAgent(BaseAgent, nn.Module):
         if "Date" in df_macro_feat.columns and "Date" in df_price.columns:
             merged = pd.merge(df_price, df_macro_feat, on="Date", how="inner").sort_values("Date")
         else:
-            print("[WARN] MacroAgent.searcher: 'Date' 컬럼 누락으로 병합 실패")
+            print(f"[WARN] [{self.agent_id}] 'Date' 컬럼 누락으로 병합 실패")
             merged = pd.DataFrame(columns=["Date"])
 
         merged = merged.fillna(method="ffill").fillna(method="bfill").dropna().reset_index(drop=True)
@@ -407,19 +411,41 @@ class MacroAgent(BaseAgent, nn.Module):
             ],
             axis=1,
         )
+        
+        # period에 맞춰 데이터 필터링 (다른 에이전트와 시작일자 통일)
+        out_df["Date"] = pd.to_datetime(out_df["Date"])
+        end_date = pd.Timestamp.today().normalize()
+        # period 문자열을 일수로 변환
+        if period.endswith("y"):
+            years = int(period[:-1])
+            days = years * 365
+        elif period.endswith("m"):
+            months = int(period[:-1])
+            days = months * 30
+        elif period.endswith("d"):
+            days = int(period[:-1])
+        else:
+            days = 2 * 365  # 기본값
+        start_date = end_date - pd.Timedelta(days=days)
+        
+        # period 기간에 맞춰 필터링
+        out_df = out_df[out_df["Date"] >= start_date].copy()
+        out_df = out_df.sort_values("Date").reset_index(drop=True)
+        out_df["Date"] = out_df["Date"].dt.strftime("%Y-%m-%d")
 
         # processed 경로
-        os.makedirs(data_dir, exist_ok=True)
+        os.makedirs(self.data_dir, exist_ok=True)
         out_df.to_csv(csv_path, index=False)
 
         # raw 경로에도 동일 내용 저장 (TechnicalAgent 패턴과 유사)
-        base_root = os.path.dirname(data_dir)  # e.g. "data"
+        base_root = os.path.dirname(self.data_dir)  # e.g. "data" 또는 "backtest/data"
         raw_dir = os.path.join(base_root, "raw")
         os.makedirs(raw_dir, exist_ok=True)
         raw_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
         out_df.to_csv(raw_path, index=False)
-
-        print(f"[INFO] MacroAgent.searcher: 매크로 데이터셋 CSV 저장 완료 -> {csv_path}")
+        
+        # 저장 완료 메시지 (통일된 형식)
+        print(f"✅ [{self.agent_id}] Raw CSV 저장 완료: {raw_path} ({len(out_df):,} rows, period: {period})")
 
     def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
         """
@@ -436,16 +462,24 @@ class MacroAgent(BaseAgent, nn.Module):
         if ticker not in self.tickers:
             self.tickers = [ticker]
 
-        # 모델/스케일러 경로 업데이트
-        self.model_path = os.path.join(model_dir, f"{ticker}_{agent_id}.pt")
-        self.scaler_X_path = os.path.join(model_dir, "scalers", f"{ticker}_{agent_id}_xscaler.pkl")
-        self.scaler_y_path = os.path.join(model_dir, "scalers", f"{ticker}_{agent_id}_yscaler.pkl")
+        # 모델/스케일러 경로 업데이트 (self.model_dir 사용)
+        self.model_path = os.path.join(self.model_dir, f"{ticker}_{agent_id}.pt")
+        scaler_dir = os.path.join(self.model_dir, "scalers")
+        self.scaler_X_path = os.path.join(scaler_dir, f"{ticker}_{agent_id}_xscaler.pkl")
+        self.scaler_y_path = os.path.join(scaler_dir, f"{ticker}_{agent_id}_yscaler.pkl")
 
         # 1) Raw CSV 보장 (데이터 수집/전처리)
-        self._ensure_macro_csv(ticker, rebuild=rebuild)
+        raw_csv_path = os.path.join(os.path.dirname(self.data_dir), "raw", f"{ticker}_{self.agent_id}_raw.csv")
+        need_build = rebuild or (not os.path.exists(raw_csv_path))
+        
+        if need_build:
+            if not os.path.exists(raw_csv_path):
+                print(f"[{agent_id}] Raw CSV 파일이 없어 생성 중...")
+            else:
+                print(f"[{agent_id}] Rebuild 요청됨. Raw CSV 재생성 중...")
+            self._ensure_macro_csv(ticker, rebuild=rebuild)
         
         # 2) Raw CSV에서 최신 window_size만큼 직접 추출
-        raw_csv_path = os.path.join(os.path.dirname(self.data_dir), "raw", f"{ticker}_{self.agent_id}_raw.csv")
         if not os.path.exists(raw_csv_path):
             raise FileNotFoundError(f"Raw CSV not found: {raw_csv_path}")
         
@@ -466,10 +500,14 @@ class MacroAgent(BaseAgent, nn.Module):
         self.X_raw = df_raw[feature_cols]
         X_latest = X_all[-window_size:].reshape(1, window_size, -1)  # (1, T, F)
         
-        print(f"[OK] MacroAgent searcher - 최신 윈도우 준비 완료: {X_latest.shape}")
+        print(f"✅ [{agent_id}] Searcher 완료: 윈도우 shape {X_latest.shape}")
 
-        # StockData 구성
+        # StockData 구성 (통일된 패턴)
         self.stockdata = StockData(ticker=ticker)
+        self.stockdata.feature_cols = feature_cols
+        self.stockdata.window_size = window_size
+        
+        # last_price (CSV의 마지막 Close 값 사용)
         try:
             self.stockdata.last_price = float(df_raw["Close"].iloc[-1])
             self.last_price = self.stockdata.last_price
@@ -485,11 +523,10 @@ class MacroAgent(BaseAgent, nn.Module):
         # feature_dict (마지막 윈도우)
         df_latest = pd.DataFrame(X_latest[0], columns=feature_cols)
         feature_dict = {col: df_latest[col].tolist() for col in df_latest.columns}
-
         setattr(self.stockdata, agent_id, feature_dict)
-        self.stockdata.feature_cols = feature_cols
 
-        return torch.FloatTensor(X_latest).to(self.device)
+        # 통일된 리턴값: CPU tensor (device 이동은 predict에서 처리)
+        return torch.tensor(X_latest, dtype=torch.float32)
 
     def pretrain(self):
         """MacroAgent 사전학습 루틴 - data/raw CSV에서 직접 로드하여 scaling/window 처리"""
@@ -520,7 +557,7 @@ class MacroAgent(BaseAgent, nn.Module):
                 print(f"[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 ({self.simulation_date} 이전)")
         
         if not os.path.exists(raw_csv_path):
-            print(f"⚙️ {ticker} {self.agent_id} raw CSV not found. Running searcher() to generate it...")
+            print(f"[{self.agent_id}] Raw CSV 파일이 없어 searcher() 실행 중...")
             _ = self.searcher(ticker, rebuild=True)
             raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
             if not os.path.exists(raw_csv_path):
@@ -539,6 +576,15 @@ class MacroAgent(BaseAgent, nn.Module):
         close_prices = df_raw["Close"].values
         y_all = (close_prices[1:] / close_prices[:-1] - 1.0).reshape(-1, 1).astype(np.float32)
         X_all = X_all[:-1]  # 마지막 행 제외
+        
+        # 백테스팅 모드: 데이터 누수 방지 - sim_date 당일 수익률이 타겟에 포함되지 않도록
+        # 마지막 타겟 제거 (sim_date-1 → sim_date 수익률이므로)
+        if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
+            if len(y_all) > 0:
+                # 마지막 타겟 제거 (sim_date 당일 수익률)
+                y_all = y_all[:-1]
+                X_all = X_all[:-1]
+                print(f"[INFO] 백테스팅 모드: {self.simulation_date} 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)")
         
         # 4) Window 처리 (시퀀스 생성)
         window_size = self.window
@@ -559,24 +605,18 @@ class MacroAgent(BaseAgent, nn.Module):
             print("[WARN] MacroAgent.pretrain: 학습용 시퀀스가 없습니다.")
             return
 
-        # 5) Scaling
-        scaler_X = StandardScaler()
-        X_scaled = scaler_X.fit_transform(X_seq.reshape(-1, X_seq.shape[-1]))
-        X_scaled = X_scaled.reshape(X_seq.shape)
+        # 5) 타깃 스케일 조정 (BaseAgent와 동일)
+        y_scale_factor = common_params.get("y_scale_factor", 100.0)
+        y_seq = y_seq * y_scale_factor
+
+        # 6) Scaling (BaseAgent의 통합 스케일러 사용)
+        self.scaler.fit_scalers(X_seq, y_seq)
+        self.scaler.save(ticker)
         
-        minmax_range = cfg.get("minmax_scaler_range", (-1, 1))
-        scaler_y = MinMaxScaler(feature_range=minmax_range)
-        y_scaled = scaler_y.fit_transform(y_seq)
+        X_train, y_train = map(torch.tensor, self.scaler.transform(X_seq, y_seq))
+        X_train, y_train = X_train.float(), y_train.float()
         
-        # 스케일러 저장
-        os.makedirs(os.path.dirname(self.scaler_X_path), exist_ok=True)
-        scaler_X.feature_names_in_ = np.array(feature_cols)
-        joblib.dump(scaler_X, self.scaler_X_path)
-        joblib.dump(scaler_y, self.scaler_y_path)
-        self.scaler_X = scaler_X
-        self.scaler_y = scaler_y
-        
-        # 6) input_dim 자동 조정
+        # 7) input_dim 자동 조정
         actual_input_dim = X_seq.shape[-1]
         if actual_input_dim != self.input_dim:
             print(f"[INFO] input_dim 조정: {self.input_dim} -> {actual_input_dim}")
@@ -590,21 +630,34 @@ class MacroAgent(BaseAgent, nn.Module):
             self.fc1 = nn.Linear(hidden_dims[2], 32)
             self.fc2 = nn.Linear(32, self.output_dim)
 
-        # 7) 학습 준비
+        # 8) 학습 준비
         model = self
         model.to(self.device)
         model.train()
 
-        dataset = TensorDataset(
-            torch.FloatTensor(X_scaled).to(self.device),
-            torch.FloatTensor(y_scaled).to(self.device),
-        )
+        dataset = TensorDataset(X_train.to(self.device), y_train.to(self.device))
         train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        loss_fn = nn.L1Loss()
+        
+        # Loss 함수: config에서 가져오기
+        loss_fn_name = cfg.get("loss_fn", "L1Loss")
+        if loss_fn_name == "HuberLoss":
+            huber_delta = common_params.get("huber_loss_delta", 1.0)
+            loss_fn = nn.HuberLoss(delta=huber_delta)
+        elif loss_fn_name == "L1Loss":
+            loss_fn = nn.L1Loss()
+        elif loss_fn_name == "MSELoss":
+            loss_fn = nn.MSELoss()
+        else:
+            print(f"[WARN] 알 수 없는 loss_fn: {loss_fn_name}, L1Loss 사용")
+            loss_fn = nn.L1Loss()
 
-        # 5) 학습 루프
+        # 9) 학습 루프
+        # 에포크 출력 주기 (config에서 가져오기)
+        log_interval = common_params.get("pretrain_log_interval", 5)
+        
+        final_loss = None
         for epoch in range(epochs):
             model.train()
             train_loss = 0.0
@@ -617,42 +670,47 @@ class MacroAgent(BaseAgent, nn.Module):
                 train_loss += loss.item()
 
             train_loss /= max(len(train_loader), 1)
-            if (epoch + 1) % 10 == 0:
-                print(f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.4f}")
+            final_loss = train_loss
+            
+            if (epoch + 1) % log_interval == 0 or (epoch + 1) == epochs:
+                print(f"  Epoch {epoch+1:03d}/{epochs} | Loss: {train_loss:.6f}")
 
-        # 8) 모델 저장
+        # 10) 모델 저장
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
         torch.save({"model_state_dict": model.state_dict()}, self.model_path)
         self.model_loaded = True
-        print(f"[OK] MacroAgent 학습 완료. Final Train Loss: {train_loss:.4f}")
         
-        # 9) 전처리된 데이터 저장 (선택적)
-        dataset_path = os.path.join(self.data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
-        flattened_data = []
-        dates_list = df_raw["Date"].values[:-1]  # 마지막 제외
+        # 완료 메시지 출력
+        final_loss_str = f" (Final Loss: {final_loss:.6f})" if final_loss is not None else ""
+        print(f"✅ {self.agent_id} 모델 학습 및 저장 완료: {self.model_path}{final_loss_str}")
         
-        for sample_idx in range(len(X_seq)):
-            for time_idx in range(window_size):
-                date_idx = sample_idx + time_idx
-                row = {
-                    'sample_id': sample_idx,
-                    'time_step': time_idx,
-                    'date': str(dates_list[date_idx]) if date_idx < len(dates_list) else None,
-                    'target': float(y_scaled[sample_idx, 0]) if time_idx == window_size - 1 else np.nan,
-                }
-                for feat_idx, feat_name in enumerate(feature_cols):
-                    row[feat_name] = float(X_scaled[sample_idx, time_idx, feat_idx])
-                flattened_data.append(row)
-        
-        dataset_df = pd.DataFrame(flattened_data)
-        os.makedirs(self.data_dir, exist_ok=True)
-        dataset_df.to_csv(dataset_path, index=False)
-        print(f"✅ 전처리된 데이터 저장 완료: {dataset_path}")
-
-        if os.path.exists(self.model_path):
-            checkpoint = torch.load(self.model_path, map_location=self.device)
-            model.load_state_dict(checkpoint["model_state_dict"])
-        model.eval()
+        # 11) 전처리된 데이터 저장 (config에서 설정)
+        if common_params.get("pretrain_save_dataset", True):
+            dataset_path = os.path.join(self.data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
+            flattened_data = []
+            dates_list = df_raw["Date"].values[:-1]  # 마지막 제외
+            
+            # 스케일된 데이터는 X_train, y_train에서 가져오기
+            X_scaled_np = X_train.cpu().numpy()
+            y_scaled_np = y_train.cpu().numpy()
+            
+            for sample_idx in range(len(X_seq)):
+                for time_idx in range(window_size):
+                    date_idx = sample_idx + time_idx
+                    row = {
+                        'sample_id': sample_idx,
+                        'time_step': time_idx,
+                        'date': str(dates_list[date_idx]) if date_idx < len(dates_list) else None,
+                        'target': float(y_scaled_np[sample_idx]) if time_idx == window_size - 1 else np.nan,
+                    }
+                    for feat_idx, feat_name in enumerate(feature_cols):
+                        row[feat_name] = float(X_scaled_np[sample_idx, time_idx, feat_idx])
+                    flattened_data.append(row)
+            
+            dataset_df = pd.DataFrame(flattened_data)
+            os.makedirs(self.data_dir, exist_ok=True)
+            dataset_df.to_csv(dataset_path, index=False)
+            print(f"✅ 전처리된 데이터 저장 완료: {dataset_path}")
 
     def load_model(self, model_path: Optional[str] = None):
         """저장된 모델 가중치 로드 (Input Dim 자동 조정 포함)"""
@@ -720,23 +778,14 @@ class MacroAgent(BaseAgent, nn.Module):
             if not hasattr(self, "model_loaded") or not self.model_loaded:
                 self.load_model(self.model_path)
         
-        # 모델 준비 및 스케일러 로드
-        if not hasattr(self, "scaler_X") or self.scaler_X is None:
-             if os.path.exists(self.scaler_X_path):
-                 self.scaler_X = joblib.load(self.scaler_X_path)
-                 self.scaler_y = joblib.load(self.scaler_y_path)
-             else:
-                 # 스케일러가 없으면 pretrain 실행
-                 if not self.ticker:
-                     raise ValueError("ticker가 설정되지 않았습니다. 먼저 searcher(ticker)를 호출하세요.")
-                 print(f"[{self.agent_id}] 스케일러가 없어 pretrain()을 실행합니다...")
-                 self.pretrain()
-                 # pretrain 후 다시 로드
-                 if os.path.exists(self.scaler_X_path):
-                     self.scaler_X = joblib.load(self.scaler_X_path)
-                     self.scaler_y = joblib.load(self.scaler_y_path)
-                 else:
-                     raise RuntimeError("pretrain() 후에도 스케일러가 생성되지 않았습니다.")
+        # 스케일러 로드 (BaseAgent의 통합 스케일러 사용)
+        scaler_x_path = os.path.join(self.scaler.save_dir, f"{self.ticker}_{self.agent_id}_xscaler.pkl")
+        scaler_y_path = os.path.join(self.scaler.save_dir, f"{self.ticker}_{self.agent_id}_yscaler.pkl")
+        if not os.path.exists(scaler_x_path) or not os.path.exists(scaler_y_path):
+            print(f"[{self.agent_id}] 스케일러가 없어 pretrain()을 실행합니다...")
+            self.pretrain()
+        else:
+            self.scaler.load(self.ticker)
 
         # 입력 변환 및 스케일링 (StockData 지원)
         if isinstance(X, StockData):
@@ -762,59 +811,54 @@ class MacroAgent(BaseAgent, nn.Module):
         else:
             raise TypeError(f"Unsupported input type: {type(X)}")
         
-        # 형태 정규화: (1, T, F) or (T, F) → (T, F)
-        if X_np.ndim == 3:
-            X_2d = X_np[0]
-        else:
-            X_2d = X_np
-            
-        # 데이터 프레임으로 변환 (피처 이름 기준 transform)
-        # 학습 시 사용한 feature_cols(= scaler_X.feature_names_in_)를 그대로 사용해야 함
-        feature_names = getattr(self.scaler_X, "feature_names_in_", None)
-        if feature_names is None:
-            # fallback: 기존 FINAL_FEATURES 사용 (구버전 대비)
-            feature_names = FINAL_FEATURES
-        # 길이가 다를 경우(예: config/상수 변경 후 오래된 모델)에는
-        # 현재 입력 X의 차원에 맞춰 앞에서부터 잘라 사용
-        if len(feature_names) != X_2d.shape[1]:
-            feature_names = list(feature_names)[: X_2d.shape[1]]
-        X_df = pd.DataFrame(X_2d, columns=feature_names)
-        X_scaled = self.scaler_X.transform(X_df)
+        # 형태 정규화 및 스케일링 (BaseAgent의 통합 스케일러 사용)
+        if X_np.ndim == 2:
+            X_np = X_np[None, :, :]  # (T, F) → (1, T, F)
         
-        X_scaled_np = np.expand_dims(X_scaled, axis=0)
-        X_tensor = torch.FloatTensor(X_scaled_np).to(self.device)
+        X_scaled, _ = self.scaler.transform(X_np)
+        # device 처리는 predict에서 (통일된 패턴)
+        device = next(self.parameters()).device
+        X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(device)
 
         # Monte Carlo Dropout 추론
         self.train() # Dropout 활성화
         preds = []
         with torch.no_grad():
             for _ in range(n_samples):
-                y_pred = self(X_tensor).cpu().numpy()
+                y_pred = self(X_tensor).cpu().numpy().flatten()  # TechnicalAgent와 동일하게 flatten
                 preds.append(y_pred)
 
-        preds = np.stack(preds)  # (samples, batch, output_dim)
-        mean_pred = preds.mean(axis=0)
-        std_pred = np.abs(preds.std(axis=0))
+        preds = np.stack(preds)  # (samples, output_dim or 1)
+        mean_pred = preds.mean(axis=0)  # (output_dim or 1,)
+        std_pred = np.abs(preds.std(axis=0))  # (output_dim or 1,)
 
-        # 역변환
-        pred_inv = self.scaler_y.inverse_transform(mean_pred)
-        std_inv = self.scaler_y.inverse_transform(std_pred)
-
-        sigma = float(std_inv[-1, 0]) if std_inv.ndim > 1 else float(std_inv[-1])
+        # sigma 계산 (역변환 전에 계산 - TechnicalAgent와 동일)
+        sigma = float(std_pred[-1])  # TechnicalAgent와 동일한 방식
+        
         sigma_min = common_params.get("sigma_min", 1e-6)
         sigma = max(sigma, sigma_min)
         confidence = 1 / (1 + np.log1p(sigma))
+
+        # 역변환 (BaseAgent의 통합 스케일러 사용)
+        if hasattr(self.scaler, "y_scaler") and self.scaler.y_scaler is not None:
+            mean_pred = self.scaler.inverse_y(mean_pred)
+            std_pred = self.scaler.inverse_y(std_pred)
 
         # 가격 계산
         if current_price is None:
             default_price = common_params.get("default_current_price", 100.0)
             current_price = getattr(self.stockdata, 'last_price', None) or self.last_price or default_price
 
-        predicted_return = float(pred_inv[-1, 0]) if pred_inv.ndim > 1 else float(pred_inv[-1])
-        # config에서 수익률 클리핑 범위 가져오기
+        # 학습 타깃은 "다음날 수익률(%)"이므로 스케일 팩터로 나눠서 사용
+        y_scale_factor = common_params.get("y_scale_factor", 100.0)
+        predicted_return = float(mean_pred[-1, 0]) if mean_pred.ndim > 1 else float(mean_pred[-1])
+        predicted_return = predicted_return / y_scale_factor
+        
+        # 수익률 클리핑 (agents_info에서 가져오기)
         cfg = agents_info.get(self.agent_id, {})
         return_clip_min = cfg.get("return_clip_min", -0.5)
         return_clip_max = cfg.get("return_clip_max", 0.5)
+        predicted_return_raw = predicted_return
         predicted_return = np.clip(predicted_return, return_clip_min, return_clip_max)
         
         predicted_price = current_price * (1 + predicted_return)
@@ -824,6 +868,10 @@ class MacroAgent(BaseAgent, nn.Module):
             uncertainty=sigma,
             confidence=float(confidence),
         )
+        
+        # 통일된 예측 결과 로그 출력 (불필요한 로그 제거)
+        # clipped_info = f" (클리핑: {predicted_return_raw:.4f} → {predicted_return:.4f})" if predicted_return_raw != predicted_return else ""
+        # print(f"[{self.agent_id}] Predict 완료: next_close={predicted_price:.2f}, return={predicted_return*100:.2f}%{clipped_info}, uncertainty={sigma:.4f}, confidence={confidence:.4f}")
 
         return target
 
@@ -854,14 +902,26 @@ class MacroAgent(BaseAgent, nn.Module):
 
         # 3) GradientAnalyzer를 사용한 해석
         # GradientAnalyzer 실행을 위해 스케일링된 입력 필요
-        if self.X_raw is not None and self.scaler_X is not None:
+        if self.X_raw is not None:
             try:
-                # Raw Data(최근 window) -> Scaling
-                X_window = self.X_raw.tail(self.window)
-                X_scaled = self.scaler_X.transform(X_window)
-                X_scaled_np = np.expand_dims(X_scaled, axis=0).astype(np.float32)
+                # 스케일러 로드 (없으면 pretrain 실행)
+                scaler_x_path = os.path.join(self.scaler.save_dir, f"{self.ticker}_{self.agent_id}_xscaler.pkl")
+                if not os.path.exists(scaler_x_path):
+                    print(f"[{self.agent_id}] 스케일러가 없어 pretrain()을 실행합니다...")
+                    self.pretrain()
+                else:
+                    self.scaler.load(self.ticker)
                 
-                feature_names = list(self.scaler_X.feature_names_in_)
+                # Raw Data(최근 window) -> Scaling (BaseAgent의 통합 스케일러 사용)
+                X_window = self.X_raw.tail(self.window).values
+                if X_window.ndim == 2:
+                    X_window = X_window[None, :, :]  # (T, F) -> (1, T, F)
+                
+                X_scaled, _ = self.scaler.transform(X_window)
+                X_scaled_np = X_scaled.astype(np.float32)
+                
+                # feature_names는 FINAL_FEATURES 사용
+                feature_names = list(FINAL_FEATURES)
                 # 너무 많은 피처는 상위 300개로 제한 (GradientAnalyzer 부담 경감)
                 if X_scaled_np.shape[2] > 300:
                     X_scaled_np = X_scaled_np[:, :, :300]
