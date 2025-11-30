@@ -13,7 +13,8 @@ from agents.technical_agent import TechnicalAgent
 from agents.macro_agent import MacroAgent
 from agents.sentimental_agent import SentimentalAgent
 from core.technical_classes.technical_data_set import load_dataset as load_dataset_tech
-from config.agents import dir_info
+from config.agents import dir_info, agents_info
+
 
 class Backtester:
     """

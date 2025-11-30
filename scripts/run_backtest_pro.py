@@ -11,7 +11,7 @@ from core.backtester import Backtester
 def main():
     parser = argparse.ArgumentParser(description="Unified Backtesting Module")
     parser.add_argument("--ticker", type=str, default="NVDA", help="Target Ticker Symbol")
-    parser.add_argument("--days", type=int, default=180, help="Backtest Period (Days)")
+    parser.add_argument("--days", type=int, default=5, help="Backtest Period (Days)")
     parser.add_argument("--capital", type=float, default=10000, help="Initial Capital ($)")
     
     args = parser.parse_args()

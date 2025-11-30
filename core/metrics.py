@@ -14,6 +14,9 @@ def calculate_metrics(y_true: Union[np.ndarray, List[float]], y_pred: Union[np.n
     min_len = min(len(y_true), len(y_pred))
     y_true = y_true[:min_len]
     y_pred = y_pred[:min_len]
+
+    #MSE
+    mse = np.mean((y_true - y_pred) ** 2)
     
     # MAE
     mae = np.mean(np.abs(y_true - y_pred))
@@ -30,6 +33,7 @@ def calculate_metrics(y_true: Union[np.ndarray, List[float]], y_pred: Union[np.n
         mape = 0.0
         
     return {
+        "MSE": float(mse),
         "MAE": float(mae),
         "RMSE": float(rmse),
         "MAPE": float(mape)

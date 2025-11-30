@@ -1,8 +1,9 @@
-
 import os
+import pandas as pd
+from config.agents import dir_info
+import glob
 import sys
 import argparse
-import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from datetime import datetime, timedelta
@@ -139,11 +140,12 @@ class RollingBacktester:
             print(f"    Train window: {train_start} ~ {sim_date}")
             print(f"{'='*60}")
 
-            # 각 시점별로 필터링된 데이터셋 생성
+            # 각 시점별로 필터링된 데이터셋 생성  >> ?기본데이터셋은 어디서 생성되나
             self._prepare_filtered_datasets(sim_date)
 
             agent = DebateAgent(ticker=self.ticker, rounds=self.rounds)
 
+            # ?set_test_mode 가 뭐지. 어디서 설정하는거지
             for name, ag in agent.agents.items():
                 if hasattr(ag, "set_test_mode"):
                     ag.set_test_mode(True)
@@ -189,10 +191,7 @@ class RollingBacktester:
         Args:
             sim_date: 시뮬레이션 날짜 (YYYY-MM-DD)
         """
-        import os
-        import pandas as pd
-        from config.agents import dir_info
-        
+
         sim_date_dt = pd.to_datetime(sim_date)
         raw_dir = os.path.join(os.path.dirname(dir_info["data_dir"]), "raw")
         temp_dir = os.path.join(raw_dir, "backtest_temp")
@@ -236,10 +235,7 @@ class RollingBacktester:
         Args:
             sim_date: 시뮬레이션 날짜 (YYYY-MM-DD)
         """
-        import os
-        import glob
-        from config.agents import dir_info
-        
+
         raw_dir = os.path.join(os.path.dirname(dir_info["data_dir"]), "raw")
         temp_dir = os.path.join(raw_dir, "backtest_temp")
         
@@ -262,8 +258,6 @@ class RollingBacktester:
         백테스팅 모델 파일 삭제 (각 날짜 처리 후 호출)
         다음 날짜에서 깨끗한 상태로 재학습하기 위함
         """
-        import os
-        from config.agents import dir_info
         
         model_dir = dir_info["model_dir"]
         ticker = self.ticker
@@ -462,7 +456,8 @@ class RollingBacktester:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Rolling Backtest Runner with Auto Analysis")
-    parser.add_argument("--ticker", type=str, required=True, help="Target Ticker (e.g. AAPL)")
+    parser.add_argument("--ticker", type=str, default='AAPL',
+                        required=False, help="Target Ticker (e.g. AAPL)")
     parser.add_argument(
         "--start",
         type=str,
