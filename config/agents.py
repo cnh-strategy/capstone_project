@@ -188,7 +188,7 @@ agents_info = {
         "nhead": 4,                     # (참고용) Attention 헤드 수
         "num_layers": 2,                # LSTM 층 수
         "dropout": 0.2,
-        "window_size": 40,
+        "window_size": 20,
         "epochs": 50,
         "learning_rate": 0.0005,
         "batch_size": 32,
