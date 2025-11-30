@@ -19,6 +19,7 @@ from config.agents import dir_info, agents_info, common_params
 from core.macro_classes.macro_llm import GradientAnalyzer
 from agents.base_agent import BaseAgent, Target, StockData, Opinion, Rebuttal
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
+from config.agents import common_params
 
 # =============================================================================
 # 상수 정의 (거시경제 지표 티커 목록)
@@ -89,7 +90,6 @@ class MacroAgent(BaseAgent, nn.Module):
         self.base_date = base_date
         self.window = int(window) if window is not None else cfg.get("window_size", 40)
         self.window_size = self.window
-        self.tickers = [ticker] if ticker else []
         self.ticker = ticker
 
         # 모델 경로 설정
@@ -105,7 +105,7 @@ class MacroAgent(BaseAgent, nn.Module):
 
         # 모델 하이퍼파라미터 설정 (Config 기반)
         self.input_dim = cfg.get("input_dim", len(FINAL_FEATURES)) 
-        self.output_dim = len(self.tickers) if self.tickers else 1
+        self.output_dim =  1
         hidden_dims = cfg.get("hidden_dims", [128, 64, 32])
         dropout_rates = cfg.get("dropout_rates", [0.3, 0.3, 0.2])
 
@@ -178,7 +178,6 @@ class MacroAgent(BaseAgent, nn.Module):
         print(f"[{self.agent_id}] Raw CSV 생성 중...")
 
         # 1) 기간 설정 (Config 사용)
-        from config.agents import common_params
         period = common_params.get("period", "2y")
 
         # 2) 매크로 데이터 수집 (MACRO_TICKERS 기준)
@@ -346,8 +345,6 @@ class MacroAgent(BaseAgent, nn.Module):
             raise ValueError(f"{agent_id}: ticker가 지정되지 않았습니다.")
 
         self.ticker = ticker
-        if ticker not in self.tickers:
-            self.tickers = [ticker]
 
         # 모델/스케일러 경로 업데이트
         self.model_path = os.path.join(self.model_dir, f"{ticker}_{agent_id}.pt")
@@ -640,58 +637,74 @@ class MacroAgent(BaseAgent, nn.Module):
             print(f"[{self.agent_id}] load_model 실패: {e}")
             return False
 
-    def predict(self, X, n_samples: Optional[int] = None, current_price: Optional[float] = None, X_last: Optional[np.ndarray] = None):
-        """
-        Monte Carlo Dropout 기반 예측 수행
-        
-        Args:
-            X: 입력 데이터
-            n_samples: MC Dropout 샘플 수
-            current_price: 현재가 (가격 변환용)
-            
-        Returns:
-            Target: 예측 결과 객체
-        """
-        # BaseAgent의 predict 로직을 그대로 사용하되, self.model = self 로 설정
-        # 모델 파일이 없으면 pretrain 호출
-        if not os.path.exists(self.model_path):
-            print(f"[{self.agent_id}] 모델이 없어 pretrain()을 실행합니다...")
-            self.pretrain()
-        
-        # 모델 로드
-        if not hasattr(self, "model_loaded") or not self.model_loaded:
-            self.load_model(self.model_path)
-            
-        # 스케일러 로드
-        self.scaler.load(self.ticker)
-        
-        # BaseAgent.predict 호출 (self를 모델로 사용)
-        # 여기서는 super().predict를 호출하는 대신, BaseAgent의 로직을 일부 오버라이딩하거나
-        # BaseAgent.predict가 self.model을 사용할 때 self를 할당해두었는지 확인해야 함.
-        # MacroAgent는 nn.Module이므로 self 자체가 모델임.
-        self.model = self
-        
-        return super().predict(X, n_samples, current_price)
+    def predict(self, X, n_samples: Optional[int] = None, current_price: float | None = None):
+        self._in_predict = True
+        try:
+            if not getattr(self, "model_loaded", False):
+                print("[MacroAgent] 모델이 메모리에 없습니다. 자동 로드 시도 중...")
+                if not self.load_model():
+                    raise RuntimeError("MacroAgent.predict(): 모델 로드 실패")
 
-    
+            self.eval()
+
+            # 입력 처리
+            if isinstance(X, np.ndarray):
+                X = torch.tensor(X, dtype=torch.float32).to(self.device)
+            elif isinstance(X, torch.Tensor):
+                X = X.to(self.device)
+
+            # 예측 수행
+            with torch.no_grad():
+                output = self.forward(X).cpu().numpy()
+
+            # 스케일 복원
+            if hasattr(self, "scaler") and hasattr(self.scaler, "scaler_y"):
+                output = self.scaler.inverse_transform_y(output)
+
+            # 예측 수익률 (예: 0.012 = +1.2%)
+            pred_return = float(output.flatten()[0])
+
+            # 현재 종가 가져오기
+            last_price = current_price or getattr(self, "last_price", None)
+            if last_price is None:
+                print("[WARN] 현재 종가를 찾을 수 없어 yfinance로 조회 시도 중...")
+                import yfinance as yf
+                last_price = yf.Ticker(self.ticker).history(period="1d")["Close"].iloc[-1]
+
+            # 다음날 예측 종가 계산
+            next_close_price = last_price * (1 + pred_return)
+
+            # Target 객체 반환
+            return Target(
+                next_close=next_close_price,
+                confidence=0.5,
+                uncertainty=abs(pred_return) * 0.1
+            )
+
+        finally:
+            self._in_predict = False
+
+
+
+
+
     def reviewer_draft(self, stock_data: StockData = None, target: Target = None) -> Opinion:
-        """
-        초기 의견 생성 (GradientAnalyzer를 통한 중요 피처 분석 포함)
-        """
-        # 1) 데이터 수집
         if stock_data is None:
             stock_data = self.stockdata
         if stock_data is None:
-             if not self.ticker:
-                 raise ValueError("ticker가 설정되지 않았습니다.")
-             self.searcher(self.ticker)
-             stock_data = self.stockdata
+            if not self.ticker:
+                raise ValueError("ticker가 설정되지 않았습니다.")
+            self.searcher(self.ticker)
+            stock_data = self.stockdata
 
         # 2) 예측값 생성
         if target is None:
-            # 최신 데이터로 재검색
             X_input = self.searcher(self.ticker)
-            target = self.predict(X_input)
+            y_pred = self.predict(X_input)
+            if isinstance(y_pred, np.ndarray):
+                y_pred = float(y_pred.flatten()[0])
+            target = Target(next_close=y_pred, confidence=0.5, uncertainty=0.1)
+
 
         # 3) GradientAnalyzer 분석 (XAI)
         if self.X_raw is not None:

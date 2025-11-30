@@ -121,7 +121,7 @@ class DebateAgent:
         self.rebuttals: Dict[int, List[Rebuttal]] = {}
         self._data_built = False
 
-        # 초기 모델 로드 시도
+        # 초기 모델 로드 시도 ?? _load_model_if_exists가 어디랑 연결되어있지
         for agent in self.agents.values():
             if hasattr(agent, "_load_model_if_exists"):
                 try:

@@ -3,12 +3,13 @@ from datetime import datetime
 
 import joblib
 import numpy as np
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-import yfinance as yf
 import pandas as pd
+import torch.nn as nn
+import yfinance as yf
+from dateutil.relativedelta import relativedelta
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 from config.agents import dir_info
-from dateutil.relativedelta import relativedelta
 
 
 save_dir = dir_info["data_dir"]
@@ -17,24 +18,20 @@ data_dir: str = dir_info["data_dir"]
 OUTPUT_DIR = data_dir
 
 
-# 데이터셋과 모델 만드는 클래스
 class MacroAData:
-    def __init__(self,
-                 ticker='NVDA'):
+    """거시경제(Macro) 데이터셋 생성 및 전처리 클래스"""
+
+    def __init__(self, ticker="NVDA"):
         self.merged_df = None
         self.macro_tickers = {
             "SPY": "SPY", "QQQ": "QQQ", "^GSPC": "^GSPC", "^DJI": "^DJI", "^IXIC": "^IXIC",
-            "^TNX": "^TNX", "^IRX": "^IRX", "^FVX": "^FVX",
-            "^VIX": "^VIX",
-            "DX-Y.NYB": "DX-Y.NYB",
-            "EURUSD=X": "EURUSD=X", "USDJPY=X": "USDJPY=X",
+            "DX-Y.NYB": "DX-Y.NYB", "EURUSD=X": "EURUSD=X", "USDJPY=X": "USDJPY=X",
+            "^TNX": "^TNX", "^IRX": "^IRX", "^FVX": "^FVX", "^VIX": "^VIX",
             "GC=F": "GC=F", "CL=F": "CL=F", "HG=F": "HG=F",
-            #  "BTC-USD": "BTC-USD", "ETH-USD": "ETH-USD"
         }
         self.data = None
-
-        self.agent_id = 'MacroAgent'
-        self.ticker=ticker
+        self.agent_id = "MacroAgent"
+        self.ticker = ticker
         self.model_path = f"{model_dir}/{self.ticker}_{self.agent_id}.pt"
         self.scaler_X_path = f"{model_dir}/scalers/{self.ticker}_{self.agent_id}_xscaler.pkl"
         self.scaler_y_path = f"{model_dir}/scalers/{self.ticker}_{self.agent_id}_yscaler.pkl"
@@ -44,31 +41,22 @@ class MacroAData:
         self.end_date = datetime.today().strftime("%Y-%m-%d")
 
     def fetch_data(self):
-        """다중 티커 데이터 다운로드"""
-
+        """거시경제 데이터 다운로드 및 컬럼 평탄화"""
         df = yf.download(
             tickers=list(self.macro_tickers.values()),
-            start = self.start_date,
-            end= self.end_date,
+            start=self.start_date,
+            end=self.end_date,
             interval="1d",
             group_by="ticker",
             auto_adjust=False
         )
 
-        # ✅ pandas 버전/구조 관계없이 일관된 포맷으로 변환
-        # MultiIndex 구조일 경우 (티커별로 OHLCV 존재)
         if isinstance(df.columns, pd.MultiIndex):
-            # 구조를 (날짜, 티커, 값) 형태로 변환
             df = df.stack(level=0)
             df.index.names = ["Date", "Ticker"]
-            df.sort_index(inplace=True)
-
-            # 컬럼 이름 평탄화
-            df.columns = [col for col in df.columns]
             df = df.unstack(level="Ticker")
-            df.columns = ["_".join(col).strip() for col in df.columns.values]
+            df.columns = [f"{col[1]}_{col[0]}" for col in df.columns.values]
         else:
-            # 단일 인덱스 구조인 경우 그대로 사용
             df.index.name = "Date"
 
         self.data = df
@@ -76,162 +64,197 @@ class MacroAData:
         return df
 
     def add_features(self):
-        """수익률, 금리차, 위험심리 등 계산"""
+        """수익률, 금리차, 위험심리 및 주식 특성 추가"""
         df = self.data.copy()
 
-        # 각 자산의 1일 수익률
         for ticker in self.macro_tickers.values():
-            if (ticker, "Close") in df.columns:
-                df[(ticker, "ret_1d")] = df[(ticker, "Close")].pct_change()
+            col_close = f"{ticker}_Close"
+            col_ret = f"{ticker}_ret_1d"
+            if col_close in df.columns:
+                df[col_ret] = df[col_close].pct_change()
 
-        # 금리 스프레드 (10년 - 3개월)
-        if ("^TNX", "Close") in df.columns and ("^IRX", "Close") in df.columns:
-            df[("macro", "Yield_spread")] = df[("^TNX", "Close")] - df[("^IRX", "Close")]
+        if "^TNX_Close" in df.columns and "^IRX_Close" in df.columns:
+            df["Yield_spread"] = df["^TNX_Close"] - df["^IRX_Close"]
 
-        # 시장 위험심리 (SPY - DXY - VIX)
-        if ("SPY", "ret_1d") in df.columns and ("DX-Y.NYB", "ret_1d") in df.columns and ("^VIX", "ret_1d") in df.columns:
-            df[("macro", "Risk_Sentiment")] = (
-                    df[("SPY", "ret_1d")] - df[("DX-Y.NYB", "ret_1d")] - df[("^VIX", "ret_1d")]
+        if {"SPY_ret_1d", "DX-Y.NYB_ret_1d", "^VIX_ret_1d"} <= set(df.columns):
+            df["Risk_Sentiment"] = (
+                    df["SPY_ret_1d"] - df["DX-Y.NYB_ret_1d"] - df["^VIX_ret_1d"]
             )
 
-        self.data = df
-        print(f"[INFO] Feature engineering: {df.shape[0]} rows, {df.shape[1]} features")
-        return df
+        df_stock_price = yf.download(
+            self.ticker,
+            start=self.start_date,
+            end=self.end_date,
+            auto_adjust=False,
+            progress=False
+        )[["Close"]].copy()
+
+        if isinstance(df_stock_price.columns, pd.MultiIndex):
+            df_stock_price.columns = ["Close"]
+        df_stock_price.index.name = "Date"
+        df_stock_price = df_stock_price.reset_index()
+        df_stock_price["Date"] = pd.to_datetime(df_stock_price["Date"]).dt.strftime("%Y-%m-%d")
+
+        t = self.ticker
+        df_stock_price["ret1"] = df_stock_price["Close"].pct_change()
+        df_stock_price["ma5"] = df_stock_price["Close"].rolling(5).mean()
+        df_stock_price["ma10"] = df_stock_price["Close"].rolling(10).mean()
+        df_stock_price = df_stock_price.rename(columns={"Close": t})
+
+        df_stock_price_features = df_stock_price[["Date", t, "ret1", "ma5", "ma10"]]
+
+        df_macro_raw = df.copy().reset_index()
+        if isinstance(df_macro_raw.columns, pd.MultiIndex):
+            df_macro_raw.columns = df_macro_raw.columns.get_level_values(-1)
+
+        df_macro_raw["Date"] = pd.to_datetime(df_macro_raw["Date"]).dt.strftime("%Y-%m-%d")
+        merged = pd.merge(df_macro_raw, df_stock_price_features, on="Date", how="inner")
+        merged = merged.replace([np.inf, -np.inf], np.nan).ffill().bfill().dropna().reset_index(drop=True)
+
+        self.data = merged
+        print(f"[INFO] Feature engineering complete: {self.data.shape}")
+        return self.data
 
     def save_csv(self):
-        path = os.path.join(OUTPUT_DIR, f"{self.ticker}_{self.agent_id}_dataset.csv")
+        """전처리된 데이터를 raw 폴더에 저장"""
+        raw_dir = os.path.join(os.path.dirname(OUTPUT_DIR), "raw")
+        os.makedirs(raw_dir, exist_ok=True)
+        path = os.path.join(raw_dir, f"{self.ticker}_{self.agent_id}_raw.csv")
 
         df = self.data.copy()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = ["_".join(map(str, col)) for col in df.columns]
+        df.columns = [str(c).strip() for c in df.columns]
 
-        # 1) index가 datetime이든 아니든 항상 Date 컬럼 생성
-        if 'Date' not in df.columns:
-            df['Date'] = pd.to_datetime(df.index).strftime('%Y-%m-%d')
+        if "Date" not in df.columns:
+            df["Date"] = pd.to_datetime(df.index).strftime("%Y-%m-%d")
 
-        # 2) Date를 첫 번째 칼럼으로
-        cols = ['Date'] + [c for c in df.columns if c != 'Date']
+        cols = ["Date"] + [c for c in df.columns if c != "Date"]
         df = df[cols]
 
-        # 3) index는 절대 저장하지 않는다 (중복 Date 방지)
+        t = self.ticker
+        if t in df.columns:
+            df["Close"] = df[t]
+        cols = [c for c in df.columns if c != "Close"] + ["Close"]
+        df = df[cols]
+
         df.to_csv(path, index=False)
-
-        print(f"[MacroAgent] Saved {path}")
-
-
+        print(f"[MacroAgent] Saved: {path}")
 
     def make_close_price(self):
-        # 일별 종가 불러오기
+        """일별 종가 저장"""
         df_prices = yf.download(
             self.ticker,
             start=self.start_date,
             end=self.end_date,
-        )["Close"]
+        )[["Close"]].reset_index()
 
-
-        # CSV 저장
+        df_prices["Date"] = pd.to_datetime(df_prices["Date"]).dt.strftime("%Y-%m-%d")
         path = os.path.join(OUTPUT_DIR, "daily_closePrice.csv")
-        df_prices.to_csv(path)
+        df_prices.to_csv(path, index=False)
 
-        print("[make_close_price]저장 완료:", df_prices.shape, "rows")
+        print("[make_close_price] 저장 완료:", df_prices.shape, "rows at", path)
 
-
-    #티커 통합 모델 저장
     def model_maker(self):
+        """MacroAData: 모델 학습용 데이터셋 생성 및 스케일러 저장"""
 
         # -------------------------------------------------------------
-        # 1. 데이터 불러오기
+        # 1. 데이터 로드
         # -------------------------------------------------------------
-        PRICE_CSV_PATH = os.path.join(OUTPUT_DIR, "daily_closePrice.csv")
-        MACRO_CSV_PATH = os.path.join(OUTPUT_DIR, f"{self.ticker}_{self.agent_id}_dataset.csv")
+        raw_dir = os.path.join(os.path.dirname(OUTPUT_DIR), "raw")
+        macro_path = os.path.join(raw_dir, f"{self.ticker}_{self.agent_id}_raw.csv")
+        price_path = os.path.join(OUTPUT_DIR, "daily_closePrice.csv")
 
-        macro_df = pd.read_csv(MACRO_CSV_PATH)
-        price_df = pd.read_csv(PRICE_CSV_PATH)
+        macro_df = pd.read_csv(macro_path)
+        price_df = pd.read_csv(price_path)
 
-        macro_df['Date'] = pd.to_datetime(macro_df['Date']).dt.strftime('%Y-%m-%d')
-        price_df['Date'] = pd.to_datetime(price_df['Date']).dt.strftime('%Y-%m-%d')
+        # 날짜 컬럼 정리
+        macro_df["Date"] = pd.to_datetime(macro_df["Date"]).dt.strftime("%Y-%m-%d")
+        if "Date" not in price_df.columns:
+            price_df = price_df.reset_index().rename(columns={"index": "Date"})
+        price_df["Date"] = pd.to_datetime(price_df["Date"]).dt.strftime("%Y-%m-%d")
 
+        # 매크로 데이터의 'Close' → 종목명으로 변경
+        if "Close" in macro_df.columns:
+            macro_df = macro_df.rename(columns={"Close": self.ticker})
+
+        # 병합 (Date 기준)
+        merged = pd.merge(price_df, macro_df, on="Date", how="inner").sort_values("Date").reset_index(drop=True)
 
         # -------------------------------------------------------------
-        # 2. 매크로 피처 확장 (원본 + 변화율)
+        # 2. 디버깅용 컬럼 확인
         # -------------------------------------------------------------
-        macro_features = [c for c in macro_df.columns if c != 'Date']
-        macro_ret = macro_df[macro_features].pct_change()
-        macro_ret.columns = [f"{c}_ret" for c in macro_ret.columns]
-        macro_full = pd.concat([macro_df, macro_ret], axis=1)
-        macro_full = macro_full.replace([np.inf, -np.inf], np.nan).dropna(subset=['Date'])
-        macro_full = macro_full.ffill().bfill()
+        print(f"[DEBUG] merged columns sample: {list(merged.columns)[:15]}")
 
         # -------------------------------------------------------------
-        # 3. Volume 계열 제거 + 상수 피처 제거
+        # 3. 피처 컬럼 선택
         # -------------------------------------------------------------
-        remove_patterns = [
-            "Volume_^FVX", "Volume_^IRX", "Volume_^TNX",
-            "Volume_^VIX", "Volume_DX-Y.NYB",
-            "Volume_EURUSD=X", "Volume_USDJPY=X"
-        ]
-        macro_full = macro_full.drop(
-            columns=[c for c in macro_full.columns if any(p in c for p in remove_patterns)],
-            errors='ignore'
+        all_numeric_cols = merged.select_dtypes(include=["number"]).columns.tolist()
+        cols_to_exclude = {self.ticker, f"{self.ticker}_target"}
+        feature_cols = [c for c in all_numeric_cols if c not in cols_to_exclude]
+
+        X_all = merged[feature_cols].fillna(0)
+
+        # -------------------------------------------------------------
+        # 4. Volume 및 상수 컬럼 제거
+        # -------------------------------------------------------------
+        remove_patterns = ["Volume_", "Unnamed:"]
+        X_all = X_all.drop(
+            columns=[c for c in X_all.columns if any(p in c for p in remove_patterns)],
+            errors="ignore"
         )
 
-        # ★ Date 보존
-        date_col = macro_full['Date']
+        constant_cols = []
+        for c in X_all.columns:
+            std_val = X_all[c].std()
+            if isinstance(std_val, pd.Series):
+                std_val = std_val.mean()
+            if np.isclose(std_val, 0.0):
+                constant_cols.append(c)
 
-        # ★ 숫자 컬럼만 추출
-        numeric_cols = macro_full.select_dtypes(include=['number'])
+        if constant_cols:
+            X_all = X_all.drop(columns=constant_cols, errors="ignore")
 
-        # ★ 상수 컬럼 제거
-        constant_cols = [c for c in numeric_cols.columns if numeric_cols[c].std() == 0]
-        numeric_cols = numeric_cols.drop(columns=constant_cols, errors="ignore")
-
-        # ★ Date + 숫자컬럼 다시 병합 → Date 유지됨!
-        macro_full = pd.concat([date_col, numeric_cols], axis=1)
-
-        # -------------------------------------------------------------
-        # 4. 주가 기반 피처 생성
-        # -------------------------------------------------------------
-        t = self.ticker
-        price_df[f"{t}_ret1"]  = price_df[t].pct_change()
-        price_df[f"{t}_ma5"]   = price_df[t].rolling(5).mean()
-        price_df[f"{t}_ma10"]  = price_df[t].rolling(10).mean()
-        price_df = price_df.fillna(method='bfill')
+        feature_cols = X_all.columns.tolist()
 
         # -------------------------------------------------------------
-        # 5. 날짜 기준 병합
-        # -------------------------------------------------------------
-        merged = pd.merge(price_df, macro_full, on="Date", how="inner").sort_values("Date")
-        self.merged_df = merged.reset_index(drop=True)
-
-        # -------------------------------------------------------------
-        # 6. Feature 컬럼 선택
-        # -------------------------------------------------------------
-        macro_cols  = [c for c in macro_full.columns if c != 'Date']
-        price_cols  = [c for c in merged.columns if t in c and ('_ret' in c or '_ma' in c)]
-        feature_cols = macro_cols + price_cols
-
-        X_all = merged[feature_cols]
-
-        # -------------------------------------------------------------
-        # 7. 입력 스케일링 (scaler_X)
+        # 5. 입력 스케일링
         # -------------------------------------------------------------
         scaler_X = StandardScaler()
         X_scaled = scaler_X.fit_transform(X_all)
         X_scaled = pd.DataFrame(X_scaled, columns=feature_cols)
 
         # -------------------------------------------------------------
-        # 8. 타깃 생성
+        # 6. 타깃(Target) 생성
         # -------------------------------------------------------------
-        merged[f"{t}_target"] = merged[t].pct_change().shift(-1)
-        y_all = merged[[f"{t}_target"]].dropna().reset_index(drop=True)
-        X_scaled = X_scaled.iloc[:len(y_all)]   # 길이 맞추기
+        possible_cols = [self.ticker, f"{self.ticker}_Close", "Close"]
+        price_series = None
+
+        for col in possible_cols:
+            if col in merged.columns:
+                price_series = merged[col]
+                # 혹시 DataFrame일 경우 첫 열만 선택
+                if isinstance(price_series, pd.DataFrame):
+                    price_series = price_series.iloc[:, 0]
+                break
+
+        if price_series is None:
+            raise KeyError(f"종가 관련 컬럼을 찾을 수 없습니다. available={list(merged.columns)[:15]}")
+
+        # 다음날 수익률 생성
+        merged[f"{self.ticker}_target"] = price_series.astype(float).pct_change().shift(-1)
 
         # -------------------------------------------------------------
-        # 9. 출력 스케일링 (scaler_y)
+        # 7. y 스케일링
         # -------------------------------------------------------------
+        y_all = merged[[f"{self.ticker}_target"]].dropna().reset_index(drop=True)
+        X_scaled = X_scaled.iloc[:len(y_all)]
+
         scaler_y = MinMaxScaler(feature_range=(-1, 1))
         y_scaled = scaler_y.fit_transform(y_all)
 
         # -------------------------------------------------------------
-        # 10. 시퀀스 생성
+        # 8. 시퀀스 데이터 생성
         # -------------------------------------------------------------
         def create_sequences(X, y, window=40):
             Xs, ys = [], []
@@ -243,14 +266,14 @@ class MacroAData:
         X_seq, y_seq = create_sequences(X_scaled, y_scaled, window=40)
 
         # -------------------------------------------------------------
-        # 11. Train/Test split (여기까지만 하고 저장)
+        # 9. Train/Test 분리
         # -------------------------------------------------------------
         split_idx = int(len(X_seq) * 0.8)
         self.X_train, self.X_test = X_seq[:split_idx], X_seq[split_idx:]
         self.y_train, self.y_test = y_seq[:split_idx], y_seq[split_idx:]
 
         # -------------------------------------------------------------
-        # 12. 스케일러 저장
+        # 10. 스케일러 저장
         # -------------------------------------------------------------
         os.makedirs(os.path.dirname(self.scaler_X_path), exist_ok=True)
         scaler_X.feature_names_in_ = np.array(feature_cols)
@@ -259,9 +282,9 @@ class MacroAData:
         joblib.dump(scaler_y, self.scaler_y_path)
 
         # -------------------------------------------------------------
-        # 13. 객체에 유지
+        # 11. 완료 로그
         # -------------------------------------------------------------
         self.scaler_X = scaler_X
         self.scaler_y = scaler_y
 
-        print(f"[OK] MacroAData.model_maker: 데이터 + 시퀀스 + 스케일러 생성 완료")
+        print(f"[OK] MacroAData.model_maker 완료: {len(X_seq)} samples, {len(feature_cols)} features")
