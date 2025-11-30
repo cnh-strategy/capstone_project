@@ -549,6 +549,14 @@ class RollingBacktester:
         
         print(f"\n✅ Analysis complete! Charts saved to: {output_dir}")
 
+        return {
+            "mse": metrics["MSE"],
+            "mae": metrics["MAE"],
+            "direction_acc": dir_acc,
+            "strategy_return": prof_res['Strategy_Return'],
+            "buy_hold_return": prof_res['BuyHold_Return']
+        }
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Rolling Backtest Runner with Auto Analysis")
     parser.add_argument("--ticker", type=str, required=True, help="Target Ticker (e.g. AAPL)")
