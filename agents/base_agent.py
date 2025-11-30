@@ -214,6 +214,27 @@ class BaseAgent:
             "additionalProperties": False,
         }
 
+    # ===============================================================
+    # 백테스팅 지원 메서드 (외부 호출용)
+    # ===============================================================
+    def set_test_mode(self, mode: bool):
+        """백테스팅 모드 활성화/비활성화"""
+        self.test_mode = mode
+
+    def set_simulation_date(self, date_str: str):
+        """
+        백테스팅 시뮬레이션 기준 날짜 설정
+        이 날짜를 기준으로 과거 데이터만 로드하게 됩니다.
+        """
+        self.simulation_date = date_str
+        self.test_mode = True  # 날짜가 설정되면 자동으로 테스트 모드로 간주
+
+    def set_training_window(self, start_date: str):
+        """
+        백테스팅 학습 시작 날짜 설정
+        """
+        self.training_start_date = start_date
+
     def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
         """
         데이터를 검색하고 준비하는 메서드. 
@@ -397,12 +418,22 @@ class BaseAgent:
 
         X_tensor = X_tensor.to(device)
 
-        # 모델 로드 확인
+        # 모델 로드 확인 (재귀 방지 플래그 확인)
+        if not hasattr(self, "_in_pretrain"):
+            self._in_pretrain = False
+        
         if not hasattr(self, "model") or self.model is None:
              if not self.load_model():
-                 # 모델이 없으면 pretrain 시도
-                 print(f"[{self.agent_id}] 모델이 로드되지 않아 pretrain을 시도합니다.")
-                 self.pretrain()
+                 # 모델이 없으면 pretrain 시도 (재귀 방지)
+                 if not self._in_pretrain:
+                     print(f"[{self.agent_id}] 모델이 로드되지 않아 pretrain을 시도합니다.")
+                     self._in_pretrain = True
+                     try:
+                         self.pretrain()
+                     finally:
+                         self._in_pretrain = False
+                 else:
+                     raise RuntimeError(f"[{self.agent_id}] pretrain 중 predict 호출로 인한 재귀 호출 방지")
 
         # 2) Monte Carlo Dropout 실행
         self.model.train() # Dropout 활성화
@@ -608,13 +639,56 @@ class BaseAgent:
         # 1. 합의 가격 계산
         revised_price = self._calculate_consensus_price(my_opinion, others)
 
-        # 2. Fine-tuning
+        # 2. Fine-tuning 및 재예측을 위한 데이터 준비 (한 번만 호출)
+        X_latest = None
         loss_value = None
         model = getattr(self, "model", None)
         if model is None and isinstance(self, torch.nn.Module):
             model = self
 
-        if fine_tune and model is not None:
+        # searcher를 한 번만 호출하여 데이터 준비
+        try:
+            X_latest = self.searcher(self.ticker)
+        except Exception as e:
+            print(f"[{self.agent_id}] searcher 호출 실패: {e}")
+            # searcher 실패 시 합의 가격 사용
+            predicted_target = Target(
+                next_close=float(revised_price),
+                uncertainty=my_opinion.target.uncertainty,
+                confidence=my_opinion.target.confidence
+            )
+            # LLM Revision 메시지 생성으로 건너뛰기
+            try:
+                sys_text, user_text = self._build_messages_revision(
+                    my_opinion=my_opinion,
+                    others=others,
+                    rebuttals=rebuttals,
+                    stock_data=stock_data,
+                )
+            except Exception as e:
+                print(f"[{self.agent_id}] Revision 메시지 생성 실패: {e}")
+                sys_text, user_text = ("금융 분석가입니다.", json.dumps({"reason": "메시지 생성 실패"}))
+            
+            parsed = self._ask_with_fallback(
+                self._msg("system", sys_text),
+                self._msg("user", user_text),
+                {
+                    "type": "object",
+                    "properties": {"reason": {"type": "string"}},
+                    "required": ["reason"],
+                    "additionalProperties": False,
+                },
+            )
+            revised_reason = parsed.get("reason", "(수정 사유 생성 실패)")
+            revised_opinion = Opinion(
+                agent_id=self.agent_id,
+                target=predicted_target,
+                reason=revised_reason,
+            )
+            self.opinions.append(revised_opinion)
+            return revised_opinion
+
+        if fine_tune and model is not None and X_latest is not None:
             try:
                 current_price = getattr(stock_data, "last_price", None)
                 if current_price is None:
@@ -636,14 +710,13 @@ class BaseAgent:
                 else:
                     y_target_scaled = revised_return_scaled
 
-                # 학습 데이터 준비
-                X_input = self.searcher(self.ticker)
+                # 학습 데이터 준비 (이미 X_latest를 가져왔으므로 재사용)
                 device = next(model.parameters()).device if hasattr(model, "parameters") else torch.device("cpu")
                 
-                if isinstance(X_input, torch.Tensor):
-                    X_tensor = X_input.to(device).float()
+                if isinstance(X_latest, torch.Tensor):
+                    X_tensor = X_latest.to(device).float()
                 else:
-                    X_tensor = torch.tensor(X_input, dtype=torch.float32).to(device)
+                    X_tensor = torch.tensor(X_latest, dtype=torch.float32).to(device)
                 
                 y_tensor = torch.tensor([[y_target_scaled]], dtype=torch.float32).to(device)
 
@@ -669,9 +742,8 @@ class BaseAgent:
             except Exception as e:
                 print(f"[{self.agent_id}] Fine-tuning 실패: {e}")
 
-        # 3. 재예측 (Target 갱신)
+        # 3. 재예측 (Target 갱신) - X_latest 재사용
         try:
-            X_latest = self.searcher(self.ticker)
             predicted_target = self.predict(X_latest, current_price=getattr(stock_data, "last_price", None))
         except Exception as e:
             print(f"[{self.agent_id}] 재예측 실패, 합의 가격 사용: {e}")

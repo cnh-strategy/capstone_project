@@ -652,26 +652,129 @@ class MacroAgent(BaseAgent, nn.Module):
         Returns:
             Target: 예측 결과 객체
         """
-        # BaseAgent의 predict 로직을 그대로 사용하되, self.model = self 로 설정
-        # 모델 파일이 없으면 pretrain 호출
-        if not os.path.exists(self.model_path):
-            print(f"[{self.agent_id}] 모델이 없어 pretrain()을 실행합니다...")
-            self.pretrain()
+        if n_samples is None:
+            n_samples = common_params.get("n_samples", 30)
         
-        # 모델 로드
-        if not hasattr(self, "model_loaded") or not self.model_loaded:
-            self.load_model(self.model_path)
+        if not self.ticker:
+            raise ValueError("ticker가 설정되지 않았습니다. 먼저 searcher(ticker)를 호출하세요.")
             
+        # 재귀 방지 플래그 확인
+        if not hasattr(self, "_in_pretrain"):
+            self._in_pretrain = False
+        
+        # 모델 파일 체크 및 Pretrain
+        if not os.path.exists(self.model_path):
+            if not self._in_pretrain:
+                print(f"[{self.agent_id}] 모델이 없어 pretrain()을 실행합니다...")
+                self._in_pretrain = True
+                try:
+                    self.pretrain()
+                finally:
+                    self._in_pretrain = False
+            else:
+                raise RuntimeError(f"[{self.agent_id}] pretrain 중 predict 호출로 인한 재귀 호출 방지")
+        else:
+            if not hasattr(self, "model_loaded") or not self.model_loaded:
+                self.load_model(self.model_path)
+                
         # 스케일러 로드
+        scaler_x_path = os.path.join(self.model_dir, "scalers", f"{self.ticker}_{self.agent_id}_xscaler.pkl")
+        if not os.path.exists(scaler_x_path):
+             # 스케일러 없으면 pretrain (재귀 방지)
+             if not self._in_pretrain:
+                 self._in_pretrain = True
+                 try:
+                     self.pretrain()
+                 finally:
+                     self._in_pretrain = False
+             else:
+                 raise RuntimeError(f"[{self.agent_id}] pretrain 중 predict 호출로 인한 재귀 호출 방지")
+
         self.scaler.load(self.ticker)
         
-        # BaseAgent.predict 호출 (self를 모델로 사용)
-        # 여기서는 super().predict를 호출하는 대신, BaseAgent의 로직을 일부 오버라이딩하거나
-        # BaseAgent.predict가 self.model을 사용할 때 self를 할당해두었는지 확인해야 함.
-        # MacroAgent는 nn.Module이므로 self 자체가 모델임.
-        self.model = self
+        # 입력 데이터 처리
+        if isinstance(X, StockData):
+            sd = X
+            X_in = getattr(sd, "X_seq", None)
+            if X_in is None:
+                X_in = getattr(sd, self.agent_id, None)
+                if isinstance(X_in, dict):
+                    df = pd.DataFrame(X_in)
+                    X_in = df.values
+            if X_in is None:
+                raise ValueError(f"StockData에 {self.agent_id} 데이터가 없습니다.")
+            if current_price is None and getattr(sd, "last_price", None) is not None:
+                current_price = float(sd.last_price)
+            X = X_in
+
+        if isinstance(X, np.ndarray):
+            X_raw_np = X.copy()
+        elif isinstance(X, torch.Tensor):
+            X_raw_np = X.detach().cpu().numpy().copy()
+        else:
+            raise TypeError(f"Unsupported input type: {type(X)}")
+
+        # 차원 확인
+        if X_raw_np.ndim == 2:
+            X_raw_np = X_raw_np[None, :, :]
         
-        return super().predict(X, n_samples, current_price)
+        # 스케일링
+        X_scaled, _ = self.scaler.transform(X_raw_np)
+        
+        model = self # 로컬 변수로 사용
+        device = self.device if hasattr(self, "device") else next(model.parameters()).device
+        
+        X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(device)
+        model.to(device)
+        
+        model.train() # Dropout 활성화
+        preds = []
+        with torch.no_grad():
+            for _ in range(n_samples):
+                out = model(X_tensor)
+                if isinstance(out, (tuple, list)):
+                    out = out[0]
+                preds.append(out.detach().cpu().numpy().flatten())
+
+        preds = np.stack(preds)
+        mean_pred = preds.mean(axis=0)
+        std_pred = np.abs(preds.std(axis=0))
+
+        # 불확실성 계산
+        sigma = float(std_pred[-1])
+        sigma_min = common_params.get("sigma_min", 1e-6)
+        sigma = max(sigma, sigma_min)
+        confidence = 1.0 / (1.0 + np.log1p(sigma))
+
+        # 역변환
+        if hasattr(self.scaler, "y_scaler") and self.scaler.y_scaler is not None:
+            mean_pred = self.scaler.inverse_y(mean_pred)
+            std_pred = self.scaler.inverse_y(std_pred)
+
+        # 현재가 설정
+        if current_price is None:
+            last_price = getattr(getattr(self, "stockdata", None), "last_price", None)
+            default_price = common_params.get("default_current_price", 100.0)
+            current_price = default_price if last_price is None else float(last_price)
+
+        # 수익률 -> 가격 변환
+        y_scale_factor = common_params.get("y_scale_factor", 100.0)
+        predicted_return = float(mean_pred[-1]) / y_scale_factor
+        
+        # 클리핑
+        cfg = agents_info.get(self.agent_id, {})
+        return_clip_min = cfg.get("return_clip_min", -0.5)
+        return_clip_max = cfg.get("return_clip_max", 0.5)
+        predicted_return = np.clip(predicted_return, return_clip_min, return_clip_max)
+        
+        predicted_price = current_price * (1.0 + predicted_return)
+
+        target = Target(
+            next_close=float(predicted_price),
+            uncertainty=float(sigma),
+            confidence=float(confidence),
+        )
+        return target
 
     
     def reviewer_draft(self, stock_data: StockData = None, target: Target = None) -> Opinion:
