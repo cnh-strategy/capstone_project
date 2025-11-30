@@ -969,18 +969,36 @@ class TechnicalAgent(BaseAgent, nn.Module):
         if not self.ticker:
             raise ValueError("ticker가 설정되지 않았습니다. 먼저 searcher(ticker)를 호출하세요.")
         
+        # 재귀 방지 플래그 확인
+        if not hasattr(self, "_in_pretrain"):
+            self._in_pretrain = False
+        
         model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
         if not os.path.exists(model_path):
-            print(f"[{self.agent_id}] 모델이 없어 pretrain()을 실행합니다...")
-            self.pretrain()
+            if not self._in_pretrain:
+                print(f"[{self.agent_id}] 모델이 없어 pretrain()을 실행합니다...")
+                self._in_pretrain = True
+                try:
+                    self.pretrain()
+                finally:
+                    self._in_pretrain = False
+            else:
+                raise RuntimeError(f"[{self.agent_id}] pretrain 중 predict 호출로 인한 재귀 호출 방지")
         else:
             if not hasattr(self, "model_loaded") or not self.model_loaded:
                 self.load_model(model_path)
         
         scaler_x_path = os.path.join(self.scaler.save_dir, f"{self.ticker}_{self.agent_id}_xscaler.pkl")
         if not os.path.exists(scaler_x_path):
-            print(f"[{self.agent_id}] 스케일러가 없어 pretrain()을 실행합니다...")
-            self.pretrain()
+            if not self._in_pretrain:
+                print(f"[{self.agent_id}] 스케일러가 없어 pretrain()을 실행합니다...")
+                self._in_pretrain = True
+                try:
+                    self.pretrain()
+                finally:
+                    self._in_pretrain = False
+            else:
+                raise RuntimeError(f"[{self.agent_id}] pretrain 중 predict 호출로 인한 재귀 호출 방지")
         
         model = self
         self.scaler.load(self.ticker)

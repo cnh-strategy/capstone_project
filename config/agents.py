@@ -70,7 +70,7 @@ agents_info = {
         
         # 모델 하이퍼파라미터
         "input_dim": 13,
-        "window_size": 40,              # 시계열 윈도우 크기 (Lookback period)
+        "window_size": 20,              # 시계열 윈도우 크기 (Lookback period)
         "rnn_units1": 64,               # LSTM 1층 히든 유닛 수
         "rnn_units2": 32,               # LSTM 2층 히든 유닛 수
         "dropout": 0.18778570103014075, # Dropout 비율

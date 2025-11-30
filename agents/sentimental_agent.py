@@ -689,10 +689,21 @@ class SentimentalAgent(BaseAgent):
         if not self.ticker:
             raise ValueError("ticker가 설정되지 않았습니다.")
         
+        # 재귀 방지 플래그 확인
+        if not hasattr(self, "_in_pretrain"):
+            self._in_pretrain = False
+        
         model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
         if not os.path.exists(model_path):
-            print(f"[{self.agent_id}] 모델이 없어 pretrain()을 실행합니다...")
-            self.pretrain()
+            if not self._in_pretrain:
+                print(f"[{self.agent_id}] 모델이 없어 pretrain()을 실행합니다...")
+                self._in_pretrain = True
+                try:
+                    self.pretrain()
+                finally:
+                    self._in_pretrain = False
+            else:
+                raise RuntimeError(f"[{self.agent_id}] pretrain 중 predict 호출로 인한 재귀 호출 방지")
         else:
             if not hasattr(self, "model_loaded") or not self.model_loaded:
                 if getattr(self, "model", None) is None:
