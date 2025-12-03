@@ -219,6 +219,49 @@ python scripts/rolling_backtest.py --ticker TSLA --predict-days 5 --rounds 3
 
 자세한 내용은 [backtest/README.md](backtest/README.md)를 참조하세요.
 
+### 파라미터 최적화 (Hyperparameter Tuning)
+
+`run_tuning.py`를 사용하여 백테스트 파라미터를 최적화할 수 있습니다. 이 스크립트는 다양한 하이퍼파라미터 조합을 테스트하고 최적의 설정을 찾아줍니다.
+
+#### 사용 방법
+
+**기본 사용법**:
+```bash
+# 단일 티커에 대한 파라미터 튜닝
+python run_tuning.py
+```
+
+**주요 기능**:
+- **그리드 서치**: 모든 파라미터 조합을 테스트하여 최적의 설정 탐색
+- **자동 실험 관리**: 각 실험마다 모델과 데이터를 자동으로 정리하고 재생성
+- **실시간 결과 저장**: 실험 진행 중간에도 결과를 CSV 파일로 저장
+- **다중 티커 지원**: 여러 종목에 대해 순차적으로 튜닝 수행
+
+**튜닝되는 파라미터**:
+- **공통 파라미터**: `fine_tune_lr` (학습률)
+- **TechnicalAgent**: `window_size`, `rnn_units1`, `learning_rate`
+- **SentimentalAgent**: `window_size`, `d_model`, `learning_rate`
+- **MacroAgent**: `window_size`, `learning_rate`
+
+**출력 파일**:
+- **튜닝 요약**: `backtest/tuning_results/{TICKER}/tuning_summary_{TICKER}_{TIMESTAMP}.csv`
+- **실험별 결과**: `backtest/tuning_results/{TICKER}/exp_{N}/rolling_{TICKER}_{START}_{END}.csv`
+- **실행 로그**: `backtest/tuning_results/{TICKER}/tuning_log_{TICKER}_{TIMESTAMP}.txt`
+- **전체 요약**: `backtest/tuning_results/total_best_summary_{TIMESTAMP}.csv`
+
+**결과 분석**:
+튜닝 완료 후 생성된 CSV 파일에서 다음 지표를 확인할 수 있습니다:
+- `strategy_return`: 전략 수익률 (%)
+- `buy_hold_return`: 바이앤홀드 수익률 (%)
+- `direction_acc`: 방향 정확도 (%)
+- `mse`, `mae`: 예측 오차 지표
+- 각 에이전트별 정확도 (`TechnicalAgent_acc`, `SentimentalAgent_acc`, `MacroAgent_acc`)
+
+**주의사항**:
+- 튜닝은 시간이 오래 걸릴 수 있습니다 (각 실험마다 모델 학습 및 백테스트 수행)
+- 실험 중간에 중단되더라도 이미 완료된 실험 결과는 저장되어 있습니다
+- 로그 파일을 확인하여 진행 상황을 모니터링할 수 있습니다
+
 ## 🚀 향후 계획
 
 - [ ] 더 많은 에이전트 추가 (Quantitative, ESG 등)
