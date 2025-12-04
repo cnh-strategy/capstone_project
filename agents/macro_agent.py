@@ -32,13 +32,14 @@ MACRO_TICKERS = {
     "GC=F": "GC=F", "CL=F": "CL=F", "HG=F": "HG=F"
 }
 
-# 최종 사용할 피처 리스트 정의 (확장 버전 - OHLCV 모두 포함)
+# 최종 사용할 피처 리스트 정의
 _macro_base_features = []
+# OHLCV 대신 Close와 ret_1d만 포함
 for t in sorted(MACRO_TICKERS.values()):
-    # OHLCV + Return
-    for col in ["Open", "High", "Low", "Close", "Volume"]:
+    # Open, High, Low, Volume 제거, Close 유지
+    for col in ["Close"]:
         _macro_base_features.append(f"{t}_{col}")
-    _macro_base_features.append(f"{t}_ret_1d")
+    _macro_base_features.append(f"{t}_ret_1d") # 수익률(ret_1d)은 방향 예측에 필수
 
 _macro_derived_features = ["Yield_spread", "Risk_Sentiment"]
 _stock_features = ["ret1", "ma5", "ma10"]
@@ -132,15 +133,6 @@ class MacroAgent(BaseAgent, nn.Module):
 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        모델 Forward Pass
-
-        Args:
-            x: 입력 텐서 (Batch, Time, Features)
-
-        Returns:
-            torch.Tensor: 예측된 수익률 (Batch, Output_Dim)
-        """
         # LSTM layers
         h1, _ = self.lstm1(x)
         h1 = self.drop1(h1)
@@ -200,7 +192,18 @@ class MacroAgent(BaseAgent, nn.Module):
             df_macro = df_macro.stack(level=0)
             df_macro.index.names = ["Date", "Ticker"]
             df_macro = df_macro.unstack(level="Ticker")
+
+            # 모든 컬럼 이름을 Ticker_OHLCV 형태로 평탄화
             df_macro.columns = [f"{col[1]}_{col[0]}" for col in df_macro.columns.values]
+
+            # Close만 명시적으로 필터링하는 로직 추가
+            cols_to_keep = []
+            for t in MACRO_TICKERS.values():
+                cols_to_keep.append(f"{t}_Close") # Close만 유지
+
+            # 최종적으로 유지할 컬럼만 선택
+            df_macro = df_macro[[c for c in cols_to_keep if c in df_macro.columns]]
+
         else:
             df_macro.index.name = "Date"
 
@@ -819,6 +822,7 @@ class MacroAgent(BaseAgent, nn.Module):
 
                 gradient_analyzer = GradientAnalyzer(self, feature_names)
                 importance_dict, temporal_df, consistency_df, sensitivity_df, grad_results = gradient_analyzer.run_all_gradients(X_scaled_np)
+
 
                 # 분석 결과 저장
                 if stock_data:
