@@ -133,12 +133,12 @@ agents_info = {
         ],
         
         # 모델 하이퍼파라미터
-        "hidden_dims": [128, 64, 32],   # LSTM 3개 층 히든 사이즈
+        "hidden_dims": [64, 32, 16],   # LSTM 3개 층 히든 사이즈
         "dropout_rates": [0.3, 0.3, 0.2], # 각 층별 Dropout 비율
-        "window_size": 40,              # 시계열 윈도우 크기
+        "window_size": 45,              # 시계열 윈도우 크기
         "epochs": 60,
         "patience": 10,
-        "learning_rate": 0.0005,
+        "learning_rate": 0.007,
         "batch_size": 16,
         
         # 설정 및 기타
