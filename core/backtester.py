@@ -104,7 +104,7 @@ class Backtester:
         # ---------------------------------------------------------
         # 1. 가격 데이터 다운로드 (Target Dates 설정)
         # ---------------------------------------------------------
-        df_price = yf.download(self.ticker, start=self.data_start_date, end=self.end_date, progress=False)
+        df_price = yf.download(self.ticker, start=self.data_start_date, end=self.end_date, progress=False, auto_adjust=False)
         if isinstance(df_price.columns, pd.MultiIndex):
             df_price.columns = [c[0] for c in df_price.columns]
         df_price = df_price.reset_index()

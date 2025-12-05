@@ -1,0 +1,107 @@
+🚀 Starting SOLO Tuning for MSFT - TechnicalAgent
+🎯 Target Metric: TechnicalAgent_acc (방향 정확도 %)
+📅 Fixed Predict Days: 30
+🎲 Max Experiments: 50
+📝 Log file: backtest/tuning_results/MSFT/solo_TechnicalAgent/solo_tuning_log_MSFT_TechnicalAgent_20251203_130219.txt
+================================================================================
+
+🔍 Total possible combinations: 81
+⚡ Too many combinations (81). Randomly sampling 50...
+
+================================================================================
+🧪 Experiment 1/50
+🎯 Target Agent: TechnicalAgent
+⚙️ Params: {'common__fine_tune_lr': 0.0001, 'TechnicalAgent__window_size': 20, 'TechnicalAgent__rnn_units1': 64, 'TechnicalAgent__learning_rate': 0.001}
+================================================================================
+🧹 Cleaning up models & processed data (keeping raw news/datasets)...
+[INFO] Config Period: 2y -> Train Days: 730
+[INFO] 자동 계산된 시작일: 2025-10-22 (오늘로부터 30 거래일 전)
+
+============================================================
+📊 Preparing data for MSFT
+    Train days: 730
+    Predict days: 30
+    Backtest data dir: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed
+============================================================
+
+[INFO] 각 Agent의 searcher()를 호출하여 데이터 준비 중...
+
+[TechnicalAgent] searcher 실행 중...
+[TechnicalAgent] Rebuild 요청됨. Raw CSV 재생성 중...
+✅ [TechnicalAgent] Raw CSV 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/raw/MSFT_TechnicalAgent_raw.csv (501 rows)
+✅ [TechnicalAgent] Searcher 완료: 윈도우 shape (1, 20, 13)
+✅ [TechnicalAgent] 데이터 준비 완료
+
+[MacroAgent] searcher 실행 중...
+[MacroAgent] Rebuild 요청됨. Raw CSV 재생성 중...
+[MacroAgent] Raw CSV 생성 중...
+✅ [MacroAgent] Raw CSV 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/raw/MSFT_MacroAgent_raw.csv (501 rows, period: 2y)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+✅ [MacroAgent] 데이터 준비 완료
+
+[SentimentalAgent] searcher 실행 중...
+[SentimentalAgent] Raw CSV 생성 중...
+✅ [SentimentalAgent] Raw CSV 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/raw/MSFT_SentimentalAgent_raw.csv (501 rows)
+✅ [SentimentalAgent] Searcher 완료: 윈도우 shape (1, 10, 8)
+✅ [SentimentalAgent] 데이터 준비 완료
+
+✅ Data preparation complete.
+
+============================================================
+🚀 [1/30] Running Backtest for 2025-10-22
+    Train window: 2023-10-23 ~ 2025-10-22
+============================================================
+[INFO] 필터링된 데이터셋 생성: TechnicalAgent (472행)
+[INFO] 필터링된 데이터셋 생성: MacroAgent (472행)
+[INFO] 필터링된 데이터셋 생성: SentimentalAgent (472행)
+[TechnicalAgent] Simulation=2025-10-22, TrainStart=2023-10-23
+[MacroAgent] Simulation=2025-10-22, TrainStart=2023-10-23
+[SentimentalAgent] Simulation=2025-10-22, TrainStart=2023-10-23
+
+================================================================================
+[13:02:21] Round 0: 초기 Opinion 수집 (LLM Skip, force_pretrain=True)
+================================================================================
+[13:02:21] [TechnicalAgent] searcher 실행
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [TechnicalAgent] Searcher 완료: 윈도우 shape (1, 20, 13)
+[13:02:21] [TechnicalAgent] pretrain 실행
+[13:02:21] Pretraining TechnicalAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+[INFO] 백테스팅 모드: 2025-10-22 이전 데이터 사용 중, 마지막 타겟 제거
+[INFO] 시퀀스 생성 완료: (450, 20, 13), (450, 1)
+  Epoch 005/45 | Loss: 0.436546
+  Epoch 010/45 | Loss: 0.323291
+  Epoch 015/45 | Loss: 0.341891
+  Epoch 020/45 | Loss: 0.343763
+  Epoch 025/45 | Loss: 0.332349
+  Epoch 030/45 | Loss: 0.351678
+  Epoch 035/45 | Loss: 0.403429
+  Epoch 040/45 | Loss: 0.324111
+  Epoch 045/45 | Loss: 0.318153
+✅ TechnicalAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_TechnicalAgent.pt (Final Loss: 0.318153)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_TechnicalAgent_dataset.csv
+[13:02:27] [TechnicalAgent] predict 실행
+[13:02:27] [TechnicalAgent] Opinion 생성 (LLM Skip)
+  - TechnicalAgent: next_close=516.7185
+[13:02:27] [MacroAgent] searcher 실행
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+[13:02:27] [MacroAgent] pretrain 실행
+[13:02:27] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+[INFO] 백테스팅 모드: 2025-10-22 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (430, 40, 95), (430, 1)
+  Epoch 005/60 | Loss: 0.066960
+  Epoch 010/60 | Loss: 0.064784
+  Epoch 015/60 | Loss: 0.064069
+  Epoch 020/60 | Loss: 0.063829
+  Epoch 025/60 | Loss: 0.062580
+  Epoch 030/60 | Loss: 0.062488
+  Epoch 035/60 | Loss: 0.064922
+  Epoch 040/60 | Loss: 0.062721
+  Epoch 045/60 | Loss: 0.063594
+
+================================================================================
+🏁 SOLO Tuning Completed
+================================================================================
+❌ No results collected.

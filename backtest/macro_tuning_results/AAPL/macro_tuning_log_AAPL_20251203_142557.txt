@@ -1,0 +1,42 @@
+🚀 MacroAgent 파라미터 튜닝 시작: AAPL
+📅 예측 일수: 30일
+📅 시작 날짜: 자동 계산
+🎲 최대 실험 횟수: 30
+📝 로그 파일: backtest/macro_tuning_results/AAPL/macro_tuning_log_AAPL_20251203_142557.txt
+================================================================================
+
+📊 초기 데이터셋 생성 중...
+[TRACE B] macro_dataset() start for AAPL
+[MacroAgent] Data shape: (1302, 90), Columns: 90
+[INFO] Feature engineering complete: (1255, 112)
+[MacroAgent] Saved: data/raw/AAPL_MacroAgent_raw.csv
+[make_close_price] 저장 완료: (1255, 2) rows at data/processed/daily_closePrice.csv
+macro: 데이터셋 생성 완료> AAPL
+[DEBUG] merged columns sample: ['Date', 'Close', 'CL=F_Open', 'DX-Y.NYB_Open', 'EURUSD=X_Open', 'GC=F_Open', 'HG=F_Open', 'QQQ_Open', 'SPY_Open', 'USDJPY=X_Open', '^DJI_Open', '^FVX_Open', '^GSPC_Open', '^IRX_Open', '^IXIC_Open']
+[OK] MacroAData.model_maker 완료: 1214 samples, 103 features
+macro: 모델 생성 완료> AAPL
+✅ AAPL MacroAgent dataset saved (macro_dataset 호출 via relative: .macro_classes.macro_funcs)
+✅ 데이터셋 생성 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed
+
+🔍 총 가능한 조합: 729
+⚡ 조합이 너무 많습니다. 30개를 랜덤 샘플링합니다...
+
+================================================================================
+🧪 실험 1/30
+⚙️ 파라미터: {'window_size': 40, 'hidden_dims': [256, 128, 64], 'dropout_rates': [0.2, 0.2, 0.1], 'learning_rate': 0.0001, 'batch_size': 64, 'epochs': 20}
+================================================================================
+🧹 기존 모델 및 스케일러 정리 중...
+📈 롤링 예측 및 방향 예측도 계산 중...
+  📅 예측 기간: 2025-10-22 ~ 2025-12-02 (30일)
+  [1/30] 2025-10-22 예측 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+[14:25:59] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+[INFO] 백테스팅 모드: 2025-10-22 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (430, 40, 95), (430, 1)
+
+================================================================================
+🏁 튜닝 완료
+================================================================================
+⚠️ 저장된 결과가 없습니다.

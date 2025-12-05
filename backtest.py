@@ -331,6 +331,7 @@ class RollingBacktester:
     def _prepare_filtered_datasets(self, sim_date: str):
         """
         시뮬레이션 날짜 이전 데이터만 포함하는 임시 CSV 파일 생성
+        (데이터 누수 방지: 시뮬레이션 날짜의 데이터는 절대 포함하지 않음)
         """
         sim_date_dt = pd.to_datetime(sim_date)
         temp_dir = os.path.join(BACKTEST_RAW_DIR, "backtest_temp")
@@ -351,17 +352,26 @@ class RollingBacktester:
                 df["Date"] = pd.to_datetime(df["Date"])
                 df = df.sort_values("Date").reset_index(drop=True)
                 
-                # 미래 데이터 필터링
+                # 미래 데이터 필터링 (시뮬레이션 날짜 포함 제외)
                 df_filtered = df[df["Date"] < sim_date_dt].copy()
                 
+                # 데이터 누수 검증: 시뮬레이션 날짜의 데이터가 포함되지 않았는지 확인
                 if len(df_filtered) > 0:
+                    last_date = df_filtered["Date"].max()
+                    if last_date >= sim_date_dt:
+                        raise ValueError(
+                            f"데이터 누수 감지! {agent_id}: 필터링된 데이터의 마지막 날짜({last_date.date()})가 "
+                            f"시뮬레이션 날짜({sim_date})보다 크거나 같습니다."
+                        )
+                    
                     df_filtered.to_csv(temp_path, index=False)
-                    print(f"[INFO] 필터링된 데이터셋 생성: {agent_id} ({len(df_filtered)}행)")
+                    print(f"[INFO] 필터링된 데이터셋 생성: {agent_id} ({len(df_filtered)}행, 마지막 날짜: {last_date.date()})")
                 else:
                     print(f"[WARN] 필터링된 데이터가 없음: {agent_id} ({sim_date})")
                     
             except Exception as e:
                 print(f"[WARN] 데이터셋 필터링 실패 ({agent_id}): {e}")
+                raise
     
     def _cleanup_filtered_datasets(self, sim_date: str):
         """임시 생성된 필터링 데이터셋 삭제"""
@@ -391,7 +401,7 @@ class RollingBacktester:
             os.path.join(BACKTEST_MODEL_DIR, f"{ticker}_TechnicalAgent.pt"),
             os.path.join(BACKTEST_MODEL_DIR, f"{ticker}_MacroAgent.pt"),
             os.path.join(BACKTEST_MODEL_DIR, f"{ticker}_SentimentalAgent.pt"),
-            os.path.join(BACKTEST_MODEL_DIR, f"{ticker}_ensemble_lightgbm.pt"),
+            os.path.join(BACKTEST_MODEL_DIR, f"{ticker}_ensemble.pt"),
         ]
         scaler_files = [
             os.path.join(BACKTEST_SCALER_DIR, f"{ticker}_MacroAgent_xscaler.pkl"),
@@ -411,15 +421,24 @@ class RollingBacktester:
             print(f"[INFO] 백테스팅 모델 파일 {deleted_count}개 삭제 완료")
 
     def _collect_result(self, date: str, result: Dict[str, Any], agent: Any = None):
-        """예측 결과와 실제 주가를 수집하여 저장"""
+        """
+        예측 결과와 실제 주가를 수집하여 저장
+        주의: 시뮬레이션 날짜의 종가를 가져옴
+        """
         actual_close = np.nan
         try:
             import yfinance as yf
-            next_day = (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-            df = yf.download(self.ticker, start=date, end=next_day, progress=False)
+            # 시뮬레이션 날짜의 종가를 가져옴
+            sim_date_dt = datetime.strptime(date, "%Y-%m-%d")
+            end_date = (sim_date_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+            
+            df = yf.download(self.ticker, start=date, end=end_date, progress=False, auto_adjust=False)
             if not df.empty:
                 val = df["Close"].iloc[0]
                 actual_close = float(val.iloc[0]) if isinstance(val, pd.Series) else float(val)
+                print(f"[INFO] 실제 종가 조회: {date} = {actual_close:.2f}")
+            else:
+                print(f"[WARN] 시뮬레이션 날짜({date}) 데이터를 찾을 수 없음")
         except Exception as e:
             print(f"[WARN] 실제 종가 조회 실패({date}): {e}")
 

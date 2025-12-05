@@ -288,7 +288,8 @@ class SentimentalAgent(BaseAgent):
             )
 
         self.feature_cols = list(cols)
-        input_dim = X.shape[-1]
+        # config의 input_dim 사용 (데이터셋 피처 수와 무관하게 고정)
+        input_dim = CFG_S.get("input_dim", len(FEATURE_COLS))
 
         model = SentimentalLSTM(
             input_dim=input_dim,
@@ -330,7 +331,7 @@ class SentimentalAgent(BaseAgent):
         start = end - pd.Timedelta(days=days)
 
         # 1) 가격 데이터 수집
-        df_price = yf.download(self.ticker, start=start, end=end)
+        df_price = yf.download(self.ticker, start=start, end=end, auto_adjust=False)
         if isinstance(df_price.columns, pd.MultiIndex):
             df_price.columns = [c[0].lower() for c in df_price.columns]
         else:
@@ -442,7 +443,7 @@ class SentimentalAgent(BaseAgent):
         start = end - pd.Timedelta(days=days)
 
         # 가격 데이터 수집
-        df_price = yf.download(ticker, start=start, end=end)
+        df_price = yf.download(ticker, start=start, end=end, auto_adjust=False)
         if isinstance(df_price.columns, pd.MultiIndex):
             df_price.columns = [c[0].lower() for c in df_price.columns]
         else:

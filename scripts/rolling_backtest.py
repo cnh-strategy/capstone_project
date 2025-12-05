@@ -303,7 +303,7 @@ class RollingBacktester:
             import yfinance as yf
             # date 다음날까지 조회해야 date 당일 데이터가 나옴 (yfinance 특성)
             next_day = (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-            df = yf.download(self.ticker, start=date, end=next_day, progress=False)
+            df = yf.download(self.ticker, start=date, end=next_day, progress=False, auto_adjust=False)
             if not df.empty:
                 # MultiIndex 처리
                 val = df["Close"].iloc[0]

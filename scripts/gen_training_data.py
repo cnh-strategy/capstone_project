@@ -184,7 +184,7 @@ def generate_ensemble_data(ticker="NVDA", days=None, output_path="data/processed
     start_date = end_date - timedelta(days=days + 60)
     
     print(f"2. 가격 데이터 다운로드 ({start_date.date()} ~ {end_date.date()})...")
-    df_price = yf.download(ticker, start=start_date, end=end_date, progress=False)
+    df_price = yf.download(ticker, start=start_date, end=end_date, progress=False, auto_adjust=False)
     if isinstance(df_price.columns, pd.MultiIndex):
         df_price.columns = [c[0] for c in df_price.columns]
     

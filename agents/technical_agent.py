@@ -584,7 +584,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
     def _fetch_ticker_data(self, ticker: str, period: str, interval: str) -> pd.DataFrame:
         """yfinance로 데이터 다운로드 및 기본 지표 계산"""
-        df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
+        df = yf.download(ticker, period=period, interval=interval, auto_adjust=False, progress=False)
         df.dropna(inplace=True)
 
         if isinstance(df.columns, pd.MultiIndex):

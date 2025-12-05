@@ -70,13 +70,13 @@ agents_info = {
         
         # 모델 하이퍼파라미터
         "input_dim": 13,
-        "window_size": 20,              # 시계열 윈도우 크기 (Lookback period)
-        "rnn_units1": 64,               # LSTM 1층 히든 유닛 수
-        "rnn_units2": 32,               # LSTM 2층 히든 유닛 수
-        "dropout": 0.18778570103014075, # Dropout 비율
-        "epochs": 45,                   # 학습 에포크 수
+        "window_size": 15,              # 시계열 윈도우 크기 (Lookback period)
+        "rnn_units1": 128,               # LSTM 1층 히든 유닛 수
+        "rnn_units2": 16,               # LSTM 2층 히든 유닛 수
+        "dropout": 0.2, # Dropout 비율
+        "epochs": 60,                   # 학습 에포크 수
         "patience": 8,                  # Early Stopping 인내값
-        "learning_rate": 4.2471233429729313e-4, # 학습률
+        "learning_rate": 0.0005, # 학습률
         "batch_size": 64,               # 배치 크기
         
         # 설정 및 기타
@@ -133,13 +133,13 @@ agents_info = {
         ],
         
         # 모델 하이퍼파라미터
-        "hidden_dims": [128, 64, 32],   # LSTM 3개 층 히든 사이즈
-        "dropout_rates": [0.3, 0.3, 0.2], # 각 층별 Dropout 비율
-        "window_size": 40,              # 시계열 윈도우 크기
-        "epochs": 60,
+        "hidden_dims": [256, 128, 64],   # LSTM 3개 층 히든 사이즈
+        "dropout_rates": [0.4, 0.4, 0.3], # 각 층별 Dropout 비율
+        "window_size": 20,              # 시계열 윈도우 크기
+        "epochs": 30,
         "patience": 10,
-        "learning_rate": 0.0005,
-        "batch_size": 16,
+        "learning_rate": 0.0001,
+        "batch_size": 64,
         
         # 설정 및 기타
         "interval": "1d",
@@ -184,14 +184,14 @@ agents_info = {
         
         # 모델 하이퍼파라미터
         "input_dim": 8,
-        "d_model": 64,                  # LSTM 히든 사이즈
+        "d_model": 32,                  # LSTM 히든 사이즈
         "nhead": 4,                     # (참고용) Attention 헤드 수
         "num_layers": 2,                # LSTM 층 수
         "dropout": 0.2,
-        "window_size": 20,
+        "window_size": 10,
         "epochs": 50,
         "learning_rate": 0.0005,
-        "batch_size": 32,
+        "batch_size": 64,
         
         # 설정 및 기타
         "interval": "1d",

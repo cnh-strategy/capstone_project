@@ -147,6 +147,7 @@ class MacroAData:
             self.ticker,
             start=self.start_date,
             end=self.end_date,
+            auto_adjust=False
         )[["Close"]].reset_index()
 
         df_prices["Date"] = pd.to_datetime(df_prices["Date"]).dt.strftime("%Y-%m-%d")

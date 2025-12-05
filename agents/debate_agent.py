@@ -568,7 +568,7 @@ class DebateAgent:
 
                     end_date = datetime.today()
                     start_date = end_date - timedelta(days=days + 60)
-                    df_price = yf.download(self.ticker, start=start_date, end=end_date, progress=False)
+                    df_price = yf.download(self.ticker, start=start_date, end=end_date, progress=False, auto_adjust=False)
                     if isinstance(df_price.columns, pd.MultiIndex):
                         df_price.columns = [c[0] for c in df_price.columns]
                     df_price = df_price.reset_index()

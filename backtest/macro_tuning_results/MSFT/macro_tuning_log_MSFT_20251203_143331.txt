@@ -1,0 +1,187 @@
+🚀 MacroAgent 파라미터 튜닝 시작: MSFT
+📅 예측 일수: 30일
+📅 시작 날짜: 자동 계산
+🎲 최대 실험 횟수: 30
+📝 로그 파일: backtest/macro_tuning_results/MSFT/macro_tuning_log_MSFT_20251203_143331.txt
+================================================================================
+
+📊 초기 데이터셋 생성 중...
+[TRACE B] macro_dataset() start for MSFT
+[MacroAgent] Data shape: (1302, 90), Columns: 90
+[INFO] Feature engineering complete: (1255, 112)
+[MacroAgent] Saved: data/raw/MSFT_MacroAgent_raw.csv
+[make_close_price] 저장 완료: (1255, 2) rows at data/processed/daily_closePrice.csv
+macro: 데이터셋 생성 완료> MSFT
+[DEBUG] merged columns sample: ['Date', 'Close', 'CL=F_Open', 'DX-Y.NYB_Open', 'EURUSD=X_Open', 'GC=F_Open', 'HG=F_Open', 'QQQ_Open', 'SPY_Open', 'USDJPY=X_Open', '^DJI_Open', '^FVX_Open', '^GSPC_Open', '^IRX_Open', '^IXIC_Open']
+[OK] MacroAData.model_maker 완료: 1214 samples, 103 features
+macro: 모델 생성 완료> MSFT
+✅ MSFT MacroAgent dataset saved (macro_dataset 호출 via relative: .macro_classes.macro_funcs)
+✅ 데이터셋 생성 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed
+
+🔍 총 가능한 조합: 729
+⚡ 조합이 너무 많습니다. 30개를 랜덤 샘플링합니다...
+
+================================================================================
+🧪 실험 1/30
+⚙️ 파라미터: {'window_size': 40, 'hidden_dims': [256, 128, 64], 'dropout_rates': [0.2, 0.2, 0.1], 'learning_rate': 0.0001, 'batch_size': 64, 'epochs': 20}
+================================================================================
+🧹 기존 모델 및 스케일러 정리 중...
+📈 롤링 예측 및 방향 예측도 계산 중...
+  📅 예측 기간: 2025-10-22 ~ 2025-12-02 (30일)
+  [1/30] 2025-10-22 예측 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+[14:33:33] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+[INFO] 백테스팅 모드: 2025-10-22 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (430, 40, 95), (430, 1)
+  Epoch 005/20 | Loss: 0.159033
+  Epoch 010/20 | Loss: 0.064770
+  Epoch 015/20 | Loss: 0.063030
+  Epoch 020/20 | Loss: 0.063635
+✅ MacroAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_MacroAgent.pt (Final Loss: 0.063635)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_MacroAgent_dataset.csv
+    ✅ 예측: 518.28, 실제: 520.54
+  [2/30] 2025-10-23 예측 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-23 이전)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+[14:33:57] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-23 이전)
+[INFO] 백테스팅 모드: 2025-10-23 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (431, 40, 95), (431, 1)
+  Epoch 005/20 | Loss: 0.976014
+  Epoch 010/20 | Loss: 0.975965
+  Epoch 015/20 | Loss: 0.983665
+  Epoch 020/20 | Loss: 0.983704
+✅ MacroAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_MacroAgent.pt (Final Loss: 0.983704)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_MacroAgent_dataset.csv
+[14:34:18] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-23 이전)
+[INFO] 백테스팅 모드: 2025-10-23 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (431, 40, 95), (431, 1)
+  Epoch 005/20 | Loss: 0.982658
+  Epoch 010/20 | Loss: 0.978572
+  Epoch 015/20 | Loss: 0.980461
+  Epoch 020/20 | Loss: 0.960601
+✅ MacroAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_MacroAgent.pt (Final Loss: 0.960601)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_MacroAgent_dataset.csv
+    ✅ 예측: 521.08, 실제: 520.56
+  [3/30] 2025-10-24 예측 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-24 이전)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+[14:34:40] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-24 이전)
+[INFO] 백테스팅 모드: 2025-10-24 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (432, 40, 95), (432, 1)
+  Epoch 005/20 | Loss: 0.971487
+  Epoch 010/20 | Loss: 0.974901
+  Epoch 015/20 | Loss: 0.965477
+  Epoch 020/20 | Loss: 0.976300
+✅ MacroAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_MacroAgent.pt (Final Loss: 0.976300)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_MacroAgent_dataset.csv
+[14:35:02] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-24 이전)
+[INFO] 백테스팅 모드: 2025-10-24 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (432, 40, 95), (432, 1)
+  Epoch 005/20 | Loss: 0.967501
+  Epoch 010/20 | Loss: 0.960453
+  Epoch 015/20 | Loss: 0.960841
+  Epoch 020/20 | Loss: 0.959866
+✅ MacroAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_MacroAgent.pt (Final Loss: 0.959866)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_MacroAgent_dataset.csv
+    ✅ 예측: 520.44, 실제: 523.61
+  [4/30] 2025-10-27 예측 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-27 이전)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+[14:35:25] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-27 이전)
+[INFO] 백테스팅 모드: 2025-10-27 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (433, 40, 95), (433, 1)
+  Epoch 005/20 | Loss: 0.957812
+  Epoch 010/20 | Loss: 0.948117
+  Epoch 015/20 | Loss: 0.953616
+  Epoch 020/20 | Loss: 0.948700
+✅ MacroAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_MacroAgent.pt (Final Loss: 0.948700)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_MacroAgent_dataset.csv
+[14:35:47] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-27 이전)
+[INFO] 백테스팅 모드: 2025-10-27 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (433, 40, 95), (433, 1)
+  Epoch 005/20 | Loss: 0.959800
+  Epoch 010/20 | Loss: 0.938319
+  Epoch 015/20 | Loss: 0.945037
+  Epoch 020/20 | Loss: 0.948405
+✅ MacroAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_MacroAgent.pt (Final Loss: 0.948405)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_MacroAgent_dataset.csv
+    ✅ 예측: 523.68, 실제: 531.52
+  [5/30] 2025-10-28 예측 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-28 이전)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+[14:36:09] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-28 이전)
+[INFO] 백테스팅 모드: 2025-10-28 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (434, 40, 95), (434, 1)
+  Epoch 005/20 | Loss: 0.941894
+  Epoch 010/20 | Loss: 0.953446
+  Epoch 015/20 | Loss: 0.939994
+  Epoch 020/20 | Loss: 0.951099
+✅ MacroAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_MacroAgent.pt (Final Loss: 0.951099)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_MacroAgent_dataset.csv
+[14:36:31] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-28 이전)
+[INFO] 백테스팅 모드: 2025-10-28 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (434, 40, 95), (434, 1)
+  Epoch 005/20 | Loss: 0.939706
+  Epoch 010/20 | Loss: 0.944450
+  Epoch 015/20 | Loss: 0.945779
+  Epoch 020/20 | Loss: 0.938152
+✅ MacroAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_MacroAgent.pt (Final Loss: 0.938152)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_MacroAgent_dataset.csv
+    ✅ 예측: 531.94, 실제: 542.07
+  [6/30] 2025-10-29 예측 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-29 이전)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+[14:36:53] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-29 이전)
+[INFO] 백테스팅 모드: 2025-10-29 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (435, 40, 95), (435, 1)
+  Epoch 005/20 | Loss: 0.935098
+  Epoch 010/20 | Loss: 0.936348
+  Epoch 015/20 | Loss: 0.939746
+  Epoch 020/20 | Loss: 0.933128
+✅ MacroAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_MacroAgent.pt (Final Loss: 0.933128)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_MacroAgent_dataset.csv
+[14:37:16] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-29 이전)
+[INFO] 백테스팅 모드: 2025-10-29 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (435, 40, 95), (435, 1)
+  Epoch 005/20 | Loss: 0.928091
+  Epoch 010/20 | Loss: 0.935832
+  Epoch 015/20 | Loss: 0.938873
+  Epoch 020/20 | Loss: 0.937488
+✅ MacroAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_MacroAgent.pt (Final Loss: 0.937488)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_MacroAgent_dataset.csv
+    ✅ 예측: 543.45, 실제: 541.55
+  [7/30] 2025-10-30 예측 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-30 이전)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+[14:37:39] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-30 이전)
+[INFO] 백테스팅 모드: 2025-10-30 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (436, 40, 95), (436, 1)
+  Epoch 005/20 | Loss: 0.926955
+  Epoch 010/20 | Loss: 0.928414
+  Epoch 015/20 | Loss: 0.918869
+  Epoch 020/20 | Loss: 0.918512
+✅ MacroAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_MacroAgent.pt (Final Loss: 0.918512)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_MacroAgent_dataset.csv
+[14:38:01] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-30 이전)
+[INFO] 백테스팅 모드: 2025-10-30 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (436, 40, 95), (436, 1)
+  Epoch 005/20 | Loss: 0.917286
+
+================================================================================
+🏁 튜닝 완료
+================================================================================
+⚠️ 저장된 결과가 없습니다.

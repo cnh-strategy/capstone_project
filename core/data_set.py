@@ -69,7 +69,7 @@ def _fetch_ticker_data_for_sentimental(ticker: str, period: Optional[str], inter
     period = period or "2y"
     interval = interval or "1d"
 
-    df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
+    df = yf.download(ticker, period=period, interval=interval, auto_adjust=False, progress=False)
     df.dropna(inplace=True)
 
     # 멀티인덱스 컬럼 방어
@@ -85,13 +85,13 @@ def _fetch_ticker_data_for_sentimental(ticker: str, period: Optional[str], inter
 
     # Fundamental 보조(USD/KRW, NASDAQ, VIX)
     try:
-        usd_krw = yf.download("USDKRW=X", period=period, interval=interval, auto_adjust=True, progress=False)
+        usd_krw = yf.download("USDKRW=X", period=period, interval=interval, auto_adjust=False, progress=False)
         df["USD_KRW"] = (usd_krw["Close"].reindex(df.index, method="ffill") if not usd_krw.empty else 1300.0)
 
-        nasdaq = yf.download("^IXIC", period=period, interval=interval, auto_adjust=True, progress=False)
+        nasdaq = yf.download("^IXIC", period=period, interval=interval, auto_adjust=False, progress=False)
         df["NASDAQ"] = (nasdaq["Close"].reindex(df.index, method="ffill") if not nasdaq.empty else 15000.0)
 
-        vix = yf.download("^VIX", period=period, interval=interval, auto_adjust=True, progress=False)
+        vix = yf.download("^VIX", period=period, interval=interval, auto_adjust=False, progress=False)
         df["VIX"] = (vix["Close"].reindex(df.index, method="ffill") if not vix.empty else 20.0)
     except Exception as e:
         print(f"⚠️ 추가 지표 다운로드 실패: {e}")
@@ -348,7 +348,7 @@ def get_latest_close_price(ticker: str, save_dir: str = dir_info["data_dir"]) ->
     if os.path.exists(raw_data_path):
         df = pd.read_csv(raw_data_path, index_col=0)
         return float(df["Close"].iloc[-1])
-    data = yf.download(ticker, period="1d", interval="1d", progress=False)
+    data = yf.download(ticker, period="1d", interval="1d", auto_adjust=False, progress=False)
     return float(data["Close"].iloc[-1])
 
 

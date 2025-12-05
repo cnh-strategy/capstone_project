@@ -1,0 +1,663 @@
+🚀 Starting Random Search Tuning for MSFT (SentimentalAgent)
+📅 Fixed Predict Days: 30
+🎲 Max Experiments: 50
+📝 Log file: backtest/sentimental_tuning_results/MSFT/sentimental_tuning_log_MSFT_20251203_143855.txt
+================================================================================
+
+🔍 Total possible combinations: 81
+
+================================================================================
+🧪 Experiment 1/81
+⚙️ Params: {'common__fine_tune_lr': 0.0001, 'SentimentalAgent__window_size': 10, 'SentimentalAgent__d_model': 32, 'SentimentalAgent__learning_rate': 0.0001}
+================================================================================
+🧹 Cleaning up models & processed data (keeping raw news)...
+[INFO] Config Period: 2y -> Train Days: 730
+[INFO] 자동 계산된 시작일: 2025-10-22 (오늘로부터 30 거래일 전)
+
+============================================================
+📊 Preparing data for MSFT
+    Train days: 730
+    Predict days: 30
+    Backtest data dir: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed
+============================================================
+
+[INFO] 각 Agent의 searcher()를 호출하여 데이터 준비 중...
+
+[TechnicalAgent] searcher 실행 중...
+[TechnicalAgent] Rebuild 요청됨. Raw CSV 재생성 중...
+✅ [TechnicalAgent] Raw CSV 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/raw/MSFT_TechnicalAgent_raw.csv (502 rows)
+✅ [TechnicalAgent] Searcher 완료: 윈도우 shape (1, 20, 13)
+✅ [TechnicalAgent] 데이터 준비 완료
+
+[MacroAgent] searcher 실행 중...
+[MacroAgent] Rebuild 요청됨. Raw CSV 재생성 중...
+[MacroAgent] Raw CSV 생성 중...
+✅ [MacroAgent] Raw CSV 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/raw/MSFT_MacroAgent_raw.csv (502 rows, period: 2y)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+✅ [MacroAgent] 데이터 준비 완료
+
+[SentimentalAgent] searcher 실행 중...
+[SentimentalAgent] Raw CSV 생성 중...
+✅ [SentimentalAgent] Raw CSV 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/raw/MSFT_SentimentalAgent_raw.csv (501 rows)
+✅ [SentimentalAgent] Searcher 완료: 윈도우 shape (1, 10, 8)
+✅ [SentimentalAgent] 데이터 준비 완료
+
+✅ Data preparation complete.
+
+============================================================
+🚀 [1/30] Running Backtest for 2025-10-22
+    Train window: 2023-10-23 ~ 2025-10-22
+============================================================
+[INFO] 필터링된 데이터셋 생성: TechnicalAgent (472행)
+[INFO] 필터링된 데이터셋 생성: MacroAgent (472행)
+[INFO] 필터링된 데이터셋 생성: SentimentalAgent (472행)
+[TechnicalAgent] Simulation=2025-10-22, TrainStart=2023-10-23
+[MacroAgent] Simulation=2025-10-22, TrainStart=2023-10-23
+[SentimentalAgent] Simulation=2025-10-22, TrainStart=2023-10-23
+
+================================================================================
+[14:38:58] Round 0: 초기 Opinion 수집 (LLM Skip, force_pretrain=True)
+================================================================================
+[14:38:58] [TechnicalAgent] searcher 실행
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [TechnicalAgent] Searcher 완료: 윈도우 shape (1, 20, 13)
+[14:38:58] [TechnicalAgent] pretrain 실행
+[14:38:58] Pretraining TechnicalAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+[INFO] 백테스팅 모드: 2025-10-22 이전 데이터 사용 중, 마지막 타겟 제거
+[INFO] 시퀀스 생성 완료: (450, 20, 13), (450, 1)
+  Epoch 005/45 | Loss: 0.319746
+  Epoch 010/45 | Loss: 0.373088
+  Epoch 015/45 | Loss: 0.404320
+  Epoch 020/45 | Loss: 0.318242
+  Epoch 025/45 | Loss: 0.382116
+  Epoch 030/45 | Loss: 0.374156
+  Epoch 035/45 | Loss: 0.363518
+  Epoch 040/45 | Loss: 0.335641
+  Epoch 045/45 | Loss: 0.334527
+✅ TechnicalAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_TechnicalAgent.pt (Final Loss: 0.334527)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_TechnicalAgent_dataset.csv
+[14:39:02] [TechnicalAgent] predict 실행
+[14:39:02] [TechnicalAgent] Opinion 생성 (LLM Skip)
+  - TechnicalAgent: next_close=517.7603
+[14:39:02] [MacroAgent] searcher 실행
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+[14:39:03] [MacroAgent] pretrain 실행
+[14:39:03] Pretraining MacroAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+[INFO] 백테스팅 모드: 2025-10-22 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (430, 40, 95), (430, 1)
+  Epoch 005/60 | Loss: 0.062264
+  Epoch 010/60 | Loss: 0.062398
+  Epoch 015/60 | Loss: 0.061620
+  Epoch 020/60 | Loss: 0.060971
+  Epoch 025/60 | Loss: 0.060916
+  Epoch 030/60 | Loss: 0.060515
+  Epoch 035/60 | Loss: 0.061812
+  Epoch 040/60 | Loss: 0.060914
+  Epoch 045/60 | Loss: 0.060277
+  Epoch 050/60 | Loss: 0.060637
+  Epoch 055/60 | Loss: 0.060791
+  Epoch 060/60 | Loss: 0.059960
+✅ MacroAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_MacroAgent.pt (Final Loss: 0.059960)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_MacroAgent_dataset.csv
+[14:39:37] [MacroAgent] predict 실행
+[14:39:37] [MacroAgent] Opinion 생성 (LLM Skip)
+  - MacroAgent: next_close=518.4012
+[14:39:37] [SentimentalAgent] searcher 실행
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [SentimentalAgent] Searcher 완료: 윈도우 shape (1, 10, 8)
+[14:39:37] [SentimentalAgent] pretrain 실행
+[14:39:37] Pretraining SentimentalAgent
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+[INFO] 백테스팅 모드: 2025-10-22 이전 데이터 사용 중, 마지막 타겟 제거 (데이터 누수 방지)
+[INFO] 시퀀스 생성 완료: (460, 10, 8), (460, 1)
+  Epoch 005/50 | Loss: 0.360571
+  Epoch 010/50 | Loss: 0.362697
+  Epoch 015/50 | Loss: 0.354314
+  Epoch 020/50 | Loss: 0.388043
+  Epoch 025/50 | Loss: 0.338920
+  Epoch 030/50 | Loss: 0.367795
+  Epoch 035/50 | Loss: 0.362515
+  Epoch 040/50 | Loss: 0.380487
+  Epoch 045/50 | Loss: 0.340769
+  Epoch 050/50 | Loss: 0.331116
+✅ SentimentalAgent 모델 학습 및 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/models/MSFT_SentimentalAgent.pt (Final Loss: 0.331116)
+✅ 전처리된 데이터 저장 완료: /home/ubuntu/Projects/ml-ai/capstone/backtest/data/processed/MSFT_SentimentalAgent_dataset.csv
+[14:39:39] [SentimentalAgent] predict 실행
+[14:39:39] [SentimentalAgent] Opinion 생성 (LLM Skip)
+  - SentimentalAgent: next_close=518.0137
+[14:39:39] Round 0 완료 (3 agents)
+
+================================================================================
+[14:39:39] Round 1 시작 (Rebuttal Skip, Revise 진행)
+================================================================================
+[14:39:39] [TechnicalAgent] revise 실행 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [TechnicalAgent] Searcher 완료: 윈도우 shape (1, 20, 13)
+[TechnicalAgent] Fine-tuning 완료: loss=0.000059
+[14:39:40] [MacroAgent] revise 실행 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+[MacroAgent] Fine-tuning 완료: loss=0.000015
+[14:39:40] [SentimentalAgent] revise 실행 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [SentimentalAgent] Searcher 완료: 윈도우 shape (1, 10, 8)
+[SentimentalAgent] Fine-tuning 완료: loss=0.000017
+[14:39:40] Round 1 revise 완료 (3 agents)
+
+================================================================================
+[14:39:40] Round 2 시작 (Rebuttal Skip, Revise 진행)
+================================================================================
+[14:39:40] [TechnicalAgent] revise 실행 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [TechnicalAgent] Searcher 완료: 윈도우 shape (1, 20, 13)
+[TechnicalAgent] Fine-tuning 완료: loss=0.000007
+[14:39:40] [MacroAgent] revise 실행 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+[MacroAgent] Fine-tuning 완료: loss=0.000001
+[14:39:40] [SentimentalAgent] revise 실행 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [SentimentalAgent] Searcher 완료: 윈도우 shape (1, 10, 8)
+[SentimentalAgent] Fine-tuning 완료: loss=0.004411
+[14:39:40] Round 2 revise 완료 (3 agents)
+
+================================================================================
+[14:39:40] Round 3 시작 (Rebuttal Skip, Revise 진행)
+================================================================================
+[14:39:40] [TechnicalAgent] revise 실행 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [TechnicalAgent] Searcher 완료: 윈도우 shape (1, 20, 13)
+[TechnicalAgent] Fine-tuning 완료: loss=0.000048
+[14:39:40] [MacroAgent] revise 실행 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [MacroAgent] Searcher 완료: 윈도우 shape (1, 40, 95)
+[MacroAgent] Fine-tuning 완료: loss=0.000008
+[14:39:41] [SentimentalAgent] revise 실행 중...
+[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 (2025-10-22 이전)
+✅ [SentimentalAgent] Searcher 완료: 윈도우 shape (1, 10, 8)
+[SentimentalAgent] Fine-tuning 완료: loss=0.000087
+[14:39:41] Round 3 revise 완료 (3 agents)
+
+================================================================================
+[14:39:41] 최종 Ensemble 예측
+================================================================================
+
+============================================================
+[INFO] MSFT 전용 앙상블 모델이 없습니다. 자동 학습을 시작합니다.
+============================================================
+[Step 1/3] 학습 데이터 생성 중... (MSFT)
+  1-1. 학습된 모델/스케일러 로드 중...
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+  모델/스케일러 로드 완료.
+  1-2. 입력 데이터 로드 중 (data/processed)...
+  1-3. 가격 데이터 다운로드 중...
+  1-4. 일별 예측 수행 중...
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+[SentimentalAgent] 모델 로드 실패: Error(s) in loading state_dict for SentimentalLSTM:
+	size mismatch for lstm.weight_ih_l0: copying a param with shape torch.Size([128, 8]) from checkpoint, the shape in current model is torch.Size([128, 5]).
+
+================================================================================
+🏁 Tuning Completed
+================================================================================
+❌ No results collected.
