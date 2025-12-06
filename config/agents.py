@@ -143,7 +143,7 @@ agents_info = {
 
         # 설정 및 기타
         "interval": "1d",
-        "x_scaler": "StandardScaler",
+        "x_scaler": "RobustScaler",
         "y_scaler": "MinMaxScaler",     # 타겟은 -1 ~ 1 범위로 스케일링
         "loss_fn": "HuberLoss",            # L1 Loss (MAE) 사용
 
