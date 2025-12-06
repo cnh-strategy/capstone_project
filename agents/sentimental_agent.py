@@ -714,7 +714,17 @@ class SentimentalAgent(BaseAgent):
                         dropout=self.dropout,
                     )
                 self.load_model(model_path)
-        
+                
+        # run_dataset() 기준: X_seq.shape == (1, T, F)
+        if X_raw_np.ndim == 3 and X_raw_np.shape[0] == 1:
+            X_seq_np = X_raw_np[0]        # (T, F)
+        elif X_raw_np.ndim == 2:
+            X_seq_np = X_raw_np           # (T, F)
+        else:
+            raise ValueError(f"예상하지 못한 입력 shape: {X_raw_np.shape}, (T,F) 또는 (1,T,F)만 지원합니다.")
+
+        input_dim_from_data = X_seq_np.shape[-1]
+
         model = getattr(self, "model", None)
         if model is None:
             raise RuntimeError(f"{self.agent_id} 모델이 초기화되지 않음")
