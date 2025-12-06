@@ -76,14 +76,33 @@ def _fetch_ticker_data_for_sentimental(ticker: str, period: Optional[str], inter
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
 
-    # 기본 기술 지표
+    # ===============================
+    # 1) 가격 기반 피처 (8개 중 3개)
+    # ===============================
+    # SentimentalAgent.FEATURE_COLS 기준:
+    # ["return_1d", "hl_range", "Volume", "news_count_1d",
+    #  "news_count_7d", "sentiment_mean_1d", "sentiment_mean_7d", "sentiment_vol_7d"]
+
+    # 1일 수익률
+    df["return_1d"] = df["Close"].pct_change().fillna(0)
+
+    # 고가-저가 범위 / 종가
+    df["hl_range"] = ((df["High"] - df["Low"]) / df["Close"].replace(0, np.nan)).fillna(0)
+
+    # 거래량 그대로 사용
+    df["Volume"] = df["Volume"].fillna(0)
+
+    # ===============================
+    # 2) 기존 placeholder 감성 지표 활용
+    # ===============================
+    # 기본 기술 지표 (원래 코드)
     df["returns"] = df["Close"].pct_change().fillna(0)
     df["sma_5"] = df["Close"].rolling(5).mean()
     df["sma_20"] = df["Close"].rolling(20).mean()
     df["rsi"] = compute_rsi(df["Close"])
     df["volume_z"] = (df["Volume"] - df["Volume"].mean()) / (df["Volume"].std() + 1e-6)
 
-    # Fundamental 보조(USD/KRW, NASDAQ, VIX)
+    # Fundamental 보조
     try:
         usd_krw = yf.download("USDKRW=X", period=period, interval=interval, auto_adjust=True, progress=False)
         df["USD_KRW"] = (usd_krw["Close"].reindex(df.index, method="ffill") if not usd_krw.empty else 1300.0)
@@ -99,12 +118,25 @@ def _fetch_ticker_data_for_sentimental(ticker: str, period: Optional[str], inter
         df["NASDAQ"] = 15000.0
         df["VIX"] = 20.0
 
-    # 감성(placeholder): 초기 코드 그대로
+    # --- 기존 placeholder 감성 ---
     df["sentiment_mean"] = df["returns"].rolling(3).mean().fillna(0)
     df["sentiment_vol"] = df["returns"].rolling(3).std().fillna(0)
 
+    # ===============================
+    # 3) 뉴스 기반 피처 자리는 placeholder로 8개 맞추기
+    # ===============================
+    # 실제 SentimentalAgent에서는 뉴스 DB를 써서 계산하지만,
+    # 여기서는 동일한 스키마만 맞추고 값은 대용으로 생성
+    df["news_count_1d"] = 1.0  # "뉴스 1건"이라는 placeholder
+    df["news_count_7d"] = df["news_count_1d"].rolling(7).sum().fillna(0)
+
+    df["sentiment_mean_1d"] = df["sentiment_mean"]
+    df["sentiment_mean_7d"] = df["sentiment_mean"].rolling(7).mean().fillna(0)
+    df["sentiment_vol_7d"] = df["sentiment_mean"].rolling(7).std().fillna(0)
+
     df.dropna(inplace=True)
     return df
+
 
 
 # -----------------------------
