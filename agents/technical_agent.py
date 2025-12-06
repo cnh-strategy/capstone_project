@@ -53,18 +53,18 @@ class TechnicalAgent(BaseAgent, nn.Module):
     """
 
     def __init__(self,
-        agent_id="TechnicalAgent",
-        input_dim=agents_info["TechnicalAgent"]["input_dim"],
-        rnn_units1=agents_info["TechnicalAgent"]["rnn_units1"],
-        rnn_units2=agents_info["TechnicalAgent"]["rnn_units2"],
-        dropout=agents_info["TechnicalAgent"]["dropout"],
-        data_dir=dir_info["data_dir"],
-        window_size=agents_info["TechnicalAgent"]["window_size"],
-        epochs=agents_info["TechnicalAgent"]["epochs"],
-        learning_rate=agents_info["TechnicalAgent"]["learning_rate"],
-        batch_size=agents_info["TechnicalAgent"]["batch_size"],
-        **kwargs
-    ):
+                 agent_id="TechnicalAgent",
+                 input_dim=agents_info["TechnicalAgent"]["input_dim"],
+                 rnn_units1=agents_info["TechnicalAgent"]["rnn_units1"],
+                 rnn_units2=agents_info["TechnicalAgent"]["rnn_units2"],
+                 dropout=agents_info["TechnicalAgent"]["dropout"],
+                 data_dir=dir_info["data_dir"],
+                 window_size=agents_info["TechnicalAgent"]["window_size"],
+                 epochs=agents_info["TechnicalAgent"]["epochs"],
+                 learning_rate=agents_info["TechnicalAgent"]["learning_rate"],
+                 batch_size=agents_info["TechnicalAgent"]["batch_size"],
+                 **kwargs
+                 ):
         """
         TechnicalAgent 초기화
         
@@ -99,38 +99,29 @@ class TechnicalAgent(BaseAgent, nn.Module):
         self.lstm1 = nn.LSTM(self.input_dim, self.u1, batch_first=True)
         self.lstm2 = nn.LSTM(self.u1, self.u2, batch_first=True)
         self.attn_vec = nn.Parameter(torch.randn(self.u2))
-        
-        # 회귀(수익률) 헤드
         self.fc = nn.Linear(self.u2, 1)
-
-        # 방향(상승/하락) 분류 헤드
-        self.fc_dir = nn.Linear(self.u2, 1)
-        
         self.drop = nn.Dropout(float(dropout))
 
         # Optimizer / Loss 설정
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        
+
         # Huber Loss 사용 - 이상치에 덜 민감하고 더 안정적인 학습
         huber_delta = common_params.get("huber_loss_delta", 1.0)
         self.loss_fn = nn.HuberLoss(delta=huber_delta)
-        
+
         self.last_pred = None
         self.last_attn = None
         self._last_idea = None
 
-    def forward(self, x: torch.Tensor, return_dir: bool = False):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         모델 Forward Pass
-        
+
         Args:
             x: 입력 텐서 (Batch, Time, Features)
-            return_dir: True이면 (수익률, 방향로짓) 둘 다 반환
-            
-        Returns:
-            - return_dir=False: 회귀 출력 (Batch, 1)
-            - return_dir=True : (회귀 출력, 방향로짓) 튜플
 
+        Returns:
+            torch.Tensor: 예측 수익률 (Batch, 1)
         """
         h1, _ = self.lstm1(x)
         h1 = self.drop(h1)
@@ -140,20 +131,13 @@ class TechnicalAgent(BaseAgent, nn.Module):
         # Time-Attention: 각 시점 가중치 계산
         w = torch.softmax(torch.matmul(h2, self.attn_vec), dim=1)  # [B,T]
         self._last_attn = w.detach()
-        ctx = (h2 * w.unsqueeze(-1)).sum(dim=1) 
-        
-        ret = self.fc(ctx) # [B,1] 수익률 회귀 출력             
-
-        if not return_dir:
-            return ret                                        # [B,1]
-    
-        dir_logit = self.fc_dir(ctx)  # [B,1] 분류 출력
-        return ret, dir_logit                                        # [B,1]
+        ctx = (h2 * w.unsqueeze(-1)).sum(dim=1)                    # [B,u2]
+        return self.fc(ctx)                                        # [B,1]
 
     # ===============================================================
     # 설명가능성(XAI) 관련 메서드
     # ===============================================================
-    
+
     def _safe_names(self, feature_cols, F):
         """피처 이름 리스트를 모델 입력 차원에 맞춰 보정"""
         cols = list(feature_cols) if feature_cols else []
@@ -258,14 +242,14 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return np.array([v/s if s > 0 else 1.0/F for v in deltas], dtype=float)
 
     def explain_last(
-        self,
-        X_last: torch.Tensor,
-        dates: list | None = None,
-        top_k: Optional[int] = None,
-        use_shap: bool = True,
-        shap_weight_time: Optional[float] = None,
-        shap_weight_feat: Optional[float] = None
-        ):
+            self,
+            X_last: torch.Tensor,
+            dates: list | None = None,
+            top_k: Optional[int] = None,
+            use_shap: bool = True,
+            shap_weight_time: Optional[float] = None,
+            shap_weight_feat: Optional[float] = None
+    ):
         """
         최신 윈도우에 대한 설명(XAI) 패킷 생성
         Attention, Grad×Input, Occlusion, SHAP 결과를 종합합니다.
@@ -277,7 +261,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             shap_weight_time = cfg.get("shap_weight_time", 0.20)
         if shap_weight_feat is None:
             shap_weight_feat = cfg.get("shap_weight_feat", 0.30)
-        
+
         device = next(self.parameters()).device
         X_np = X_last.detach().cpu().numpy()
         X_scaled = self._scale_like_train(X_np)
@@ -324,22 +308,22 @@ class TechnicalAgent(BaseAgent, nn.Module):
         # 5. 결과 통합 (가중 평균)
         attention_weights = cfg.get("attention_weights", [0.4, 0.25, 0.15])
         feature_weights = cfg.get("feature_weights", [0.5, 0.2])
-        
+
         if shap_time is not None and shap_feat is not None:
             w_time = np.array([attention_weights[0], attention_weights[1], attention_weights[2], float(shap_weight_time)], dtype=float)
             w_time = w_time / w_time.sum()
             per_time = (
-                w_time[0]*time_attn +
-                w_time[1]*g_time_n +
-                w_time[2]*occ_time +
-                w_time[3]*shap_time
+                    w_time[0]*time_attn +
+                    w_time[1]*g_time_n +
+                    w_time[2]*occ_time +
+                    w_time[3]*shap_time
             )
             w_feat = np.array([feature_weights[0], feature_weights[1], float(shap_weight_feat)], dtype=float)
             w_feat = w_feat / w_feat.sum()
             per_feat = (
-                w_feat[0]*g_feat_n +
-                w_feat[1]*occ_feat_n +
-                w_feat[2]*shap_feat
+                    w_feat[0]*g_feat_n +
+                    w_feat[1]*occ_feat_n +
+                    w_feat[2]*shap_feat
             )
         else:
             per_time = attention_weights[0] * time_attn + attention_weights[1] * g_time_n + attention_weights[2] * occ_time
@@ -367,7 +351,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             "occlusion_time": [r4(x) for x in occ_time.tolist()],
             "window_size": int(T),
             "shap_used": bool(shap_used)
-            }
+        }
 
         return {
             "per_time": per_time_list,
@@ -376,12 +360,12 @@ class TechnicalAgent(BaseAgent, nn.Module):
             "time_feature": time_feature,
             "evidence": evidence,
             "raw": {"gradxinput": gi_abs.tolist()}
-          }
+        }
 
     def _background_windows(self, k: int = 64):
         """SHAP 계산을 위한 배경 데이터 샘플링"""
         try:
-            from core.technical_classes.technical_data_set import load_dataset  
+            from core.technical_classes.technical_data_set import load_dataset
             X, _, _, _ = load_dataset(self.ticker, agent_id=self.agent_id, save_dir=self.data_dir)
             if len(X) <= 1:
                 return None
@@ -438,7 +422,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             top_feat = cfg.get("pack_idea_top_feat", 6)
         if coverage is None:
             coverage = cfg.get("pack_idea_coverage", 0.8)
-        
+
         per_time = sorted(exp["per_time"], key=lambda z: z["sum_abs"], reverse=True)
         total = sum(z["sum_abs"] for z in per_time) or 1.0
         acc, picked = 0.0, []
@@ -465,11 +449,11 @@ class TechnicalAgent(BaseAgent, nn.Module):
         """Opinion 생성용 프롬프트 메시지 구성"""
         last = float(getattr(stock_data, "last_price", target.next_close))
         agent_data = getattr(stock_data, self.agent_id, {})
-        
+
         if isinstance(agent_data, dict) and agent_data:
             df = pd.DataFrame(agent_data)
             X_last = torch.tensor(
-                df.tail(self.window_size).values, 
+                df.tail(self.window_size).values,
                 dtype=torch.float32
             ).unsqueeze(0)
         else:
@@ -477,11 +461,11 @@ class TechnicalAgent(BaseAgent, nn.Module):
             X_last = self.searcher(self.ticker)
             if not isinstance(X_last, torch.Tensor):
                 X_last = torch.tensor(X_last, dtype=torch.float32)
-        
+
         dates = getattr(self.stockdata, f"{self.agent_id}_dates", [])
         cfg = agents_info.get(self.agent_id, {})
         top_k = cfg.get("top_k_features", 5)
-        
+
         exp = self.explain_last(X_last, dates, top_k=top_k, use_shap=True)
         idea = self._pack_idea(exp)
         self._last_idea = idea
@@ -530,7 +514,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 "confidence": float(target_opinion.target.confidence),
             }
         }
-    
+
         for col, values in agent_data.items():
             if isinstance(values, (list, tuple)):
                 ctx[col] = values[-self.window_size:]
@@ -634,25 +618,12 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return np.array(X), np.array(y)
 
     def _build_features_technical(self, df_price: pd.DataFrame) -> pd.DataFrame:
-        """테크니컬 피처 17개 생성"""
-        TECH_COLS = [
-            "weekofyear_sin","weekofyear_cos","log_ret_lag1",
-            "ret_3d","mom_10","ma_200",
-            "macd","bbp","adx_14",
-            "obv","vol_ma_20","vol_chg","vol_20d",
-
-            # 신규 전일 방향 관련 피처 4개
-            "flag_up_1d",          # 전일 종가 기준 상승/하락 더미
-            "flag_bullish_candle", # 전일 시가 대비 양봉/음봉 더미
-            "body_to_range",       # 몸통 / 전체 캔들 길이 비율
-            "co_ratio",            # close/open - 1 (intraday 수익률)
-            ]
-            
+        """테크니컬 피처 13개 생성"""
         o, h, l, c, v = df_price["Open"], df_price["High"], df_price["Low"], df_price["Close"], df_price["Volume"]
         out = pd.DataFrame(index=df_price.index)
-        
+
         def _ema(s, span): return s.ewm(span=span, adjust=False).mean()
-        
+
         def _bollinger_pb(s, p=20, k=2.0, eps=1e-12):
             m = s.rolling(p).mean()
             sd = s.rolling(p).std()
@@ -660,13 +631,13 @@ class TechnicalAgent(BaseAgent, nn.Module):
             lo = m - k*sd
             denom = (up - lo).replace(0.0, np.nan)
             return ((s - lo) / (denom + eps))
-        
+
         def _momentum(s, n): return s - s.shift(n)
-        
+
         def _true_range(h, l, c):
             tr = pd.concat([(h-l).abs(), (h-c.shift(1)).abs(), (l-c.shift(1)).abs()], axis=1).max(axis=1)
             return tr
-        
+
         def _adx(h, l, c, n=14):
             up = h.diff().to_numpy().reshape(-1)
             dn = (-l.diff()).to_numpy().reshape(-1)
@@ -679,11 +650,11 @@ class TechnicalAgent(BaseAgent, nn.Module):
             denom = (plus_di + minus_di).replace(0, np.nan)
             dx = 100 * (plus_di - minus_di).abs() / (denom + 1e-12)
             return dx.ewm(alpha=1/n, adjust=False).mean()
-        
+
         def _obv(c, v):
             direction = np.sign(c.diff().fillna(0.0))
             return (direction * v.fillna(0.0)).cumsum()
-        
+
         week = df_price.index.isocalendar().week.astype(float)
         out["weekofyear_sin"] = np.sin(2 * np.pi * week / 52.0)
         out["weekofyear_cos"] = np.cos(2 * np.pi * week / 52.0)
@@ -691,7 +662,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         out["ret_3d"] = c.pct_change(3)
         out["mom_10"] = _momentum(c, 10)
         out["ma_200"] = c.rolling(200).mean()
-        
+
         ema12, ema26 = _ema(c, 12), _ema(c, 26)
         out["macd"] = ema12 - ema26
         out["bbp"] = _bollinger_pb(c, 20, 2.0)
@@ -699,34 +670,23 @@ class TechnicalAgent(BaseAgent, nn.Module):
         out["obv"] = _obv(c, v)
         out["vol_ma_20"] = v.rolling(20).mean()
         out["vol_chg"] = v.pct_change(1)
-        
+
         ret_1d = c.pct_change(1)
         out["vol_20d"] = ret_1d.rolling(20).std()
-        
-        # ================================
-        # 신규 전일 방향 관련 피처 4개
-        # ================================
-
-        # 1) 전일 종가 기준 상승/하락 더미
-        out["flag_up_1d"] = (c > c.shift(1)).astype(np.float32)
-
-        # 2) 전일 시가 대비 양봉/음봉 더미
-        out["flag_bullish_candle"] = (c > o).astype(np.float32)
-
-        # 3) 몸통 / 전체 캔들 길이 비율
-        candle_range = (h - l)
-        out["body_to_range"] = (c - o).abs() / (candle_range.replace(0, np.nan) + 1e-6)
-        
-        # 4) close/open - 1 (intraday 수익률)
-        out["co_ratio"] = c / o - 1.0
 
         out = (out.apply(pd.to_numeric, errors="coerce")
-                  .replace([np.inf, -np.inf], np.nan)
-                  .ffill()
-                  .dropna()
-                  .astype(np.float32))
-        
-        out = out.reindex(columns=TECH_COLS).astype(np.float32)
+               .replace([np.inf, -np.inf], np.nan)
+               .ffill()
+               .dropna()
+               .astype(np.float32))
+
+        tech_cols = [
+            "weekofyear_sin", "weekofyear_cos", "log_ret_lag1",
+            "ret_3d", "mom_10", "ma_200",
+            "macd", "bbp", "adx_14",
+            "obv", "vol_ma_20", "vol_chg", "vol_20d"
+        ]
+        out = out.reindex(columns=tech_cols).astype(np.float32)
         return out
 
     def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
@@ -738,10 +698,10 @@ class TechnicalAgent(BaseAgent, nn.Module):
         agent_id = self.agent_id
         ticker = ticker or self.ticker
         self.ticker = ticker
-        
+
         raw_dir = os.path.join(os.path.dirname(self.data_dir), "raw")
         raw_csv_path = os.path.join(raw_dir, f"{ticker}_{agent_id}_raw.csv")
-        
+
         # 백테스팅 모드 처리
         if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
             temp_dir = os.path.join(raw_dir, "backtest_temp")
@@ -750,10 +710,10 @@ class TechnicalAgent(BaseAgent, nn.Module):
             if os.path.exists(temp_path):
                 raw_csv_path = temp_path
                 print(f"[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 ({self.simulation_date} 이전)")
-        
+
         cfg = agents_info.get(agent_id, {})
         base_period = common_params.get("period", "2y")
-        
+
         # period 계산 (MA 200 등 확보 위해 여유 기간 추가)
         if base_period.endswith("y"):
             years = int(base_period[:-1])
@@ -774,10 +734,10 @@ class TechnicalAgent(BaseAgent, nn.Module):
                     print(f"[{agent_id}] Raw CSV 파일이 없어 생성 중...")
                 else:
                     print(f"[{agent_id}] Rebuild 요청됨. Raw CSV 재생성 중...")
-                
+
                 df = self._fetch_ticker_data(ticker, period_to_use, interval_to_use)
                 feat = self._build_features_technical(df[["Open", "High", "Low", "Close", "Volume"]])
-                
+
                 # period 필터링
                 end_date = pd.Timestamp.today().normalize()
                 if base_period.endswith("y"):
@@ -789,65 +749,65 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 else:
                     days = 2 * 365
                 start_date = end_date - pd.Timedelta(days=days)
-                
+
                 try:
                     os.makedirs(os.path.dirname(raw_csv_path), exist_ok=True)
                     raw_tech = feat.copy()
                     raw_tech.index.name = "Date"
                     raw_tech.reset_index(inplace=True)
-                    
+
                     raw_tech["Date"] = pd.to_datetime(raw_tech["Date"])
                     raw_tech = raw_tech[raw_tech["Date"] >= start_date].copy()
                     raw_tech = raw_tech.sort_values("Date").reset_index(drop=True)
-                    
+
                     if "ticker" not in raw_tech.columns:
                         raw_tech.insert(1, "ticker", ticker)
-                    
+
                     close_df = df[["Close"]].copy()
                     close_df.index.name = "Date"
                     close_df.reset_index(inplace=True)
                     close_df["Date"] = pd.to_datetime(close_df["Date"])
                     close_df = close_df[close_df["Date"] >= start_date].copy()
                     close_df = close_df.sort_values("Date").reset_index(drop=True)
-                    
+
                     raw_tech["Date"] = raw_tech["Date"].dt.strftime("%Y-%m-%d")
                     close_df["Date"] = close_df["Date"].dt.strftime("%Y-%m-%d")
                     raw_tech = raw_tech.merge(close_df, on="Date", how="left")
-                    
+
                     if "Close" in raw_tech.columns:
                         cols = [c for c in raw_tech.columns if c != "Close"] + ["Close"]
                         raw_tech = raw_tech[cols]
-                    
+
                     raw_tech.to_csv(raw_csv_path, index=False)
                     print(f"✅ [{agent_id}] Raw CSV 저장 완료: {raw_csv_path} ({len(raw_tech):,} rows)")
                 except Exception as e:
                     print(f"❌ [{agent_id}] Raw CSV 저장 실패: {e}")
-        
+
         if not os.path.exists(raw_csv_path):
             raise FileNotFoundError(f"Raw CSV not found: {raw_csv_path}")
-        
+
         df_raw = pd.read_csv(raw_csv_path)
         df_raw["Date"] = pd.to_datetime(df_raw["Date"])
         df_raw = df_raw.sort_values("Date").reset_index(drop=True)
-        
+
         feature_cols = cfg["data_cols"]
         window_size = cfg["window_size"]
-        
+
         X_all = df_raw[feature_cols].values.astype(np.float32)
-        
+
         if len(X_all) < window_size:
             raise ValueError(f"데이터 길이({len(X_all)}) < 윈도우 크기({window_size})")
-        
+
         X_latest = X_all[-window_size:].reshape(1, window_size, -1)
         print(f"✅ [{agent_id}] Searcher 완료: 윈도우 shape {X_latest.shape}")
-        
+
         dates_all = df_raw["Date"].values[-window_size:].tolist()
         dates_all = [[str(d) for d in dates_all]]
 
         self.stockdata = StockData(ticker=ticker)
         self.stockdata.feature_cols = feature_cols
         self.stockdata.window_size = window_size
-        
+
         try:
             self.stockdata.last_price = float(df_raw["Close"].iloc[-1])
         except Exception:
@@ -861,7 +821,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         df_latest = pd.DataFrame(X_latest[0], columns=feature_cols)
         feature_dict = {col: df_latest[col].tolist() for col in df_latest.columns}
         setattr(self.stockdata, agent_id, feature_dict)
-        
+
         last_dates = dates_all[0] if dates_all else []
         setattr(self.stockdata, f"{agent_id}_dates_all", dates_all or [])
         setattr(self.stockdata, f"{agent_id}_dates", last_dates or [])
@@ -869,21 +829,21 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return torch.tensor(X_latest, dtype=torch.float32)
 
     def pretrain(self):
-        """TechnicalAgent 사전학습 루틴 (회귀 + 방향 분류 멀티태스크)"""
+        """TechnicalAgent 사전학습 루틴"""
         epochs = agents_info[self.agent_id]["epochs"]
         lr = agents_info[self.agent_id]["learning_rate"]
         batch_size = agents_info[self.agent_id]["batch_size"]
-        
+
         if not self.ticker:
             raise ValueError("TechnicalAgent.pretrain: ticker가 설정되지 않았습니다.")
-        
+
         ticker = self.ticker
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
-        
+
         # CSV 로드 (백테스팅 처리 포함)
         raw_dir = os.path.join(os.path.dirname(self.data_dir), "raw")
         raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
-        
+
         if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
             temp_dir = os.path.join(raw_dir, "backtest_temp")
             date_str = self.simulation_date.replace("-", "")
@@ -891,141 +851,96 @@ class TechnicalAgent(BaseAgent, nn.Module):
             if os.path.exists(temp_path):
                 raw_csv_path = temp_path
                 print(f"[INFO] 백테스팅 모드: 필터링된 데이터셋 사용 ({self.simulation_date} 이전)")
-        
+
         if not os.path.exists(raw_csv_path):
             print(f"[{self.agent_id}] Raw CSV 파일이 없어 searcher() 실행 중...")
             _ = self.searcher(ticker, rebuild=True)
             raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
             if not os.path.exists(raw_csv_path):
                 raise FileNotFoundError(f"Raw CSV not found after searcher: {raw_csv_path}")
-        
+
         df_raw = pd.read_csv(raw_csv_path)
         df_raw["Date"] = pd.to_datetime(df_raw["Date"])
         df_raw = df_raw.sort_values("Date").reset_index(drop=True)
-        
+
         cfg = agents_info.get(self.agent_id, {})
         feature_cols = cfg["data_cols"]
         X_all = df_raw[feature_cols].values.astype(np.float32)
-        
-        # ===== 가격 + 방향 타깃 생성 =====
-        close_prices = df_raw["Close"].values.astype(np.float32)
 
-        # 1) 다음날 수익률
-        raw_ret = (close_prices[1:] / close_prices[:-1] - 1.0).astype(np.float32)   # shape: (N-1,)
-        y_all = raw_ret.reshape(-1, 1) 
+        close_prices = df_raw["Close"].values
+        y_all = (close_prices[1:] / close_prices[:-1] - 1.0).reshape(-1, 1).astype(np.float32)
+        X_all = X_all[:-1]
 
-        # 2) 방향 타깃 
-        y_dir_all = (raw_ret > 0).astype(np.float32).reshape(-1, 1)
-        
-        # 입력 특징은 길이를 맞추기 위해 마지막 행 제거
-        X_all = X_all[:-1]                                          
-        
         if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
             if len(y_all) > 0:
                 y_all = y_all[:-1]
-                y_dir_all = y_dir_all[:-1]
                 X_all = X_all[:-1]
                 print(f"[INFO] 백테스팅 모드: {self.simulation_date} 이전 데이터 사용 중, 마지막 타겟 제거")
-        
+
         window_size = self.window_size
         if len(X_all) < window_size:
             raise ValueError(f"데이터 길이({len(X_all)}) < 윈도우 크기({window_size})")
-        
-        # 시퀀스 생성
-        X_seq, y_seq_ret = self._create_sequences(X_all, y_all, window_size)
-        _, y_dir_seq = self._create_sequences(X_all, y_dir_all, window_size)
-        print(f"[INFO] 시퀀스 생성 완료: {X_seq.shape}, {y_seq_ret.shape}")
-        
-        # === 수익률 스케일링 (기존 수익률 모델과 동일 컨셉) ===
+
+        X_seq, y_seq = self._create_sequences(X_all, y_all, window_size)
+        print(f"[INFO] 시퀀스 생성 완료: {X_seq.shape}, {y_seq.shape}")
+
         y_scale_factor = common_params.get("y_scale_factor", 100.0)
-        y_seq = y_seq_ret * y_scale_factor      # 작던 수익률 값을 키워서 학습 안정화
-        
-        # 스케일러 학습/저장 (회귀 타깃 기준)
+        y_seq = y_seq * y_scale_factor
+
         self.scaler.fit_scalers(X_seq, y_seq)
         self.scaler.save(ticker)
-        
+
         X_train, y_train = map(torch.tensor, self.scaler.transform(X_seq, y_seq))
         X_train, y_train = X_train.float(), y_train.float()
 
-        # 방향 타깃 텐서 (스케일링 없음, 0/1 그대로)
-        y_sign_train = torch.tensor(y_dir_seq, dtype=torch.float32)
-        
         # 모델 학습
         model = self
         self._modules.pop("model", None)
         model.train()
-        
+
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        
+
         loss_fn_name = cfg.get("loss_fn", "HuberLoss")
         if loss_fn_name == "HuberLoss":
             huber_delta = common_params.get("huber_loss_delta", 1.0)
             loss_fn = torch.nn.HuberLoss(delta=huber_delta)
         else:
             loss_fn = torch.nn.HuberLoss()
-        
-        # 방향 분류용 BCE with logits
-        bce_loss = nn.BCEWithLogitsLoss()
 
-        # 손실 가중치 (config에서 조정 가능)
-        alpha = common_params.get("loss_alpha_reg", 0.5)  # 수익률 회귀 로스 비중
-        beta  = common_params.get("loss_beta_dir", 0.5)   # 방향 로스 비중
-        
-        train_loader = DataLoader(
-            TensorDataset(
-                X_train,
-                y_train.view(-1, 1),      # 회귀 타깃 (스케일된 수익률)
-                y_sign_train.view(-1, 1)  # 방향 타깃 (0/1)
-            ),
-            batch_size=batch_size,
-            shuffle=True
-        )
-        
+        train_loader = DataLoader(TensorDataset(X_train, y_train.view(-1, 1)),
+                                  batch_size=batch_size, shuffle=True)
+
         log_interval = common_params.get("pretrain_log_interval", 5)
         final_loss = None
         for epoch in range(epochs):
             total_loss = 0.0
-            for Xb, yb_reg, yb_sign in train_loader:
-                # 회귀 + 방향 출력
-                y_pred_reg, y_pred_logit = model(Xb, return_dir=True)
-
-                # 회귀 손실 (스케일된 수익률 기준)
-                loss_reg = loss_fn(y_pred_reg, yb_reg)
-
-                # 방향 손실
-                loss_dir = bce_loss(
-                    y_pred_logit.view(-1),
-                    yb_sign.view(-1)
-                )
-
-                # 전체 손실
-                loss = alpha * loss_reg + beta * loss_dir
-
+            for Xb, yb in train_loader:
+                y_pred = model(Xb)
+                loss = loss_fn(y_pred, yb)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
-            
+
             avg_loss = total_loss / len(train_loader)
             final_loss = avg_loss
-            
+
             if (epoch + 1) % log_interval == 0 or (epoch + 1) == epochs:
                 print(f"  Epoch {epoch+1:03d}/{epochs} | Loss: {avg_loss:.6f}")
-        
+
         os.makedirs(self.model_dir, exist_ok=True)
         model_path = os.path.join(self.model_dir, f"{ticker}_{self.agent_id}.pt")
         torch.save({"model_state_dict": model.state_dict()}, model_path)
         self.model_loaded = True
-        
+
         final_loss_str = f" (Final Loss: {final_loss:.6f})" if final_loss is not None else ""
         print(f"✅ {self.agent_id} 모델 학습 및 저장 완료: {model_path}{final_loss_str}")
-        
-        # === 전처리된 데이터 저장 (y는 스케일된 수익률) ===
+
         if common_params.get("pretrain_save_dataset", True):
             dataset_path = os.path.join(self.data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
             flattened_data = []
-            dates_list = df_raw["Date"].values[1:]  # y_all이 (t+1) 기준이므로 1칸 시프트된 길이
-            
+            dates_list = df_raw["Date"].values[:-1]
+
             for sample_idx in range(len(X_seq)):
                 for time_idx in range(window_size):
                     date_idx = sample_idx + time_idx
@@ -1038,7 +953,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
                     for feat_idx, feat_name in enumerate(feature_cols):
                         row[feat_name] = X_seq[sample_idx, time_idx, feat_idx]
                     flattened_data.append(row)
-            
+
             dataset_df = pd.DataFrame(flattened_data)
             os.makedirs(self.data_dir, exist_ok=True)
             dataset_df.to_csv(dataset_path, index=False)
@@ -1047,18 +962,17 @@ class TechnicalAgent(BaseAgent, nn.Module):
     def predict(self, X, n_samples: Optional[int] = None, current_price: Optional[float] = None, X_last: Optional[np.ndarray] = None):
         """
         Monte Carlo Dropout 기반 예측 + 불확실성 추정
-        (회귀 출력은 '스케일된 수익률'로 가정)
         """
         if n_samples is None:
             n_samples = common_params.get("n_samples", 30)
-        
+
         if not self.ticker:
             raise ValueError("ticker가 설정되지 않았습니다. 먼저 searcher(ticker)를 호출하세요.")
-        
+
         # 재귀 방지 플래그 확인
         if not hasattr(self, "_in_pretrain"):
             self._in_pretrain = False
-        
+
         model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
         if not os.path.exists(model_path):
             if not self._in_pretrain:
@@ -1073,7 +987,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         else:
             if not hasattr(self, "model_loaded") or not self.model_loaded:
                 self.load_model(model_path)
-        
+
         scaler_x_path = os.path.join(self.scaler.save_dir, f"{self.ticker}_{self.agent_id}_xscaler.pkl")
         if not os.path.exists(scaler_x_path):
             if not self._in_pretrain:
@@ -1085,11 +999,10 @@ class TechnicalAgent(BaseAgent, nn.Module):
                     self._in_pretrain = False
             else:
                 raise RuntimeError(f"[{self.agent_id}] pretrain 중 predict 호출로 인한 재귀 호출 방지")
-        
+
         model = self
         self.scaler.load(self.ticker)
 
-        # X 처리 (StockData or np / torch)
         if isinstance(X, StockData):
             sd = X
             X_in = getattr(sd, "X_seq", None)
@@ -1103,7 +1016,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             if current_price is None and getattr(sd, "last_price", None) is not None:
                 current_price = float(sd.last_price)
             X = X_in
-        
+
         if isinstance(X, np.ndarray):
             X_raw_np = X.copy()
         elif isinstance(X, torch.Tensor):
@@ -1115,58 +1028,49 @@ class TechnicalAgent(BaseAgent, nn.Module):
             X_raw_np = X_raw_np[None, :, :]
         elif X_raw_np.ndim == 3 and X_raw_np.shape[0] != 1:
             raise ValueError(f"예상하지 못한 배치 크기: {X_raw_np.shape[0]}")
-        
+
         X_scaled, _ = self.scaler.transform(X_raw_np)
         device = next(model.parameters()).device
         X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(device)
 
-        model.train()  # Dropout 활성화
+        model.train()
         preds = []
         with torch.no_grad():
             for _ in range(n_samples):
-                y_pred = model(X_tensor)                # [1,1] = 스케일된 수익률
-                preds.append(y_pred.cpu().numpy().flatten())
+                y_pred = model(X_tensor).cpu().numpy().flatten()
+                preds.append(y_pred)
 
-        preds = np.stack(preds)           # [n_samples, 1]
-        mean_pred_scaled = preds.mean(axis=0)   # [1]
-        std_pred_scaled = np.abs(preds.std(axis=0))  # [1]
+        preds = np.stack(preds)
+        mean_pred = preds.mean(axis=0)
+        std_pred = np.abs(preds.std(axis=0))
 
-        # 스케일러 역변환 (y 스케일링만 되돌림)
-        if hasattr(self.scaler, "inverse_y") and getattr(self.scaler, "y_scaler", None) is not None:
-            mean_pred_y = self.scaler.inverse_y(mean_pred_scaled)
-            std_pred_y = np.abs(self.scaler.inverse_y(std_pred_scaled))
-        else:
-            mean_pred_y = mean_pred_scaled
-            std_pred_y = std_pred_scaled
+        sigma = float(std_pred[-1])
+        sigma_min = common_params.get("sigma_min", 1e-6)
+        sigma = max(sigma, sigma_min)
+        confidence = 1 / (1 + np.log1p(sigma))
 
-        # y_scale_factor로 실제 수익률(%) 크기로 복원
-        y_scale_factor = common_params.get("y_scale_factor", 100.0)
-        predicted_return = float(mean_pred_y[-1]) / y_scale_factor      # 스칼라 수익률
-        sigma_ret = float(std_pred_y[-1]) / y_scale_factor
+        if hasattr(self.scaler, "y_scaler") and self.scaler.y_scaler is not None:
+            mean_pred = self.scaler.inverse_y(mean_pred)
+            std_pred = self.scaler.inverse_y(std_pred)
 
-        # 수익률 클리핑 (config에 따라)
-        cfg = agents_info.get(self.agent_id, {})
-        return_clip_min = cfg.get("return_clip_min", -0.5)
-        return_clip_max = cfg.get("return_clip_max", 0.5)
-        predicted_return = float(np.clip(predicted_return, return_clip_min, return_clip_max))
-
-        # 현재가 설정
         if current_price is None:
             last_price = getattr(getattr(self, "stockdata", None), "last_price", None)
             default_price = common_params.get("default_current_price", 100.0)
             current_price = default_price if last_price is None else last_price
 
-        # 예측 종가 계산
-        predicted_price = current_price * (1.0 + predicted_return)
+        y_scale_factor = common_params.get("y_scale_factor", 100.0)
+        predicted_return = float(mean_pred[-1]) / y_scale_factor
 
-        # 불확실성 → confidence 변환
-        sigma_min = common_params.get("sigma_min", 1e-6)
-        sigma = max(sigma_ret, sigma_min)
-        confidence = 1.0 / (1.0 + np.log1p(sigma))
+        cfg = agents_info.get(self.agent_id, {})
+        return_clip_min = cfg.get("return_clip_min", -0.5)
+        return_clip_max = cfg.get("return_clip_max", 0.5)
+        predicted_return = np.clip(predicted_return, return_clip_min, return_clip_max)
+
+        predicted_price = current_price * (1 + predicted_return)
 
         target = Target(
             next_close=float(predicted_price),
-            uncertainty=float(sigma),
+            uncertainty=sigma,
             confidence=float(confidence),
         )
         return target
@@ -1187,7 +1091,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             if isinstance(agent_data, dict) and agent_data:
                 df = pd.DataFrame(agent_data)
                 X_input = torch.tensor(
-                    df.tail(self.window_size).values, 
+                    df.tail(self.window_size).values,
                     dtype=torch.float32
                 ).unsqueeze(0)
             else:
@@ -1200,17 +1104,17 @@ class TechnicalAgent(BaseAgent, nn.Module):
             self._msg("system", sys_text),
             self._msg("user", user_text),
             {
-                "type": "object", 
-                "properties": {"reason": {"type": "string"}}, 
-                "required": ["reason"], 
+                "type": "object",
+                "properties": {"reason": {"type": "string"}},
+                "required": ["reason"],
                 "additionalProperties": False}
         )
 
         reason = parsed.get("reason", "(사유 생성 실패)")
         self.opinions.append(Opinion(
-                    agent_id=self.agent_id, 
-                    target=target, 
-                    reason=reason))
+            agent_id=self.agent_id,
+            target=target,
+            reason=reason))
         return self.opinions[-1]
 
     def reviewer_rebut(self, my_opinion: Opinion, other_opinion: Opinion, round: int) -> Rebuttal:
@@ -1246,7 +1150,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         if self.verbose:
             print(f"[{self.agent_id}] rebuttal 생성 → {result.stance}")
         return result
-    
+
     def reviewer_rebuttal(self, my_opinion, other_opinion, round_index):
         """호환용 래퍼"""
         return self.reviewer_rebut(my_opinion, other_opinion, round_index)
@@ -1257,7 +1161,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             lr = common_params.get("fine_tune_lr", 1e-4)
         if epochs is None:
             epochs = agents_info.get(self.agent_id, {}).get("fine_tune_epochs", 20)
-        
+
         return super().reviewer_revise(my_opinion, others, rebuttals, stock_data, fine_tune, lr, epochs)
 
     def load_model(self, model_path: Optional[str] = None):
@@ -1276,9 +1180,9 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 state_dict = checkpoint.state_dict()
             elif isinstance(checkpoint, dict):
                 state_dict = (
-                    checkpoint.get("model_state_dict")
-                    or checkpoint.get("state_dict")
-                    or checkpoint
+                        checkpoint.get("model_state_dict")
+                        or checkpoint.get("state_dict")
+                        or checkpoint
                 )
             else:
                 print(f"[{self.agent_id}] 알 수 없는 체크포맷: {type(checkpoint)}")
@@ -1293,15 +1197,8 @@ class TechnicalAgent(BaseAgent, nn.Module):
             print(f"[{self.agent_id}] load_model 실패: {e}")
             return False
 
-    def evaluate(self, ticker: str = None, last_n: int | None = None):
-        """
-        검증
-
-        Args:
-            ticker: 평가할 티커 (None이면 self.ticker 사용)
-            last_n: 검증 구간에서 마지막 N개만 사용해서 지표 계산하고 싶을 때 사용.
-                    None이면 전체 검증 구간 사용.
-        """
+    def evaluate(self, ticker: str = None):
+        """검증"""
         if ticker is None:
             ticker = self.ticker
 
@@ -1316,19 +1213,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         X_val = X[split_idx:]
         y_val = y[split_idx:]
 
-        # 검증 구간이 너무 짧으면 NaN 리턴
-        if len(X_val) == 0:
-            return {
-                "mae": np.nan,
-                "rmse": np.nan,
-                "correlation": np.nan,
-                "direction_accuracy": np.nan,
-                "n_samples": 0,
-            }
-
         self.scaler.load(ticker)
-        
-        # y: 수익률 → 스케일 기준에 맞게 y_scale_factor 곱하기
         y_scale_factor = common_params.get("y_scale_factor", 100.0)
         y_val_scaled = (y_val * y_scale_factor).reshape(-1)
 
@@ -1343,59 +1228,30 @@ class TechnicalAgent(BaseAgent, nn.Module):
         model = self
         model.eval()
 
-        predictions_scaled = []
-        actual_scaled = []
+        predictions = []
+        actual_returns = []
 
         with torch.no_grad():
             for i in range(len(X_val_scaled)):
                 X_input = X_val_scaled[i:i+1]
                 X_tensor = torch.tensor(X_input, dtype=torch.float32)
-                pred_scaled = model(X_tensor).item()  # 스케일된 수익률
-                predictions_scaled.append(pred_scaled)
-                actual_scaled.append(float(y_val_scaled[i]))
+                pred_scaled = model(X_tensor).item()
+                predictions.append(pred_scaled)
+                actual_returns.append(float(y_val_scaled[i]))
 
-        predictions_scaled = np.array(predictions_scaled)
-        actual_scaled = np.array(actual_scaled)
+        predictions = np.array(predictions)
+        actual_returns = np.array(actual_returns)
 
-        # 마지막 N개만 사용하고 싶을 때
-        if last_n is not None and last_n > 0 and len(predictions_scaled) > last_n:
-            predictions_scaled = predictions_scaled[-last_n:]
-            actual_scaled = actual_scaled[-last_n:]
+        mae = np.mean(np.abs(predictions - actual_returns))
+        rmse = np.sqrt(np.mean((predictions - actual_returns) ** 2))
 
-        n_samples = len(predictions_scaled)
-        if n_samples == 0:
-            return {
-                "mae": np.nan,
-                "rmse": np.nan,
-                "correlation": np.nan,
-                "direction_accuracy": np.nan,
-                "n_samples": 0,
-            }
-
-        # 스케일 해제 → y_scale_factor 나누기까지 해서 '수익률' 복원
-        if hasattr(self.scaler, "inverse_y") and getattr(self.scaler, "y_scaler", None) is not None:
-            pred_y = self.scaler.inverse_y(predictions_scaled)
-            act_y = self.scaler.inverse_y(actual_scaled)
-        else:
-            pred_y = predictions_scaled
-            act_y = actual_scaled
-
-        predictions = pred_y / y_scale_factor   # 최종 수익률
-        actuals = act_y / y_scale_factor        # 최종 수익률
-
-        # 1) 수익률 기준 MAE / RMSE
-        mae = float(np.mean(np.abs(predictions - actuals)))
-        rmse = float(np.sqrt(np.mean((predictions - actuals) ** 2)))
-
-        # 2) 상관계수
-        if np.std(predictions) == 0 or np.std(actuals) == 0:
+        if np.std(predictions) == 0 or np.std(actual_returns) == 0:
             correlation = 0.0
         else:
-            correlation = float(np.corrcoef(predictions, actuals)[0, 1])
+            correlation = float(np.corrcoef(predictions, actual_returns)[0, 1])
 
-        # 3) 방향 정확도 (수익률 부호 기준)
         pred_direction = np.sign(predictions)
-        actual_direction = np.sign(actuals)
+        actual_direction = np.sign(actual_returns)
         direction_accuracy = float(np.mean(pred_direction == actual_direction) * 100.0)
 
         return {
@@ -1403,5 +1259,5 @@ class TechnicalAgent(BaseAgent, nn.Module):
             "rmse": rmse,
             "correlation": correlation,
             "direction_accuracy": direction_accuracy,
-            "n_samples": n_samples,
+            "n_samples": len(predictions),
         }

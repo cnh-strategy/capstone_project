@@ -28,6 +28,41 @@ def fetch_ticker_data(ticker: str, period: str = "5y", interval: str = "1d") -> 
     df["rsi"] = compute_rsi(df["Close"])
     df["volume_z"] = (df["Volume"] - df["Volume"].mean()) / (df["Volume"].std() + 1e-6)
 
+    # Fundamental Agent용 추가 데이터
+    try:
+        # 환율 데이터 (USD/KRW)
+        usd_krw = yf.download("USDKRW=X", period=period, interval=interval, auto_adjust=True, progress=False)
+        if not usd_krw.empty:
+            df["USD_KRW"] = usd_krw["Close"].reindex(df.index, method='ffill')
+        else:
+            df["USD_KRW"] = 1300.0  # 기본값
+
+        # 나스닥 지수
+        nasdaq = yf.download("^IXIC", period=period, interval=interval, auto_adjust=True, progress=False)
+        if not nasdaq.empty:
+            df["NASDAQ"] = nasdaq["Close"].reindex(df.index, method='ffill')
+        else:
+            df["NASDAQ"] = 15000.0  # 기본값
+
+        # VIX 지수
+        vix = yf.download("^VIX", period=period, interval=interval, auto_adjust=True, progress=False)
+        if not vix.empty:
+            df["VIX"] = vix["Close"].reindex(df.index, method='ffill')
+        else:
+            df["VIX"] = 20.0  # 기본값
+    except Exception as e:
+        print(f"⚠️ 추가 지표 다운로드 실패: {e}")
+        df["USD_KRW"] = 1300.0
+        df["NASDAQ"] = 15000.0
+        df["VIX"] = 20.0
+
+
+
+    # Sentimental Agent용 감성 지표
+    df["sentiment_mean"] = df["returns"].rolling(3).mean().fillna(0)
+    df["sentiment_vol"] = df["returns"].rolling(3).std().fillna(0)
+
+    df.dropna(inplace=True)
     return df
 
 # 시퀀스 생성
