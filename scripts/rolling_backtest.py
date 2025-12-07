@@ -454,6 +454,50 @@ class RollingBacktester:
         
         print(f"\n✅ Analysis complete! Charts saved to: {output_dir}")
 
+        # D. Combo Chart: Price Trend & Daily Return 
+        # Strategy_Return (%) 계산: 기존 Strat_Daily_Ret(소수점)을 퍼센트로 변환
+        df_valid['Strategy_Return_Pct'] = df_valid['Strat_Daily_Ret'] * 100 
+        
+        plt.style.use('ggplot')
+
+        # 두 개의 서브플롯을 생성 (3:1 비율)
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True,
+                                    gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.1})
+
+        # --- 상단 패널: 주가 및 예측 가격 추이 (ax1) ---
+
+        # 실제 종가
+        ax1.plot(df_valid['Date'], df_valid['Actual_Close'], label='실제 종가', color='#0077b6', linewidth=2)
+
+        # 앙상블 예측 종가 (기존 Ensemble_Pred 컬럼 사용)
+        ax1.plot(df_valid['Date'], df_valid['Ensemble_Pred'], label='앙상블 예측 종가', color='#ff6f00', linestyle='--', linewidth=1.5)
+
+        ax1.set_ylabel('가격 (Price)', fontsize=12)
+        ax1.set_title(f'주가 예측 및 전략 일일 수익률: {base_name}', fontsize=16, fontweight='bold')
+        ax1.legend(loc='upper left')
+        ax1.grid(True)
+
+        # --- 하단 패널: 전략 일일 수익률 (ax2) ---
+
+        # 전략 일일 수익률 (0% 기준 막대 차트, 양/음수 색상 분리)
+        ax2.bar(df_valid['Date'], df_valid['Strategy_Return_Pct'], label='전략 일일 수익률 (%)', 
+                color=np.where(df_valid['Strategy_Return_Pct'] >= 0, '#2a9d8f', '#e76f51'),
+                width=1.0) # width=1.0을 추가하여 날짜 간격에 맞춥니다.
+
+        # 0% 기준선
+        ax2.axhline(0, color='black', linestyle='-', linewidth=0.8)
+
+        ax2.set_xlabel('날짜 (Date)', fontsize=12)
+        ax2.set_ylabel('일일 수익률 (%)', fontsize=12)
+        ax2.tick_params(axis='x', rotation=45)
+        ax2.grid(axis='y', linestyle=':')
+
+        # 레이아웃 조정 및 저장
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"{base_name}_combo_return.png"))
+        print(f"Saved combo return chart to {output_dir}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Rolling Backtest Runner with Auto Analysis")
     parser.add_argument("--ticker", type=str, default='AAPL',
