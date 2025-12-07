@@ -196,7 +196,7 @@ agents_info = {
         "dropout": 0.2,
         "window_size": 20,
         "epochs": 50,
-        "learning_rate": 0.0005,
+        "learning_rate": 0.0001,     # AZN: 5e-4 -> 1e-4
         "batch_size": 32,
 
         # 설정 및 기타
