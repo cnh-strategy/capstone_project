@@ -112,3 +112,7 @@ pretrain_*.md
 agent_predict_analysis.md
 PARAMETER_*.md
 PERIOD_*.md
+
+
+data/
+scripts/senti_tuning.py
