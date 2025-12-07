@@ -64,7 +64,7 @@ agents_info = {
             "weekofyear_sin", "weekofyear_cos", "log_ret_lag1",
             "ret_3d", "mom_10", "ma_200",
             "macd", "bbp", "adx_14",
-            "obv", "vol_ma_20", "vol_chg", "vol_20d"
+            "obv", "vol_ma_20", "vol_chg", "vol_20d",
 
             # 신규 추가 피처
             'flag_up_1d', # 전일 종가 기준 상승/하락
