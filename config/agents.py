@@ -51,7 +51,7 @@ agents_info = {
         "model_architecture": {
             "type": "LSTM_with_TimeAttention",
             "layers": [
-                {"type": "LSTM", "input_dim": 13, "hidden_dim": 64, "name": "lstm1"},
+                {"type": "LSTM", "input_dim": 17, "hidden_dim": 64, "name": "lstm1"},
                 {"type": "LSTM", "input_dim": 64, "hidden_dim": 32, "name": "lstm2"},
                 {"type": "TimeAttention", "hidden_dim": 32, "name": "attn_vec"},
                 {"type": "Linear", "input_dim": 32, "output_dim": 1, "name": "fc"}
@@ -69,14 +69,14 @@ agents_info = {
         "feature_builder": "core.technical_classes.technical:build_features_technical",
 
         # 모델 하이퍼파라미터
-        "input_dim": 13,
-        "window_size": 20,              # 시계열 윈도우 크기 (Lookback period)
-        "rnn_units1": 64,               # LSTM 1층 히든 유닛 수
-        "rnn_units2": 32,               # LSTM 2층 히든 유닛 수
-        "dropout": 0.18778570103014075, # Dropout 비율
-        "epochs": 45,                   # 학습 에포크 수
-        "patience": 8,                  # Early Stopping 인내값
-        "learning_rate": 4.2471233429729313e-4, # 학습률
+        "input_dim": 17,
+        "window_size": 10,              # 시계열 윈도우 크기 (Lookback period)
+        "rnn_units1": 32,               # LSTM 1층 히든 유닛 수
+        "rnn_units2": 16,               # LSTM 2층 히든 유닛 수
+        "dropout": 0.35, # Dropout 비율
+        "epochs": 60,                   # 학습 에포크 수
+        "patience": 20,                  # Early Stopping 인내값
+        "learning_rate": 0.001620100853370126, # 학습률
         "batch_size": 64,               # 배치 크기
 
         # 설정 및 기타
