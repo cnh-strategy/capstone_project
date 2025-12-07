@@ -14,7 +14,13 @@ TECH_COLS = [
     "ret_3d","mom_10","ma_200",
     "macd","bbp","adx_14",
     "obv","vol_ma_20","vol_chg","vol_20d",
-]
+
+    # 신규 전일 방향 관련 피처 4개
+    "flag_up_1d",          # 전일 종가 기준 상승/하락 더미
+    "flag_bullish_candle", # 전일 시가 대비 양봉/음봉 더미
+    "body_to_range",       # 몸통 / 전체 캔들 길이 비율
+    "co_ratio",            # close/open - 1 (intraday 수익률)
+    ]
 
 def _ema(s, span):
     return s.ewm(span=span, adjust=False).mean()
@@ -91,12 +97,29 @@ def build_features_technical(df_price: pd.DataFrame) -> pd.DataFrame:
     ret_1d = c.pct_change(1)
     out["vol_20d"] = ret_1d.rolling(20).std()
 
+    # ================================
+    # 신규 전일 방향 관련 피처 4개
+    # ================================
+
+    # 1) 전일 종가 기준 상승/하락 더미
+    out["flag_up_1d"] = (c > c.shift(1)).astype(np.float32)
+
+    # 2) 전일 시가 대비 양봉/음봉 더미
+    out["flag_bullish_candle"] = (c > o).astype(np.float32)
+
+    # 3) 몸통 / 전체 캔들 길이 비율
+    candle_range = (h - l)
+    out["body_to_range"] = (c - o).abs() / (candle_range.replace(0, np.nan) + 1e-6)
+    
+    # 4) close/open - 1 (intraday 수익률)
+    out["co_ratio"] = c / o - 1.0
+    
     # 수치화→이상치 처리→ffill→최종 dropna→float32
     out = (out.apply(pd.to_numeric, errors="coerce")
-           .replace([np.inf,-np.inf], np.nan)
-           .ffill()
-           .dropna()
-           .astype(np.float32))
-
+              .replace([np.inf,-np.inf], np.nan)
+              .ffill()
+              .dropna()
+              .astype(np.float32))
+    
     out = out.reindex(columns=TECH_COLS).astype(np.float32)
     return out

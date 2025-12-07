@@ -51,7 +51,7 @@ agents_info = {
         "model_architecture": {
             "type": "LSTM_with_TimeAttention",
             "layers": [
-                {"type": "LSTM", "input_dim": 13, "hidden_dim": 64, "name": "lstm1"},
+                {"type": "LSTM", "input_dim": 17, "hidden_dim": 64, "name": "lstm1"},
                 {"type": "LSTM", "input_dim": 64, "hidden_dim": 32, "name": "lstm2"},
                 {"type": "TimeAttention", "hidden_dim": 32, "name": "attn_vec"},
                 {"type": "Linear", "input_dim": 32, "output_dim": 1, "name": "fc"}
@@ -65,19 +65,25 @@ agents_info = {
             "ret_3d", "mom_10", "ma_200",
             "macd", "bbp", "adx_14",
             "obv", "vol_ma_20", "vol_chg", "vol_20d"
+
+            # 신규 추가 피처
+            'flag_up_1d', # 전일 종가 기준 상승/하락
+            'flag_bullish_candle', # 전일 시가 대비 양봉/음봉
+            'body_to_range', # 캔들 몸통/전체 길이 비율
+            'co_ratio' # close/open 비율
         ],
         "feature_builder": "core.technical_classes.technical:build_features_technical",
 
         # 모델 하이퍼파라미터
-        "input_dim": 13,
+        "input_dim": 17,
         "window_size": 20,              # 시계열 윈도우 크기 (Lookback period)
-        "rnn_units1": 64,               # LSTM 1층 히든 유닛 수
+        "rnn_units1": 128,               # LSTM 1층 히든 유닛 수
         "rnn_units2": 32,               # LSTM 2층 히든 유닛 수
-        "dropout": 0.18778570103014075, # Dropout 비율
+        "dropout": 0.1, # Dropout 비율
         "epochs": 45,                   # 학습 에포크 수
-        "patience": 8,                  # Early Stopping 인내값
-        "learning_rate": 4.2471233429729313e-4, # 학습률
-        "batch_size": 64,               # 배치 크기
+        "patience": 20,                  # Early Stopping 인내값
+        "learning_rate": 0.007386112777221988, # 학습률
+        "batch_size": 128,               # 배치 크기
 
         # 설정 및 기타
         "interval": "1d",               # 데이터 주기
