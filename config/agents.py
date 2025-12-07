@@ -64,7 +64,13 @@ agents_info = {
             "weekofyear_sin", "weekofyear_cos", "log_ret_lag1",
             "ret_3d", "mom_10", "ma_200",
             "macd", "bbp", "adx_14",
-            "obv", "vol_ma_20", "vol_chg", "vol_20d"
+            "obv", "vol_ma_20", "vol_chg", "vol_20d",
+            # 신규 추가 피처
+            'flag_up_1d', # 전일 종가 기준 상승/하락
+            'flag_bullish_candle', # 전일 시가 대비 양봉/음봉
+            'body_to_range', # 캔들 몸통/전체 길이 비율
+            'co_ratio' # close/open 비율
+
         ],
         "feature_builder": "core.technical_classes.technical:build_features_technical",
 
