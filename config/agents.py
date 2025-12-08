@@ -66,16 +66,16 @@ agents_info = {
             "macd", "bbp", "adx_14",
             "obv", "vol_ma_20", "vol_chg", "vol_20d",
 
-            # 신규 추가 피처
-            'flag_up_1d', # 전일 종가 기준 상승/하락
-            'flag_bullish_candle', # 전일 시가 대비 양봉/음봉
-            'body_to_range', # 캔들 몸통/전체 길이 비율
-            'co_ratio' # close/open 비율
+            # # 신규 추가 피처
+            # 'flag_up_1d', # 전일 종가 기준 상승/하락
+            # 'flag_bullish_candle', # 전일 시가 대비 양봉/음봉
+            # 'body_to_range', # 캔들 몸통/전체 길이 비율
+            # 'co_ratio' # close/open 비율
         ],
         "feature_builder": "core.technical_classes.technical:build_features_technical",
 
         # 모델 하이퍼파라미터
-        "input_dim": 17,
+        "input_dim": 13,
         "window_size": 20,              # 시계열 윈도우 크기 (Lookback period)
         "rnn_units1": 128,               # LSTM 1층 히든 유닛 수
         "rnn_units2": 16,               # LSTM 2층 히든 유닛 수
