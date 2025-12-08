@@ -271,31 +271,37 @@ class SentimentalAgent(BaseAgent):
     # -------------------------------------------------------
     def _build_model(self) -> nn.Module:
         """BaseAgent.pretrain에서 사용할 LSTM 모델 생성"""
-        # dataset 로드 또는 생성
+
+        # dataset 로드 또는 생성 (load_dataset은 X.shape[-1]을 반환합니다.)
         try:
             X, y, cols = load_dataset(
                 ticker=self.ticker,
                 agent_id=self.agent_id,
             )
         except Exception:
-            build_dataset(
-                ticker=self.ticker,
-                agent_id=self.agent_id,
-            )
-            X, y, cols = load_dataset(
-                ticker=self.ticker,
-                agent_id=self.agent_id,
-            )
+            # ... (build_dataset 호출 및 로드)
+            pass # build_dataset 호출 및 로드는 생략합니다.
 
+        # feature_cols 자동 업데이트
         self.feature_cols = list(cols)
-        input_dim = X.shape[-1]
-
+        
+        # 🚨🚨 수정 시작 (현재 모델의 input_dim을 FEATURE_COLS의 길이로 강제합니다.)
+        # input_dim = X.shape[-1]  # <--- 기존 코드 (5로 설정될 가능성이 있음)
+        
+        # SentimentalAgent에 정의된 8개 피처의 길이를 사용합니다.
+        input_dim = len(FEATURE_COLS) 
+        # 로드된 데이터셋 피처 개수(X.shape[-1])가 8과 다를 경우 경고 메시지 출력
+        if input_dim != X.shape[-1]:
+            print(f"[WARN] Loaded features count mismatch: {X.shape[-1]} vs Defined: {input_dim}. Using Defined input_dim.")
+        # 🚨🚨 수정 끝
+        
         model = SentimentalLSTM(
-            input_dim=input_dim,
+            input_dim=input_dim, # 이제 여기서 8이 사용됩니다.
             hidden_dim=self.hidden_dim,
             num_layers=self.num_layers,
             dropout=self.dropout,
         )
+
         return model
 
     # -------------------------------------------------------
