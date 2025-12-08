@@ -76,14 +76,14 @@ agents_info = {
 
         # 모델 하이퍼파라미터
         "input_dim": 17,
-        "window_size": 10,              # 시계열 윈도우 크기 (Lookback period)
+        "window_size": 20,              # 시계열 윈도우 크기 (Lookback period)
         "rnn_units1": 32,               # LSTM 1층 히든 유닛 수
-        "rnn_units2": 16,               # LSTM 2층 히든 유닛 수
-        "dropout": 0.35, # Dropout 비율
+        "rnn_units2": 64,               # LSTM 2층 히든 유닛 수
+        "dropout": 0.2, # Dropout 비율
         "epochs": 60,                   # 학습 에포크 수
         "patience": 20,                  # Early Stopping 인내값
-        "learning_rate": 0.001620100853370126, # 학습률
-        "batch_size": 64,               # 배치 크기
+        "learning_rate": 0.0017149694140822726, # 학습률
+        "batch_size": 128,               # 배치 크기
 
         # 설정 및 기타
         "interval": "1d",               # 데이터 주기
