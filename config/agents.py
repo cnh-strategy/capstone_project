@@ -51,7 +51,7 @@ agents_info = {
         "model_architecture": {
             "type": "LSTM_with_TimeAttention",
             "layers": [
-                {"type": "LSTM", "input_dim": 17, "hidden_dim": 64, "name": "lstm1"},
+                {"type": "LSTM", "input_dim": 13, "hidden_dim": 64, "name": "lstm1"},
                 {"type": "LSTM", "input_dim": 64, "hidden_dim": 32, "name": "lstm2"},
                 {"type": "TimeAttention", "hidden_dim": 32, "name": "attn_vec"},
                 {"type": "Linear", "input_dim": 32, "output_dim": 1, "name": "fc"}
@@ -65,24 +65,24 @@ agents_info = {
             "ret_3d", "mom_10", "ma_200",
             "macd", "bbp", "adx_14",
             "obv", "vol_ma_20", "vol_chg", "vol_20d",
+            # # 신규 추가 피처
+            # 'flag_up_1d', # 전일 종가 기준 상승/하락
+            # 'flag_bullish_candle', # 전일 시가 대비 양봉/음봉
+            # 'body_to_range', # 캔들 몸통/전체 길이 비율
+            # 'co_ratio' # close/open 비율
 
-            # 신규 추가 피처
-            'flag_up_1d', # 전일 종가 기준 상승/하락
-            'flag_bullish_candle', # 전일 시가 대비 양봉/음봉
-            'body_to_range', # 캔들 몸통/전체 길이 비율
-            'co_ratio' # close/open 비율
         ],
         "feature_builder": "core.technical_classes.technical:build_features_technical",
 
         # 모델 하이퍼파라미터
-        "input_dim": 17,
-        "window_size": 20,              # 시계열 윈도우 크기 (Lookback period)
-        "rnn_units1": 128,               # LSTM 1층 히든 유닛 수
+        "input_dim": 13,
+        "window_size": 10,              # 시계열 윈도우 크기 (Lookback period)
+        "rnn_units1": 32,               # LSTM 1층 히든 유닛 수
         "rnn_units2": 64,               # LSTM 2층 히든 유닛 수
-        "dropout": 0.25, # Dropout 비율
-        "epochs": 60,                   # 학습 에포크 수
+        "dropout": 0.1, # Dropout 비율
+        "epochs": 45,                   # 학습 에포크 수
         "patience": 20,                  # Early Stopping 인내값
-        "learning_rate": 0.004376600012118594, # 학습률
+        "learning_rate": 0.004175615893231653, # 학습률
         "batch_size": 32,               # 배치 크기
 
         # 설정 및 기타
@@ -144,7 +144,7 @@ agents_info = {
         "window_size": 40,              # 시계열 윈도우 크기
         "epochs": 60,
         "patience": 10,
-        "learning_rate": 0.007,
+        "learning_rate": 0.005,
         "batch_size": 32,
 
         # 설정 및 기타
@@ -190,13 +190,13 @@ agents_info = {
 
         # 모델 하이퍼파라미터
         "input_dim": 8,
-        "d_model": 64,                  # LSTM 히든 사이즈
+        "d_model": 96,  # MSFT 64 -> 96               LSTM 히든 사이즈
         "nhead": 4,                     # (참고용) Attention 헤드 수
         "num_layers": 2,                # LSTM 층 수
-        "dropout": 0.15, # CCEP: 0.2 -> 0.1
-        "window_size": 30, # CCEP: 20 -> 30
-        "epochs": 60, # CCEP: 50 -> 60 
-        "learning_rate": 0.0005,
+        "dropout": 0.2,
+        "window_size": 15, # MSFT: 20 -> 15
+        "epochs": 50,
+        "learning_rate": 0.0003, # MSFT: 5e-4 -> 3e-4
         "batch_size": 32,
 
         # 설정 및 기타
