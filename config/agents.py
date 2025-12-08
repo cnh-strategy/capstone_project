@@ -52,9 +52,9 @@ agents_info = {
             "type": "LSTM_with_TimeAttention",
             "layers": [
                 {"type": "LSTM", "input_dim": 17, "hidden_dim": 64, "name": "lstm1"},
-                {"type": "LSTM", "input_dim": 64, "hidden_dim": 32, "name": "lstm2"},
-                {"type": "TimeAttention", "hidden_dim": 32, "name": "attn_vec"},
-                {"type": "Linear", "input_dim": 32, "output_dim": 1, "name": "fc"}
+                {"type": "LSTM", "input_dim": 64, "hidden_dim": 16, "name": "lstm2"},
+                {"type": "TimeAttention", "hidden_dim": 16, "name": "attn_vec"},
+                {"type": "Linear", "input_dim": 16, "output_dim": 1, "name": "fc"}
             ],
             "output": "next_day_return"
         },
@@ -78,12 +78,12 @@ agents_info = {
         "input_dim": 17,
         "window_size": 20,              # 시계열 윈도우 크기 (Lookback period)
         "rnn_units1": 128,               # LSTM 1층 히든 유닛 수
-        "rnn_units2": 32,               # LSTM 2층 히든 유닛 수
+        "rnn_units2": 16,               # LSTM 2층 히든 유닛 수
         "dropout": 0.1, # Dropout 비율
         "epochs": 45,                   # 학습 에포크 수
         "patience": 20,                  # Early Stopping 인내값
-        "learning_rate": 0.007386112777221988, # 학습률
-        "batch_size": 128,               # 배치 크기
+        "learning_rate": 0.003308710114995372, # 학습률
+        "batch_size": 64,               # 배치 크기
 
         # 설정 및 기타
         "interval": "1d",               # 데이터 주기
