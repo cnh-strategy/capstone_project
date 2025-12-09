@@ -190,13 +190,13 @@ agents_info = {
 
         # 모델 하이퍼파라미터
         "input_dim": 8,
-        "d_model": 96,  # MSFT 64 -> 96               LSTM 히든 사이즈
+        "d_model": 96,                  # LSTM 히든 사이즈
         "nhead": 4,                     # (참고용) Attention 헤드 수
         "num_layers": 2,                # LSTM 층 수
-        "dropout": 0.2,
-        "window_size": 15, # MSFT: 20 -> 15
-        "epochs": 50,
-        "learning_rate": 0.0003, # MSFT: 5e-4 -> 3e-4
+        "dropout": 0.2, # CCEP: 0.2 -> 0.15
+        "window_size": 15, # CCEP: 20 -> 25
+        "epochs": 50, # CCEP: 50 -> 70
+        "learning_rate": 0.0005, 
         "batch_size": 32,
 
         # 설정 및 기타
