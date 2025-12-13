@@ -119,13 +119,13 @@ def train_meta_model(
     # -------------------------------------------------------
     # 3. LightGBM 학습
     # -------------------------------------------------------
-    # Regression Model
+    # Regression Model (하이퍼파라미터는 config에서 로드)
     model = lgb.LGBMRegressor(
-        n_estimators=100,
-        learning_rate=0.05,
-        max_depth=3,
-        random_state=42,
-        n_jobs=-1,
+        n_estimators=common_params.get("ensemble_n_estimators", 100),
+        learning_rate=common_params.get("ensemble_learning_rate", 0.05),
+        max_depth=common_params.get("ensemble_max_depth", 3),
+        random_state=common_params.get("ensemble_random_state", 42),
+        n_jobs=common_params.get("ensemble_n_jobs", -1),
         objective=directional_mse_objective  # Custom Objective 적용
     )
     

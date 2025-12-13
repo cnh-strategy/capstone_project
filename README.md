@@ -147,7 +147,6 @@ revised_price = β_i × my_price + (1-β_i) × weighted_others
 │       ├── technical_base_agent.py
 │       └── ...
 ├── scripts/
-│   ├── rolling_backtest.py   # 롤링 백테스트 스크립트
 │   └── sentimental_demo/     # 센티멘탈 데모 스크립트
 ├── notebooks/                  # 테스트 및 실험 노트북
 │   ├── macro_test.ipynb       # 매크로 에이전트 테스트
@@ -187,21 +186,19 @@ revised_price = β_i × my_price + (1-β_i) × weighted_others
 
 #### 사용 방법
 
-**새로운 백테스트 모듈 (권장)**:
+**백테스트 실행**:
 ```bash
 # 기본 사용법
-python backtest/scripts/rolling_backtest.py --ticker TSLA --predict-days 5
+python backtest.py --ticker TSLA --predict-days 5
 
 # 시작 날짜 지정
-python backtest/scripts/rolling_backtest.py --ticker TSLA --start 2024-01-01 --predict-days 10
+python backtest.py --ticker TSLA --start 2024-01-01 --predict-days 10
 
 # 분석 스킵
-python backtest/scripts/rolling_backtest.py --ticker TSLA --predict-days 5 --no-analyze
-```
+python backtest.py --ticker TSLA --predict-days 5 --no-analyze
 
-**기존 스크립트 (레거시)**:
-```bash
-python scripts/rolling_backtest.py --ticker TSLA --predict-days 5 --rounds 3
+# 라운드 수 지정
+python backtest.py --ticker TSLA --predict-days 5 --rounds 3
 ```
 
 #### 주요 기능
@@ -213,11 +210,8 @@ python scripts/rolling_backtest.py --ticker TSLA --predict-days 5 --rounds 3
 - **결과 저장**: CSV 형식으로 백테스트 결과 저장
 
 #### 출력 파일
-- **새 백테스트 모듈**: `backtest/data/backtests/rolling_{TICKER}_{START}_{END}.csv`
+- **백테스트 결과**: `backtest/data/backtests/rolling_{TICKER}_{START}_{END}.csv`
 - **분석 차트**: `backtest/data/backtests/analysis/*.png`
-- **기존 스크립트**: `data/backtests/rolling_{TICKER}_{START}_{END}.csv`
-
-자세한 내용은 [backtest/README.md](backtest/README.md)를 참조하세요.
 
 ### 파라미터 최적화 (Hyperparameter Tuning)
 

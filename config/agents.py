@@ -33,12 +33,24 @@ common_params = {
     "pretrain_save_dataset": True,      # 전처리된 데이터셋 저장 여부
     "pretrain_log_interval": 5,         # 학습 로그 출력 주기 (에포크 단위)
     
+    # --- Early Stopping 설정 ---
+    "early_stopping_enabled": True,     # Early Stopping 활성화 여부
+    "early_stopping_min_delta": 1e-6,   # 최소 개선량 (original scale 기준)
+    
     # --- 예측 및 불확실성 ---
     "default_current_price": 100.0,     # 현재가가 없을 경우 사용할 기본값
     "sigma_min": 1e-6,                  # 불확실성(표준편차) 최소값 (0 나누기 방지)
     "confidence_formula": "1.0 / (1.0 + sigma)",  # 신뢰도 계산 공식 (sigma가 클수록 신뢰도 하락)
     "direction_penalty_factor": 1.5,    # 방향성 오차에 대한 패널티 팩터 (1.0 = 패널티 없음)
     "confidence_lookback_days": 30,     # 신뢰도 계산에 사용할 최근 일수 (방향정확도 기반)
+    
+    # --- 앙상블 모델 (LightGBM) 하이퍼파라미터 ---
+    "ensemble_n_estimators": 100,        # 트리 개수
+    "ensemble_learning_rate": 0.05,     # 학습률
+    "ensemble_max_depth": 3,            # 트리 최대 깊이
+    "ensemble_random_state": 42,         # 랜덤 시드
+    "ensemble_n_jobs": -1,              # 병렬 처리 (-1 = 모든 CPU 사용)
+    "ensemble_verbosity": -1,           # 로그 출력 레벨 (-1 = 억제)
 }
 
 # 에이전트별 상세 설정
@@ -71,15 +83,16 @@ agents_info = {
         "feature_builder": "core.technical_classes.technical:build_features_technical",
         
         # 모델 하이퍼파라미터
-        "input_dim": 13,
-        "window_size": 15,              # 시계열 윈도우 크기 (Lookback period)
-        "rnn_units1": 128,               # LSTM 1층 히든 유닛 수
-        "rnn_units2": 16,               # LSTM 2층 히든 유닛 수
-        "dropout": 0.2, # Dropout 비율
-        "epochs": 60,                   # 학습 에포크 수
-        "patience": 8,                  # Early Stopping 인내값
-        "learning_rate": 0.0005, # 학습률
-        "batch_size": 64,               # 배치 크기
+        "input_dim": 13,  
+        "window_size": 20,  # 13w 최적화: AZN=20, CCEP=10, MSFT=20
+        "rnn_units1": 64,  # 13w 최적화: AZN=128, CCEP=32, MSFT=64
+        "rnn_units2": 32,  # 13w 최적화: AZN=16, CCEP=64, MSFT=32
+        "dropout": 0.1,  # 13w 최적화: AZN=0.1, CCEP=0.1, MSFT=0.2
+        "epochs": 100,  # 13w 최적화: AZN=45, CCEP=45, MSFT=45
+        "patience": 20,  # 13w 최적화: AZN=20, CCEP=20, MSFT=20
+        "learning_rate": 0.0042,  # 13w 최적화: AZN=0.0033, CCEP=0.0042, MSFT=4.247e-4
+        "batch_size": 64,  # 13w 최적화: AZN=64, CCEP=32, MSFT=64
+        "shuffle": False,  # 시계열 데이터 학습 시 셔플 여부 (True: 셔플, False: 시간 순서 유지)
         
         # 설정 및 기타
         "interval": "1d",               # 데이터 주기
@@ -127,27 +140,43 @@ agents_info = {
             "output": "next_day_return"
         },
         
-        # 데이터 컬럼 (참고용, 실제는 MacroAgent 내부에서 자동 생성)
+        # 사용할 데이터 컬럼 (MACRO_TICKERS 기반 피처)
         "data_cols": [
-            "Open", "High", "Low", "Close", "Volume",
-            "returns", "sma_5", "sma_20", "rsi", "volume_z",
-            "USD_KRW", "NASDAQ", "VIX"
+            "CL=F_Close", "CL=F_High", "CL=F_Low", "CL=F_Open", "CL=F_Volume", "CL=F_ret_1d",
+            "DX-Y.NYB_Close", "DX-Y.NYB_High", "DX-Y.NYB_Low", "DX-Y.NYB_Open", "DX-Y.NYB_Volume", "DX-Y.NYB_ret_1d",
+            "EURUSD=X_Close", "EURUSD=X_High", "EURUSD=X_Low", "EURUSD=X_Open", "EURUSD=X_Volume", "EURUSD=X_ret_1d",
+            "GC=F_Close", "GC=F_High", "GC=F_Low", "GC=F_Open", "GC=F_Volume", "GC=F_ret_1d",
+            "HG=F_Close", "HG=F_High", "HG=F_Low", "HG=F_Open", "HG=F_Volume", "HG=F_ret_1d",
+            "QQQ_Close", "QQQ_High", "QQQ_Low", "QQQ_Open", "QQQ_Volume", "QQQ_ret_1d",
+            "Risk_Sentiment",
+            "SPY_Close", "SPY_High", "SPY_Low", "SPY_Open", "SPY_Volume", "SPY_ret_1d",
+            "USDJPY=X_Close", "USDJPY=X_High", "USDJPY=X_Low", "USDJPY=X_Open", "USDJPY=X_Volume", "USDJPY=X_ret_1d",
+            "Yield_spread",
+            "^DJI_Close", "^DJI_High", "^DJI_Low", "^DJI_Open", "^DJI_Volume", "^DJI_ret_1d",
+            "^FVX_Close", "^FVX_High", "^FVX_Low", "^FVX_Open", "^FVX_Volume", "^FVX_ret_1d",
+            "^GSPC_Close", "^GSPC_High", "^GSPC_Low", "^GSPC_Open", "^GSPC_Volume", "^GSPC_ret_1d",
+            "^IRX_Close", "^IRX_High", "^IRX_Low", "^IRX_Open", "^IRX_Volume", "^IRX_ret_1d",
+            "^IXIC_Close", "^IXIC_High", "^IXIC_Low", "^IXIC_Open", "^IXIC_Volume", "^IXIC_ret_1d",
+            "^TNX_Close", "^TNX_High", "^TNX_Low", "^TNX_Open", "^TNX_Volume", "^TNX_ret_1d",
+            "^VIX_Close", "^VIX_High", "^VIX_Low", "^VIX_Open", "^VIX_Volume", "^VIX_ret_1d",
+            "ma10", "ma5", "ret1"
         ],
         
         # 모델 하이퍼파라미터
-        "hidden_dims": [256, 128, 64],   # LSTM 3개 층 히든 사이즈
-        "dropout_rates": [0.4, 0.4, 0.3], # 각 층별 Dropout 비율
-        "window_size": 20,              # 시계열 윈도우 크기
-        "epochs": 30,
-        "patience": 10,
-        "learning_rate": 0.0001,
-        "batch_size": 64,
+        "hidden_dims": [128,64,32],  # 13w 최적화: AZN=[128,64,32], CCEP=[128,64,32], MSFT=[128,64,32]
+        "dropout_rates": [0.1, 0.1, 0.1],  # 13w 최적화: AZN=[0.1,0.1,0.1], CCEP=[0.1,0.1,0.1], MSFT=[0.1,0.1,0.1]
+        "window_size": 40,  # 13w 최적화: AZN=40, CCEP=40, MSFT=60
+        "epochs": 100,  # 13w 최적화: AZN=60, CCEP=60, MSFT=60
+        "patience": 10,  # 13w 최적화: AZN=10, CCEP=10, MSFT=10
+        "learning_rate": 0.005,  # 13w 최적화: AZN=0.005, CCEP=0.005, MSFT=0.005
+        "batch_size": 32,  # 13w 최적화: AZN=32, CCEP=32, MSFT=16
+        "shuffle": False,  # 시계열 데이터 학습 시 셔플 여부 (True: 셔플, False: 시간 순서 유지)
         
         # 설정 및 기타
         "interval": "1d",
-        "x_scaler": "StandardScaler",
+        "x_scaler": "StandardScaler",  # 13w 최적화: AZN=StandardScaler, CCEP=RobustScaler, MSFT=StandardScaler
         "y_scaler": "MinMaxScaler",     # 타겟은 -1 ~ 1 범위로 스케일링
-        "loss_fn": "L1Loss",            # L1 Loss (MAE) 사용
+        "loss_fn": "HuberLoss",  # 13w 최적화: AZN=HuberLoss, CCEP=HuberLoss, MSFT=HuberLoss
         
         # Debate 관련 파라미터
         "gamma": 0.5,
@@ -178,22 +207,30 @@ agents_info = {
             "output": "next_day_return"
         },
         
-        # 데이터 컬럼
+        # 사용할 데이터 컬럼 (뉴스 및 감성 분석 피처)
         "data_cols": [
-            "returns", "sentiment_mean", "sentiment_vol",
-            "Close", "Volume", "Open", "High", "Low"
+            "return_1d",
+            "hl_range",
+            "Volume",
+            "news_count_1d",
+            "news_count_7d",
+            "sentiment_mean_1d",
+            "sentiment_mean_7d",
+            "sentiment_vol_7d"
         ],
         
         # 모델 하이퍼파라미터
         "input_dim": 8,
-        "d_model": 32,                  # LSTM 히든 사이즈
+        "d_model": 64,  # 13w 최적화: AZN=64, CCEP=96, MSFT=96
         "nhead": 4,                     # (참고용) Attention 헤드 수
         "num_layers": 2,                # LSTM 층 수
-        "dropout": 0.2,
-        "window_size": 10,
-        "epochs": 50,
-        "learning_rate": 0.0005,
-        "batch_size": 64,
+        "dropout": 0.2,  # 13w 최적화: AZN=0.2, CCEP=0.2, MSFT=0.2
+        "window_size": 15,  # 13w 최적화: AZN=20, CCEP=15, MSFT=15
+        "epochs": 100,  # 13w 최적화: AZN=50, CCEP=50, MSFT=50
+        "patience": 20,  # Early Stopping patience
+        "learning_rate": 0.0003,  # 13w 최적화: AZN=0.0001, CCEP=0.0005, MSFT=0.0003
+        "batch_size": 32,  # 13w 최적화: AZN=32, CCEP=32, MSFT=32
+        "shuffle": False,  # 시계열 데이터 학습 시 셔플 여부 (True: 셔플, False: 시간 순서 유지)
         
         # 설정 및 기타
         "interval": "1d",

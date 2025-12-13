@@ -59,7 +59,6 @@ class DebateAgent:
             raise ValueError("DebateAgent: ticker must not be None or empty")
 
         self.ticker = str(ticker).upper()
-        self.symbol = self.ticker
         
         # 경로 설정
         self.data_dir = data_dir if data_dir is not None else dir_info["data_dir"]
@@ -119,15 +118,6 @@ class DebateAgent:
         self.rounds = rounds
         self.opinions: Dict[int, Dict[str, Opinion]] = {}
         self.rebuttals: Dict[int, List[Rebuttal]] = {}
-        self._data_built = False
-
-        # 초기 모델 로드 시도 ?? _load_model_if_exists가 어디랑 연결되어있지
-        for agent in self.agents.values():
-            if hasattr(agent, "_load_model_if_exists"):
-                try:
-                    agent._load_model_if_exists()
-                except Exception as e:
-                    print(f"[WARN] {agent.__class__.__name__} 초기 모델 로드 실패 (계속 진행): {e}")
 
         # Ensemble 모델 (LightGBM)은 run() 시점에 로드/학습
         self.ensemble_model = None
@@ -162,9 +152,6 @@ class DebateAgent:
         Returns:
             Dict[str, Opinion]: 에이전트 ID를 키로 하는 의견 딕셔너리
         """
-        if not hasattr(self, "opinions"):
-            self.opinions = {}
-
         ticker = ticker or self.ticker
         if not ticker:
             raise ValueError("ticker가 지정되지 않았습니다.")
@@ -183,17 +170,14 @@ class DebateAgent:
             if needs_pretrain:
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] pretrain 실행 (모델/스케일러 생성)")
                 agent.pretrain()
-            else:
-                model_path = os.path.join(self.model_dir, f"{ticker}_{agent_id}.pt")
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] 기존 모델 사용: {model_path}")
             
             # 3. 예측 수행
             print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] predict 실행")
-            if agent_id == "SentimentalAgent":
-                n_samples = common_params.get("n_samples", 30)
+            n_samples = common_params.get("n_samples", 30) if agent_id == "SentimentalAgent" else None
+            if n_samples:
                 target = agent.predict(agent.stockdata, n_samples=n_samples)
             else:
-                target = agent.predict(X)
+                target = agent.predict(agent.stockdata)
 
             # 4. Opinion 생성 (LLM)
             print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] reviewer_draft 실행")
@@ -237,10 +221,10 @@ class DebateAgent:
                     continue
 
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] → [{other_id}] rebuttal 생성 중...")
-                rebut = agent.reviewer_rebuttal(
+                rebut = agent.reviewer_rebut(
                     my_opinion=my_opinion,
                     other_opinion=other_op,
-                    round_index=round,
+                    round=round,
                 )
                 round_rebuttals.append(rebut)
 
@@ -306,12 +290,6 @@ class DebateAgent:
         Args:
             force_pretrain (bool): 초기화 시 강제 재학습 여부
         """
-        if not self._data_built:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 데이터셋 생성은 각 Agent에서 처리하므로 DebateAgent.run에서는 스킵합니다.")
-            self._data_built = True
-        else:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 데이터셋 이미 생성됨, 스킵")
-
         # Round 0: 초기 Opinion 수집
         print(f"\n{'='*80}")
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Round 0: 초기 Opinion 수집 시작 (force_pretrain={force_pretrain})")
@@ -452,59 +430,10 @@ class DebateAgent:
                     # 1-1. 학습된 모델/스케일러 로드
                     print("  1-1. 학습된 모델/스케일러 로드 중...")
 
-                    # TechnicalAgent 모델 로드
-                    tech_model_path = os.path.join(self.model_dir, f"{self.ticker}_TechnicalAgent.pt")
-                    if not os.path.exists(tech_model_path):
-                        raise FileNotFoundError(f"TechnicalAgent 모델이 없습니다: {tech_model_path}")
-
-                    tech_cfg = agents_info.get("TechnicalAgent", {})
-                    tech_agent = TechnicalAgent(
-                        agent_id="TechnicalAgent",
-                        ticker=self.ticker,
-                        data_dir=self.data_dir,
-                        model_dir=self.model_dir,
-                        gamma=tech_cfg.get("gamma", 0.3),
-                        delta_limit=tech_cfg.get("delta_limit", 0.05)
-                    )
-                    tech_agent.load_model(tech_model_path)
-
-                    # MacroAgent 모델/스케일러 로드
-                    macro_model_path = os.path.join(self.model_dir, f"{self.ticker}_MacroAgent.pt")
-                    macro_scaler_x_path = os.path.join(self.model_dir, "scalers", f"{self.ticker}_MacroAgent_xscaler.pkl")
-                    macro_scaler_y_path = os.path.join(self.model_dir, "scalers", f"{self.ticker}_MacroAgent_yscaler.pkl")
-
-                    if not os.path.exists(macro_model_path) or not os.path.exists(macro_scaler_x_path):
-                        raise FileNotFoundError(f"MacroAgent 모델/스케일러가 없습니다: {macro_model_path}")
-
-                    macro_cfg = agents_info.get("MacroAgent", {})
-                    macro_window = macro_cfg.get("window_size", 40)
-                    macro_agent = MacroAgent(
-                        agent_id="MacroAgent",
-                        ticker=self.ticker,
-                        base_date=datetime.today(),
-                        window=macro_window,
-                        data_dir=self.data_dir,
-                        model_dir=self.model_dir,
-                        gamma=macro_cfg.get("gamma", 0.5),
-                        delta_limit=macro_cfg.get("delta_limit", 0.1)
-                    )
-                    macro_agent.load_model()
-
-                    # SentimentalAgent 모델 로드
-                    senti_model_path = os.path.join(self.model_dir, f"{self.ticker}_SentimentalAgent.pt")
-                    if not os.path.exists(senti_model_path):
-                        raise FileNotFoundError(f"SentimentalAgent 모델이 없습니다: {senti_model_path}")
-
-                    sent_cfg = agents_info.get("SentimentalAgent", {})
-                    senti_agent = SentimentalAgent(
-                        ticker=self.ticker,
-                        agent_id="SentimentalAgent",
-                        data_dir=self.data_dir,
-                        model_dir=self.model_dir,
-                        gamma=sent_cfg.get("gamma", 0.3),
-                        delta_limit=sent_cfg.get("delta_limit", 0.05)
-                    )
-                    senti_agent.load_model(senti_model_path)
+                    # 기존 인스턴스 재사용 및 모델 로드 (통합된 load_model 사용)
+                    for agent_id, agent in self.agents.items():
+                        if not hasattr(agent, "model_loaded") or not agent.model_loaded:
+                            agent.load_model()
 
                     print("  모델/스케일러 로드 완료.")
 
@@ -579,9 +508,11 @@ class DebateAgent:
                     print(f"  1-4. 일별 예측 수행 중...")
                     results = []
 
-                    w_tech = tech_agent.window_size
-                    w_macro = macro_agent.window_size
-                    w_senti = senti_agent.window_size
+                    # 에이전트별 window_size 저장
+                    agent_windows = {agent_id: agent.window_size for agent_id, agent in self.agents.items()}
+                    w_tech = agent_windows.get("TechnicalAgent", 20)
+                    w_macro = agent_windows.get("MacroAgent", 40)
+                    w_senti = agent_windows.get("SentimentalAgent", 30)
 
                     # TechnicalAgent: 날짜별 매칭
                     for t_idx, tech_date_list in enumerate(tech_dates):
@@ -604,6 +535,7 @@ class DebateAgent:
                         # Technical Prediction
                         pred_tech = np.nan; conf_tech = 0; unc_tech = 0; ret_tech = np.nan
                         try:
+                            tech_agent = self.agents["TechnicalAgent"]
                             X_batch = tech_X_all[t_idx]
                             X_in = np.expand_dims(X_batch, axis=0)
                             target_tech = tech_agent.predict(X_in, current_price=curr_close)
@@ -643,6 +575,7 @@ class DebateAgent:
                                         X_values = macro_sample[feat_cols].values[-w_macro:]
 
                                         # predict에 원본 데이터 전달 (내부에서 스케일링 처리)
+                                        macro_agent = self.agents["MacroAgent"]
                                         target_macro = macro_agent.predict(X_values, current_price=curr_close)
                                         pred_macro = target_macro.next_close
                                         conf_macro = target_macro.confidence
@@ -676,6 +609,7 @@ class DebateAgent:
                                     # 윈도우 데이터 추출
                                     X_values = senti_sample[feat_cols].values[-w_senti:]
                                     X_in = np.expand_dims(X_values, axis=0)
+                                    senti_agent = self.agents["SentimentalAgent"]
                                     target_senti = senti_agent.predict(X_in, current_price=curr_close)
                                     pred_senti = target_senti.next_close
                                     conf_senti = target_senti.confidence
@@ -781,14 +715,14 @@ class DebateAgent:
                     # Custom Objective Function Import
                     from scripts.train_meta_model import directional_mse_objective
 
-                    # LightGBM 학습
+                    # LightGBM 학습 (하이퍼파라미터는 config에서 로드)
                     model = lgb.LGBMRegressor(
-                        n_estimators=100,
-                        learning_rate=0.05,
-                        max_depth=3,
-                        random_state=42,
-                        n_jobs=-1,
-                        verbosity=-1,  # LightGBM 로그 출력 억제
+                        n_estimators=common_params.get("ensemble_n_estimators", 100),
+                        learning_rate=common_params.get("ensemble_learning_rate", 0.05),
+                        max_depth=common_params.get("ensemble_max_depth", 3),
+                        random_state=common_params.get("ensemble_random_state", 42),
+                        n_jobs=common_params.get("ensemble_n_jobs", -1),
+                        verbosity=common_params.get("ensemble_verbosity", -1),
                         objective=directional_mse_objective  # Custom Objective 적용
                     )
 
@@ -803,8 +737,16 @@ class DebateAgent:
                     joblib.dump(model, model_path)
                     print(f"[Step 3/3] {self.ticker} 앙상블 모델 학습 완료!")
 
+                except FileNotFoundError as e:
+                    print(f"[ERROR] 앙상블 모델 학습 데이터 파일을 찾을 수 없습니다: {e}")
+                    print("[INFO] 기본 평균 방식을 사용합니다.")
+                    self.ensemble_model = None
+                except ValueError as e:
+                    print(f"[ERROR] 앙상블 모델 학습 데이터가 유효하지 않습니다: {e}")
+                    print("[INFO] 기본 평균 방식을 사용합니다.")
+                    self.ensemble_model = None
                 except Exception as e:
-                    print(f"[ERROR] 앙상블 모델 자동 학습 중 오류 발생: {e}")
+                    print(f"[ERROR] 앙상블 모델 자동 학습 중 예상치 못한 오류 발생: {e}")
                     import traceback
                     traceback.print_exc()
                     print("[INFO] 기본 평균 방식을 사용합니다.")
@@ -846,6 +788,7 @@ class DebateAgent:
         #     'Senti_Ret', 'Senti_Conf', 'Senti_Unc'
         # ]
 
+        # 동적으로 에이전트별 의견 가져오기
         tech_op = final_opinions.get("TechnicalAgent")
         macro_op = final_opinions.get("MacroAgent")
         senti_op = final_opinions.get("SentimentalAgent")

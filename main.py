@@ -119,7 +119,10 @@ def main():
         
         # 결과 출력 (보기 좋게 포맷팅)
         for key, value in result.items():
-            if isinstance(value, float):
+            if key == "debate_summary":
+                # debate_summary는 별도로 처리 (긴 텍스트)
+                continue
+            elif isinstance(value, float):
                 print(f"  {key}: {value:.2f}")
             elif key == "agents" and isinstance(value, dict):
                 print(f"  {key}:")
@@ -131,6 +134,14 @@ def main():
             else:
                 print(f"  {key}: {value}")
         print("-" * 80)
+        
+        # debate_summary 별도 출력
+        if "debate_summary" in result and result["debate_summary"]:
+            print()
+            print("Debate Summary:")
+            print("-" * 80)
+            print(result["debate_summary"])
+            print("-" * 80)
         
         return result
         

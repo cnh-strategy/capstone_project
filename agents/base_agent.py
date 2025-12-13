@@ -37,7 +37,6 @@ class Target:
     uncertainty: Optional[float] = None
     confidence: Optional[float] = None
     predicted_return: Optional[float] = None
-    predicted_return: Optional[float] = None
 
 @dataclass
 class Opinion:
@@ -174,6 +173,11 @@ class BaseAgent:
         
         # 모델 우선순위 설정
         self.preferred_models = preferred_models or common_params.get("preferred_models", ["gpt-5-mini", "gpt-4.1-mini"])
+        
+        # 플래그 초기화
+        self._in_pretrain = False
+        self._calculating_confidence = False
+        
         if model:
             self.preferred_models = [model] + [m for m in self.preferred_models if m != model]
 
@@ -367,11 +371,11 @@ class BaseAgent:
             lookback_days = common_params.get("confidence_lookback_days", 30)
             
             # 2. 필수 정보 확인
-            if not hasattr(self, "ticker") or not self.ticker:
+            if not self.ticker:
                 return None
-            if not hasattr(self, "agent_id") or not self.agent_id:
+            if not self.agent_id:
                 return None
-            if not hasattr(self, "data_dir") or not self.data_dir:
+            if not self.data_dir:
                 return None
             
             # 3. dataset.csv 파일 경로 확인
@@ -400,7 +404,7 @@ class BaseAgent:
             recent_samples = unique_samples[-lookback_days:]
             
             # 5. 모델이 로드되어 있는지 확인
-            if not hasattr(self, "model") or self.model is None:
+            if self.model is None:
                 return None
             
             # 6. 각 샘플에 대해 예측 수행 및 방향 비교
@@ -408,9 +412,6 @@ class BaseAgent:
             total_count = 0
             
             # 재귀 방지 플래그 설정
-            if not hasattr(self, "_calculating_confidence"):
-                self._calculating_confidence = False
-            
             if self._calculating_confidence:
                 return None  # 재귀 호출 방지
             
@@ -554,11 +555,8 @@ class BaseAgent:
 
         X_tensor = X_tensor.to(device)
 
-        # 모델 로드 확인 (재귀 방지 플래그 확인)
-        if not hasattr(self, "_in_pretrain"):
-            self._in_pretrain = False
-        
-        if not hasattr(self, "model") or self.model is None:
+        # 모델 로드 확인
+        if self.model is None:
              if not self.load_model():
                  # 모델이 없으면 pretrain 시도 (재귀 방지)
                  if not self._in_pretrain:
@@ -1186,7 +1184,14 @@ class DataScaler:
         X_2d = X_train.reshape(-1, n_feats)
         
         self.x_scaler = Sx().fit(X_2d) if Sx else None
-        self.y_scaler = Sy().fit(y_train.reshape(-1, 1)) if Sy else None
+        
+        # MinMaxScaler에 feature_range 지원 추가
+        if Sy == MinMaxScaler:
+            cfg = agents_info.get(self.agent_id, {})
+            feature_range = cfg.get("minmax_scaler_range", (0, 1))
+            self.y_scaler = Sy(feature_range=feature_range).fit(y_train.reshape(-1, 1))
+        else:
+            self.y_scaler = Sy().fit(y_train.reshape(-1, 1)) if Sy else None
 
     def transform(self, X, y=None):
         """Transform"""

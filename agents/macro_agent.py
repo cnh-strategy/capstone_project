@@ -43,9 +43,6 @@ for t in sorted(MACRO_TICKERS.values()):
 _macro_derived_features = ["Yield_spread", "Risk_Sentiment"]
 _stock_features = ["ret1", "ma5", "ma10"]
 
-# 모든 피처 리스트 합치기 및 정렬
-FINAL_FEATURES = sorted(_macro_base_features + _macro_derived_features + _stock_features)
-
 
 class MacroAgent(BaseAgent, nn.Module):
     """
@@ -104,7 +101,8 @@ class MacroAgent(BaseAgent, nn.Module):
             self.scaler_y_path = None
 
         # 모델 하이퍼파라미터 설정 (Config 기반)
-        self.input_dim = cfg.get("input_dim", len(FINAL_FEATURES))
+        data_cols = cfg.get("data_cols", [])
+        self.input_dim = cfg.get("input_dim", len(data_cols) if data_cols else 95)
         self.output_dim = len(self.tickers) if self.tickers else 1
         hidden_dims = cfg.get("hidden_dims", [128, 64, 32])
         dropout_rates = cfg.get("dropout_rates", [0.3, 0.3, 0.2])
@@ -160,6 +158,11 @@ class MacroAgent(BaseAgent, nn.Module):
     # =========================================================================
     # 내부 데이터 처리 메서드 (데이터 수집 및 가공)
     # =========================================================================
+
+    def _get_feature_cols(self):
+        """피처 컬럼 리스트 반환 (config에서 가져옴)"""
+        cfg = agents_info.get(self.agent_id, {})
+        return cfg.get("data_cols", [])
 
     def _ensure_macro_csv(self, ticker: str, rebuild: bool = False) -> None:
         """
@@ -271,9 +274,14 @@ class MacroAgent(BaseAgent, nn.Module):
 
         merged = merged.fillna(method="ffill").fillna(method="bfill").dropna().reset_index(drop=True)
 
-        # FINAL_FEATURES 기준으로 정렬/보정
+        # feature_cols 기준으로 정렬/보정 (config에서 가져옴)
+        cfg = agents_info.get(self.agent_id, {})
+        feature_cols = cfg.get("data_cols", [])
+        if not feature_cols:
+            raise ValueError(f"[{self.agent_id}] config에 data_cols가 정의되지 않았습니다.")
+        
         X_final = pd.DataFrame(index=merged.index)
-        for feature in FINAL_FEATURES:
+        for feature in feature_cols:
             if feature in merged.columns:
                 X_final[feature] = merged[feature]
             else:
@@ -393,7 +401,19 @@ class MacroAgent(BaseAgent, nn.Module):
         df_raw["Date"] = pd.to_datetime(df_raw["Date"])
         df_raw = df_raw.sort_values("Date").reset_index(drop=True)
 
-        feature_cols = FINAL_FEATURES
+        # config에서 feature 목록 가져오기
+        cfg = agents_info.get(agent_id, {})
+        feature_cols = cfg.get("data_cols", [])
+        if not feature_cols:
+            raise ValueError(f"[{agent_id}] config에 data_cols가 정의되지 않았습니다.")
+        
+        # 누락된 feature 확인 및 처리
+        missing_cols = [col for col in feature_cols if col not in df_raw.columns]
+        if missing_cols:
+            print(f"[WARN] [{agent_id}] 누락된 feature {len(missing_cols)}개를 0.0으로 채움: {missing_cols[:5]}...")
+            for col in missing_cols:
+                df_raw[col] = 0.0
+        
         window_size = self.window
 
         X_all = df_raw[feature_cols].values.astype(np.float32)
@@ -469,8 +489,19 @@ class MacroAgent(BaseAgent, nn.Module):
         df_raw["Date"] = pd.to_datetime(df_raw["Date"])
         df_raw = df_raw.sort_values("Date").reset_index(drop=True)
 
-        # 2) 피처 및 타겟 준비
-        feature_cols = FINAL_FEATURES
+        # 2) 피처 및 타겟 준비 (config에서 feature 목록 가져오기)
+        cfg = agents_info.get(self.agent_id, {})
+        feature_cols = cfg.get("data_cols", [])
+        if not feature_cols:
+            raise ValueError(f"[{self.agent_id}] config에 data_cols가 정의되지 않았습니다.")
+        
+        # 누락된 feature 확인 및 처리
+        missing_cols = [col for col in feature_cols if col not in df_raw.columns]
+        if missing_cols:
+            print(f"[WARN] [{self.agent_id}] 누락된 feature {len(missing_cols)}개를 0.0으로 채움: {missing_cols[:5]}...")
+            for col in missing_cols:
+                df_raw[col] = 0.0
+        
         X_all = df_raw[feature_cols].values.astype(np.float32)
 
         close_prices = df_raw["Close"].values
@@ -533,8 +564,30 @@ class MacroAgent(BaseAgent, nn.Module):
         model.to(self.device)
         model.train()
 
-        dataset = TensorDataset(X_train.to(self.device), y_train.to(self.device))
-        train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        shuffle = cfg.get("shuffle", True)  # 기본값 True로 하위 호환성 유지
+        
+        # Early Stopping 설정
+        early_stopping_enabled = common_params.get("early_stopping_enabled", True)
+        patience = cfg.get("patience", 10)
+        min_delta = common_params.get("early_stopping_min_delta", 1e-6)
+        eval_split_ratio = common_params.get("eval_split_ratio", 0.8)
+        
+        # Validation set 분할
+        if early_stopping_enabled:
+            split_idx = int(len(X_train) * eval_split_ratio)
+            X_train_split = X_train[:split_idx]
+            X_val_split = X_train[split_idx:]
+            y_train_split = y_train[:split_idx]
+            y_val_split = y_train[split_idx:]
+            
+            val_dataset = TensorDataset(X_val_split.to(self.device), y_val_split.to(self.device))
+            val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        else:
+            X_train_split = X_train
+            y_train_split = y_train
+        
+        train_dataset = TensorDataset(X_train_split.to(self.device), y_train_split.to(self.device))
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -552,10 +605,19 @@ class MacroAgent(BaseAgent, nn.Module):
         # 8) 학습 루프
         log_interval = common_params.get("pretrain_log_interval", 5)
         final_loss = None
+        y_scale_factor = common_params.get("y_scale_factor", 100.0)
+        
+        # Early Stopping 변수 초기화
+        best_val_loss_orig = float('inf')
+        patience_counter = 0
+        best_model_state = None
 
         for epoch in range(epochs):
             model.train()
             train_loss = 0.0
+            train_loss_original = 0.0  # 원본 스케일 로스
+            count = 0
+            
             for bx, by in train_loader:
                 optimizer.zero_grad()
                 pred = model(bx)
@@ -563,12 +625,72 @@ class MacroAgent(BaseAgent, nn.Module):
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item()
+                
+                # 원본 스케일로 역변환하여 로스 계산
+                with torch.no_grad():
+                    pred_np = pred.detach().cpu().numpy()
+                    by_np = by.detach().cpu().numpy()
+                    
+                    # 역변환 (스케일러만 역변환, 아직 y_scale_factor 곱해진 상태)
+                    pred_scaled = self.scaler.inverse_y(pred_np)
+                    true_scaled = self.scaler.inverse_y(by_np)
+                    
+                    # y_scale_factor로 나눠서 실제 수익률로 변환
+                    pred_orig = pred_scaled / y_scale_factor
+                    true_orig = true_scaled / y_scale_factor
+                    
+                    # 원본 스케일에서 MSE 계산 (비교용)
+                    mse_orig = np.mean((pred_orig - true_orig) ** 2)
+                    train_loss_original += mse_orig
+                    count += 1
 
             train_loss /= max(len(train_loader), 1)
+            train_loss_original /= max(count, 1)
             final_loss = train_loss
+            
+            # Validation 평가 및 Early Stopping 체크
+            val_loss_orig = None
+            if early_stopping_enabled:
+                model.eval()
+                val_loss_orig = 0.0
+                val_count = 0
+                
+                with torch.no_grad():
+                    for bx, by in val_loader:
+                        pred = model(bx)
+                        
+                        # 원본 스케일로 변환
+                        pred_np = pred.cpu().numpy()
+                        by_np = by.cpu().numpy()
+                        pred_scaled = self.scaler.inverse_y(pred_np)
+                        true_scaled = self.scaler.inverse_y(by_np)
+                        pred_orig = pred_scaled / y_scale_factor
+                        true_orig = true_scaled / y_scale_factor
+                        
+                        mse_orig = np.mean((pred_orig - true_orig) ** 2)
+                        val_loss_orig += mse_orig
+                        val_count += 1
+                
+                val_loss_orig /= max(val_count, 1)
+                
+                # Early Stopping 체크
+                if val_loss_orig < (best_val_loss_orig - min_delta):
+                    best_val_loss_orig = val_loss_orig
+                    patience_counter = 0
+                    best_model_state = model.state_dict().copy()
+                else:
+                    patience_counter += 1
+                    if patience_counter >= patience:
+                        print(f"  Early stopping at epoch {epoch+1}/{epochs} (best val loss: {best_val_loss_orig:.6f})")
+                        if best_model_state is not None:
+                            model.load_state_dict(best_model_state)
+                        break
 
             if (epoch + 1) % log_interval == 0 or (epoch + 1) == epochs:
-                print(f"  Epoch {epoch+1:03d}/{epochs} | Loss: {train_loss:.6f}")
+                if early_stopping_enabled and val_loss_orig is not None:
+                    print(f"  Epoch {epoch+1:03d}/{epochs} | Loss (scaled): {train_loss:.6f} | Loss (original): {train_loss_original:.6f} | Val Loss (original): {val_loss_orig:.6f}")
+                else:
+                    print(f"  Epoch {epoch+1:03d}/{epochs} | Loss (scaled): {train_loss:.6f} | Loss (original): {train_loss_original:.6f}")
 
         # 9) 모델 저장
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
@@ -608,7 +730,10 @@ class MacroAgent(BaseAgent, nn.Module):
     def load_model(self, model_path: Optional[str] = None):
         """저장된 모델 가중치 로드 (Input Dim 자동 조정 포함)"""
         if model_path is None:
-            model_path = self.model_path
+            if hasattr(self, "model_path") and self.model_path:
+                model_path = self.model_path
+            else:
+                model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
 
         if not os.path.exists(model_path):
             return False
@@ -658,12 +783,9 @@ class MacroAgent(BaseAgent, nn.Module):
         if not self.ticker:
             raise ValueError("ticker가 설정되지 않았습니다. 먼저 searcher(ticker)를 호출하세요.")
 
-        # 재귀 방지 플래그 확인
-        if not hasattr(self, "_in_pretrain"):
-            self._in_pretrain = False
-
         # 모델 파일 체크 및 Pretrain
-        if not os.path.exists(self.model_path):
+        model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
+        if not os.path.exists(model_path):
             if not self._in_pretrain:
                 print(f"[{self.agent_id}] 모델이 없어 pretrain()을 실행합니다...")
                 self._in_pretrain = True
@@ -675,7 +797,7 @@ class MacroAgent(BaseAgent, nn.Module):
                 raise RuntimeError(f"[{self.agent_id}] pretrain 중 predict 호출로 인한 재귀 호출 방지")
         else:
             if not hasattr(self, "model_loaded") or not self.model_loaded:
-                self.load_model(self.model_path)
+                self.load_model()
 
         # 스케일러 로드
         scaler_x_path = os.path.join(self.model_dir, "scalers", f"{self.ticker}_{self.agent_id}_xscaler.pkl")
@@ -699,7 +821,25 @@ class MacroAgent(BaseAgent, nn.Module):
             if X_in is None:
                 X_in = getattr(sd, self.agent_id, None)
                 if isinstance(X_in, dict):
-                    df = pd.DataFrame(X_in)
+                    # StockData.feature_cols를 사용하여 순서 보장
+                    feature_cols = getattr(sd, "feature_cols", None)
+                    if not feature_cols:
+                        cfg = agents_info.get(self.agent_id, {})
+                        feature_cols = cfg.get("data_cols", [])
+                        if not feature_cols:
+                            raise ValueError(f"[{self.agent_id}] config에 data_cols가 정의되지 않았습니다.")
+                    
+                    # 누락된 feature는 0으로 채움
+                    ordered_data = {}
+                    for col in feature_cols:
+                        if col in X_in:
+                            ordered_data[col] = X_in[col]
+                        else:
+                            # feature가 없으면 0으로 채움 (window_size만큼)
+                            window_size = getattr(sd, "window_size", self.window)
+                            ordered_data[col] = [0.0] * window_size
+                    
+                    df = pd.DataFrame(ordered_data, columns=feature_cols)
                     X_in = df.values
             if X_in is None:
                 raise ValueError(f"StockData에 {self.agent_id} 데이터가 없습니다.")
@@ -812,7 +952,8 @@ class MacroAgent(BaseAgent, nn.Module):
                 X_scaled_np = X_scaled.astype(np.float32)
 
                 # 중요 피처 분석
-                feature_names = list(FINAL_FEATURES)
+                cfg = agents_info.get(self.agent_id, {})
+                feature_names = cfg.get("data_cols", [])
                 # 너무 많으면 상위 300개로 제한
                 if X_scaled_np.shape[2] > 300:
                     X_scaled_np = X_scaled_np[:, :, :300]
@@ -875,10 +1016,6 @@ class MacroAgent(BaseAgent, nn.Module):
         )
         self.rebuttals[round].append(result)
         return result
-
-    def reviewer_rebuttal(self, my_opinion, other_opinion, round_index):
-        """DebateAgent 호환용 래퍼"""
-        return self.reviewer_rebut(my_opinion, other_opinion, round_index)
 
     def reviewer_revise(self, my_opinion, others, rebuttals, stock_data, fine_tune=True, lr: Optional[float] = None, epochs: Optional[int] = None):
         """의견 수정 단계"""

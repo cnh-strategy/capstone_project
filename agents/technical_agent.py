@@ -790,7 +790,17 @@ class TechnicalAgent(BaseAgent, nn.Module):
         df_raw["Date"] = pd.to_datetime(df_raw["Date"])
         df_raw = df_raw.sort_values("Date").reset_index(drop=True)
         
-        feature_cols = cfg["data_cols"]
+        feature_cols = cfg.get("data_cols", [])
+        if not feature_cols:
+            raise ValueError(f"[{agent_id}] config에 data_cols가 정의되지 않았습니다.")
+        
+        # 누락된 feature 확인 및 처리
+        missing_cols = [col for col in feature_cols if col not in df_raw.columns]
+        if missing_cols:
+            print(f"[WARN] [{agent_id}] 누락된 feature {len(missing_cols)}개를 0.0으로 채움: {missing_cols[:5]}...")
+            for col in missing_cols:
+                df_raw[col] = 0.0
+        
         window_size = cfg["window_size"]
         
         X_all = df_raw[feature_cols].values.astype(np.float32)
@@ -864,7 +874,17 @@ class TechnicalAgent(BaseAgent, nn.Module):
         df_raw = df_raw.sort_values("Date").reset_index(drop=True)
         
         cfg = agents_info.get(self.agent_id, {})
-        feature_cols = cfg["data_cols"]
+        feature_cols = cfg.get("data_cols", [])
+        if not feature_cols:
+            raise ValueError(f"[{self.agent_id}] config에 data_cols가 정의되지 않았습니다.")
+        
+        # 누락된 feature 확인 및 처리
+        missing_cols = [col for col in feature_cols if col not in df_raw.columns]
+        if missing_cols:
+            print(f"[WARN] [{self.agent_id}] 누락된 feature {len(missing_cols)}개를 0.0으로 채움: {missing_cols[:5]}...")
+            for col in missing_cols:
+                df_raw[col] = 0.0
+        
         X_all = df_raw[feature_cols].values.astype(np.float32)
         
         close_prices = df_raw["Close"].values
@@ -907,13 +927,45 @@ class TechnicalAgent(BaseAgent, nn.Module):
         else:
             loss_fn = torch.nn.HuberLoss()
         
-        train_loader = DataLoader(TensorDataset(X_train, y_train.view(-1, 1)),
-                                  batch_size=batch_size, shuffle=True)
+        shuffle = cfg.get("shuffle", True)  # 기본값 True로 하위 호환성 유지
+        
+        # Early Stopping 설정
+        early_stopping_enabled = common_params.get("early_stopping_enabled", True)
+        patience = cfg.get("patience", 20)
+        min_delta = common_params.get("early_stopping_min_delta", 1e-6)
+        eval_split_ratio = common_params.get("eval_split_ratio", 0.8)
+        
+        # Validation set 분할
+        if early_stopping_enabled:
+            split_idx = int(len(X_train) * eval_split_ratio)
+            X_train_split = X_train[:split_idx]
+            X_val_split = X_train[split_idx:]
+            y_train_split = y_train[:split_idx]
+            y_val_split = y_train[split_idx:]
+            
+            val_dataset = TensorDataset(X_val_split, y_val_split.view(-1, 1))
+            val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        else:
+            X_train_split = X_train
+            y_train_split = y_train
+        
+        train_dataset = TensorDataset(X_train_split, y_train_split.view(-1, 1))
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle)
         
         log_interval = common_params.get("pretrain_log_interval", 5)
         final_loss = None
+        y_scale_factor = common_params.get("y_scale_factor", 100.0)
+        
+        # Early Stopping 변수 초기화
+        best_val_loss_orig = float('inf')
+        patience_counter = 0
+        best_model_state = None
+        
         for epoch in range(epochs):
             total_loss = 0.0
+            total_loss_original = 0.0  # 원본 스케일 로스
+            count = 0
+            
             for Xb, yb in train_loader:
                 y_pred = model(Xb)
                 loss = loss_fn(y_pred, yb)
@@ -921,12 +973,72 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
+                
+                # 원본 스케일로 역변환하여 로스 계산
+                with torch.no_grad():
+                    y_pred_np = y_pred.detach().cpu().numpy()
+                    yb_np = yb.detach().cpu().numpy()
+                    
+                    # 역변환 (스케일러만 역변환, 아직 y_scale_factor 곱해진 상태)
+                    y_pred_scaled = self.scaler.inverse_y(y_pred_np)
+                    y_true_scaled = self.scaler.inverse_y(yb_np)
+                    
+                    # y_scale_factor로 나눠서 실제 수익률로 변환
+                    y_pred_orig = y_pred_scaled / y_scale_factor
+                    y_true_orig = y_true_scaled / y_scale_factor
+                    
+                    # 원본 스케일에서 MSE 계산 (비교용)
+                    mse_orig = np.mean((y_pred_orig - y_true_orig) ** 2)
+                    total_loss_original += mse_orig
+                    count += 1
             
             avg_loss = total_loss / len(train_loader)
+            avg_loss_original = total_loss_original / count if count > 0 else 0.0
             final_loss = avg_loss
             
+            # Validation 평가 및 Early Stopping 체크
+            val_loss_orig = None
+            if early_stopping_enabled:
+                model.eval()
+                val_loss_orig = 0.0
+                val_count = 0
+                
+                with torch.no_grad():
+                    for Xb, yb in val_loader:
+                        y_pred = model(Xb)
+                        
+                        # 원본 스케일로 변환
+                        y_pred_np = y_pred.cpu().numpy()
+                        yb_np = yb.cpu().numpy()
+                        y_pred_scaled = self.scaler.inverse_y(y_pred_np)
+                        y_true_scaled = self.scaler.inverse_y(yb_np)
+                        y_pred_orig = y_pred_scaled / y_scale_factor
+                        y_true_orig = y_true_scaled / y_scale_factor
+                        
+                        mse_orig = np.mean((y_pred_orig - y_true_orig) ** 2)
+                        val_loss_orig += mse_orig
+                        val_count += 1
+                
+                val_loss_orig /= max(val_count, 1)
+                
+                # Early Stopping 체크
+                if val_loss_orig < (best_val_loss_orig - min_delta):
+                    best_val_loss_orig = val_loss_orig
+                    patience_counter = 0
+                    best_model_state = model.state_dict().copy()
+                else:
+                    patience_counter += 1
+                    if patience_counter >= patience:
+                        print(f"  Early stopping at epoch {epoch+1}/{epochs} (best val loss: {best_val_loss_orig:.6f})")
+                        if best_model_state is not None:
+                            model.load_state_dict(best_model_state)
+                        break
+            
             if (epoch + 1) % log_interval == 0 or (epoch + 1) == epochs:
-                print(f"  Epoch {epoch+1:03d}/{epochs} | Loss: {avg_loss:.6f}")
+                if early_stopping_enabled and val_loss_orig is not None:
+                    print(f"  Epoch {epoch+1:03d}/{epochs} | Loss (scaled): {avg_loss:.6f} | Loss (original): {avg_loss_original:.6f} | Val Loss (original): {val_loss_orig:.6f}")
+                else:
+                    print(f"  Epoch {epoch+1:03d}/{epochs} | Loss (scaled): {avg_loss:.6f} | Loss (original): {avg_loss_original:.6f}")
         
         os.makedirs(self.model_dir, exist_ok=True)
         model_path = os.path.join(self.model_dir, f"{ticker}_{self.agent_id}.pt")
@@ -969,10 +1081,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         if not self.ticker:
             raise ValueError("ticker가 설정되지 않았습니다. 먼저 searcher(ticker)를 호출하세요.")
         
-        # 재귀 방지 플래그 확인
-        if not hasattr(self, "_in_pretrain"):
-            self._in_pretrain = False
-        
+        # 모델 파일 체크 및 Pretrain
         model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
         if not os.path.exists(model_path):
             if not self._in_pretrain:
@@ -986,7 +1095,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 raise RuntimeError(f"[{self.agent_id}] pretrain 중 predict 호출로 인한 재귀 호출 방지")
         else:
             if not hasattr(self, "model_loaded") or not self.model_loaded:
-                self.load_model(model_path)
+                self.load_model()
         
         scaler_x_path = os.path.join(self.scaler.save_dir, f"{self.ticker}_{self.agent_id}_xscaler.pkl")
         if not os.path.exists(scaler_x_path):
@@ -1009,7 +1118,13 @@ class TechnicalAgent(BaseAgent, nn.Module):
             if X_in is None:
                 X_in = getattr(sd, self.agent_id, None)
                 if isinstance(X_in, dict):
-                    df = pd.DataFrame(X_in)
+                    # StockData.feature_cols를 사용하여 순서 보장
+                    feature_cols = getattr(sd, "feature_cols", None)
+                    if feature_cols:
+                        ordered_data = {col: X_in[col] for col in feature_cols if col in X_in}
+                        df = pd.DataFrame(ordered_data, columns=feature_cols)
+                    else:
+                        df = pd.DataFrame(X_in)
                     X_in = df.values
             if X_in is None:
                 raise ValueError(f"StockData에 {self.agent_id} 데이터가 없습니다.")
@@ -1175,7 +1290,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
         try:
             checkpoint = torch.load(model_path, map_location=torch.device("cpu"))
-            self._modules.pop("model", None)
 
             if isinstance(checkpoint, torch.nn.Module):
                 state_dict = checkpoint.state_dict()
