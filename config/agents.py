@@ -189,9 +189,9 @@ agents_info = {
         "d_model": 32,                  # LSTM 히든 사이즈
         "nhead": 4,                     # (참고용) Attention 헤드 수
         "num_layers": 2,                # LSTM 층 수
-        "dropout": 0.2,
-        "window_size": 10,
-        "epochs": 50,
+        "dropout": 0.15, # CCEP: 0.2 -> 0.15
+        "window_size": 25, # CCEP: 20 -> 25
+        "epochs": 70, # CCEP: 50 -> 70
         "learning_rate": 0.0005,
         "batch_size": 64,
         
