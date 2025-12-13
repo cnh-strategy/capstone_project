@@ -17,36 +17,13 @@ from config.agents import dir_info, agents_info
 
 
 class Backtester:
-    """
-    통합 백테스팅 모듈
-    
-    주요 기능:
-    - 실제 데이터 사용: yfinance API를 통해 실제 주가 데이터를 다운로드
-    - Look-ahead bias 방지: 각 거래일마다 해당 날짜 이전 데이터만 사용하여 예측
-    - Multi-Agent 앙상블: TechnicalAgent, MacroAgent, SentimentalAgent의 예측을 LightGBM으로 앙상블
-    - 시뮬레이션: 매수/매도 신호에 따른 포트폴리오 시뮬레이션
-    
-    데이터 소스:
-    - 주가 데이터: yfinance (실제 API 호출)
-    - 기술적 지표: TechnicalAgent (실제 계산)
-    - 거시경제 데이터: MacroAgent (실제 API 호출)
-    - 감성 분석: SentimentalAgent (실제 뉴스 데이터 분석)
-    
-    Mock 데이터 사용 여부: 없음 (모든 데이터는 실제 API/데이터베이스에서 수집)
-    """
+    """통합 백테스팅 모듈"""
     def __init__(self, ticker, start_date=None, end_date=None, days=365, initial_capital=10000, commission=0.001):
-        """
-        통합 백테스팅 모듈 초기화
-        :param ticker: 대상 티커 (예: NVDA)
-        :param days: 백테스트 할 기간 (일수). start_date가 없으면 end_date 기준 days 전부터 시작.
-        :param initial_capital: 초기 자본금 ($)
-        :param commission: 거래 수수료율 (0.001 = 0.1%)
-        """
+        """백테스팅 모듈 초기화"""
         self.ticker = ticker.upper()
         self.initial_capital = initial_capital
         self.commission = commission
         
-        # 날짜 설정
         if end_date is None:
             self.end_date = datetime.today()
         else:
@@ -57,21 +34,19 @@ class Backtester:
         else:
             self.start_date = pd.to_datetime(start_date)
             
-        # 실제 데이터를 가져올 때는 넉넉하게 앞뒤 기간 확보 (학습 데이터 확보용)
         self.data_start_date = self.start_date - timedelta(days=365*2) 
         
-        self.model = None # LightGBM Meta Model
-        self.full_data = None # Prediction Data + Price Data
-        self.results = None # Backtest Results
-        self.available_features = None # 학습에 사용된 feature 목록
+        self.model = None
+        self.full_data = None
+        self.results = None
+        self.available_features = None
         
-        # 에이전트
         self.tech_agent = None
         self.macro_agent = None
         self.senti_agent = None
 
     def _init_agents(self):
-        """에이전트 초기화 (모델 로드만, pretrain은 각 날짜마다 수행)"""
+        """에이전트를 초기화합니다"""
         print(f"[{self.ticker}] 에이전트 초기화 중...")
         
         # 1. TechnicalAgent
@@ -626,7 +601,7 @@ class Backtester:
         print(f"시뮬레이션 종료. (거래 횟수: {len(self.trades)}회)")
 
     def calculate_metrics(self):
-        """수익률, MDD, 승률 등 지표 계산"""
+        """수익률, MDD, 승률 등 지표를 계산합니다"""
         if self.results is None or self.results.empty:
             print("[WARN] 결과 데이터가 없어 지표를 계산할 수 없습니다.")
             return {}
@@ -671,7 +646,7 @@ class Backtester:
         }
 
     def save_results(self, output_dir="data/backtest"):
-        """결과 CSV 및 그래프 저장"""
+        """결과 CSV 및 그래프를 저장합니다"""
         if self.results is None or self.results.empty:
             print("[WARN] 저장할 결과 데이터가 없습니다. 시뮬레이션이 실행되지 않았거나 실패했습니다.")
             return

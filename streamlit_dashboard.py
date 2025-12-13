@@ -2,7 +2,7 @@
 """
 Streamlit Dashboard for Multi-Agent Debate System
 
-이 대시보드는 DebateAgent의 토론 결과를 시각화하고
+이 대시보드는 DebateSystem의 토론 결과를 시각화하고
 사용자가 인터랙티브하게 파라미터를 조정할 수 있게 해줍니다.
 """
 
@@ -22,7 +22,7 @@ import yfinance as yf
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
 
-from agents.debate_agent import DebateAgent
+from agents.debate_system import DebateSystem
 from config.agents import dir_info
 
 
@@ -35,8 +35,8 @@ st.set_page_config(
 )
 
 # 세션 상태 초기화
-if "debate_agent" not in st.session_state:
-    st.session_state.debate_agent = None
+if "debate_system" not in st.session_state:
+    st.session_state.debate_system = None
 if "ensemble_result" not in st.session_state:
     st.session_state.ensemble_result = None
 if "is_running" not in st.session_state:
@@ -188,7 +188,7 @@ def render_stock_overview_tab(ticker: str):
             st.write(f"평균 거래량: {avg_volume}")
 
 
-def render_final_conclusion_tab(debate_agent: DebateAgent, ensemble_result: Dict):
+def render_final_conclusion_tab(debate_system: DebateSystem, ensemble_result: Dict):
     """탭 2: 최종 결론 및 의견 렌더링"""
     st.header("🎯 최종 결론 및 의견")
     
@@ -222,43 +222,80 @@ def render_final_conclusion_tab(debate_agent: DebateAgent, ensemble_result: Dict
     # 각 에이전트별 최종 의견
     st.subheader("에이전트별 최종 의견")
     
-    final_round = max(debate_agent.opinions.keys()) if debate_agent.opinions else None
+    final_round = max(debate_system.opinions.keys()) if debate_system.opinions else None
     
     if final_round is None:
         st.warning("에이전트 의견 데이터가 없습니다.")
         return
     
-    final_opinions = debate_agent.opinions.get(final_round, {})
+    final_opinions = debate_system.opinions.get(final_round, {})
     
     if not final_opinions:
         st.warning("최종 라운드의 의견이 없습니다.")
         return
     
-    # 에이전트별 의견 표
+    # 에이전트별 의견 데이터 수집
     opinions_data = []
     for agent_id, opinion in final_opinions.items():
         if opinion and opinion.target:
             opinions_data.append({
                 "에이전트": agent_id,
-                "예측가": f"${opinion.target.next_close:,.2f}",
-                "신뢰도": f"{opinion.target.confidence:.4f}" if opinion.target.confidence else "N/A",
-                "불확실성": f"{opinion.target.uncertainty:.4f}" if opinion.target.uncertainty else "N/A",
-                "근거": opinion.reason[:100] + "..." if len(opinion.reason) > 100 else opinion.reason
+                "예측가": opinion.target.next_close,
+                "신뢰도": opinion.target.confidence,
+                "불확실성": opinion.target.uncertainty,
+                "근거": opinion.reason
             })
     
     if opinions_data:
-        df_opinions = pd.DataFrame(opinions_data)
-        st.dataframe(df_opinions, use_container_width=True, hide_index=True)
+        # 에이전트별 탭 생성
+        agent_tabs = st.tabs([row["에이전트"] for row in opinions_data])
+        
+        for idx, (tab, row) in enumerate(zip(agent_tabs, opinions_data)):
+            with tab:
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("예측가", f"${row['예측가']:,.2f}")
+                with col2:
+                    st.metric("신뢰도", f"{row['신뢰도']:.4f}" if row['신뢰도'] else "N/A")
+                with col3:
+                    st.metric("불확실성", f"{row['불확실성']:.4f}" if row['불확실성'] else "N/A")
+                
+                st.divider()
+                st.subheader("근거")
+                # 근거가 JSON 형식인 경우 파싱하여 표시
+                reason_text = row['근거']
+                if reason_text:
+                    # JSON 형식인지 확인
+                    if reason_text.strip().startswith('{') and reason_text.strip().endswith('}'):
+                        try:
+                            import json
+                            reason_dict = json.loads(reason_text)
+                            if 'reason' in reason_dict:
+                                st.markdown(reason_dict['reason'])
+                            else:
+                                st.markdown(reason_text)
+                        except:
+                            st.markdown(reason_text)
+                    else:
+                        st.markdown(reason_text)
+                else:
+                    st.info("근거가 없습니다.")
         
         # 예측가 비교 차트
         st.subheader("예측가 비교")
         
         agent_names = [row["에이전트"] for row in opinions_data]
-        prices = [float(row["예측가"].replace("$", "").replace(",", "")) for row in opinions_data]
+        prices = [row["예측가"] for row in opinions_data]
         
         if ensemble_price:
             agent_names.append("Ensemble")
             prices.append(ensemble_price)
+        
+        # y축 범위 계산 (최소값 -10%, 최대값 +10%)
+        min_price = min(prices)
+        max_price = max(prices)
+        y_min = min_price * 0.95
+        y_max = max_price * 1.05
         
         fig = go.Figure()
         fig.add_trace(go.Bar(
@@ -273,6 +310,7 @@ def render_final_conclusion_tab(debate_agent: DebateAgent, ensemble_result: Dict
             title="에이전트별 예측가 비교",
             xaxis_title="에이전트",
             yaxis_title="예측가 (USD)",
+            yaxis_range=[y_min, y_max],
             height=400,
             template="plotly_white"
         )
@@ -280,27 +318,82 @@ def render_final_conclusion_tab(debate_agent: DebateAgent, ensemble_result: Dict
         st.plotly_chart(fig, use_container_width=True)
     
     # Debate Summary
-    st.subheader("토론 요약")
+    ticker = debate_system.ticker if debate_system else ensemble_result.get("ticker", "TSLA")
+    st.subheader(f"{ticker} 투자 토론 요약 및 결론 리포트")
     debate_summary = ensemble_result.get("debate_summary", "")
     
     if debate_summary:
-        st.info(debate_summary)
+        # 섹션 헤더 파싱 (예: [토론 요약], [주요 쟁점], [최종 결론 및 제언] 등)
+        import re
+        sections = {}
+        current_section = None
+        current_content = []
+        
+        lines = debate_summary.split('\n')
+        for line in lines:
+            # 섹션 헤더 패턴 찾기: [섹션명] 형식
+            section_match = re.match(r'^##?\s*\[([^\]]+)\]', line)
+            if section_match:
+                # 이전 섹션 저장
+                if current_section:
+                    sections[current_section] = '\n'.join(current_content).strip()
+                # 새 섹션 시작
+                current_section = section_match.group(1)
+                current_content = []
+            else:
+                if current_section:
+                    current_content.append(line)
+                else:
+                    # 섹션 헤더가 없는 경우 기본 섹션으로
+                    if not current_section:
+                        current_section = "전체 요약"
+                        current_content = [line]
+        
+        # 마지막 섹션 저장
+        if current_section:
+            sections[current_section] = '\n'.join(current_content).strip()
+        
+        # 섹션을 순차적으로 표시 (탭 없이)
+        if sections:
+            for section_name, section_content in sections.items():
+                # 섹션 제목 표시 (큰 제목 제거)
+                if section_name != "전체 요약":
+                    st.markdown(f"### [{section_name}]")
+                # 섹션 내용 표시 (큰 제목이나 불필요한 헤더 제거)
+                content_lines = section_content.split('\n')
+                filtered_lines = []
+                for line in content_lines:
+                    # "투자결론리포트" 같은 큰 제목 제거
+                    if not re.match(r'^#+\s*(투자|결론|리포트)', line, re.IGNORECASE):
+                        filtered_lines.append(line)
+                st.markdown('\n'.join(filtered_lines))
+                if section_name != list(sections.keys())[-1]:  # 마지막 섹션이 아니면 구분선
+                    st.divider()
+        else:
+            # 섹션이 없는 경우 전체 텍스트 표시 (큰 제목 제거)
+            content_lines = debate_summary.split('\n')
+            filtered_lines = []
+            for line in content_lines:
+                # "투자결론리포트" 같은 큰 제목 제거
+                if not re.match(r'^#+\s*(투자|결론|리포트)', line, re.IGNORECASE):
+                    filtered_lines.append(line)
+            st.markdown('\n'.join(filtered_lines))
     else:
         st.info("토론 요약이 생성되지 않았습니다.")
 
 
-def render_round_by_round_tab(debate_agent: DebateAgent):
+def render_round_by_round_tab(debate_system: DebateSystem):
     """탭 3: 라운드별 의견 변화 렌더링"""
     st.header("🔄 라운드별 의견 변화")
     
-    if not debate_agent or not debate_agent.opinions:
+    if not debate_system or not debate_system.opinions:
         st.warning("토론 데이터가 없습니다. 먼저 토론을 실행해주세요.")
         return
     
     # 의견 변화 추이 차트
     st.subheader("의견 변화 추이")
     
-    rounds = sorted(debate_agent.opinions.keys())
+    rounds = sorted(debate_system.opinions.keys())
     if not rounds:
         st.warning("라운드 데이터가 없습니다.")
         return
@@ -310,7 +403,7 @@ def render_round_by_round_tab(debate_agent: DebateAgent):
     agent_data = {agent: [] for agent in agent_names}
     
     for round_num in rounds:
-        opinions = debate_agent.opinions.get(round_num, {})
+        opinions = debate_system.opinions.get(round_num, {})
         for agent_id in agent_names:
             opinion = opinions.get(agent_id)
             if opinion and opinion.target:
@@ -376,7 +469,7 @@ def render_round_by_round_tab(debate_agent: DebateAgent):
     # 선택된 라운드의 의견
     st.write(f"### Round {selected_round} 의견")
     
-    round_opinions = debate_agent.opinions.get(selected_round, {})
+    round_opinions = debate_system.opinions.get(selected_round, {})
     
     if round_opinions:
         round_opinions_data = []
@@ -397,10 +490,10 @@ def render_round_by_round_tab(debate_agent: DebateAgent):
         st.info(f"Round {selected_round}의 의견 데이터가 없습니다.")
     
     # 반박/지지 메시지
-    if selected_round > 0 and selected_round in debate_agent.rebuttals:
+    if selected_round > 0 and selected_round in debate_system.rebuttals:
         st.write(f"### Round {selected_round} 반박/지지 메시지")
         
-        rebuttals = debate_agent.rebuttals.get(selected_round, [])
+        rebuttals = debate_system.rebuttals.get(selected_round, [])
         
         if rebuttals:
             rebuttals_data = []
@@ -419,14 +512,14 @@ def render_round_by_round_tab(debate_agent: DebateAgent):
             st.info(f"Round {selected_round}의 반박/지지 메시지가 없습니다.")
     
     # 반박/지지 패턴 시각화
-    if debate_agent.rebuttals:
+    if debate_system.rebuttals:
         st.subheader("반박/지지 패턴")
         
         # 라운드별 반박/지지 통계
         pattern_data = []
         for round_num in rounds:
             if round_num > 0:
-                rebuttals = debate_agent.rebuttals.get(round_num, [])
+                rebuttals = debate_system.rebuttals.get(round_num, [])
                 rebut_count = sum(1 for r in rebuttals if r.stance == "REBUT")
                 support_count = sum(1 for r in rebuttals if r.stance == "SUPPORT")
                 pattern_data.append({
@@ -466,8 +559,8 @@ def render_round_by_round_tab(debate_agent: DebateAgent):
 
 def main():
     """메인 Streamlit 앱"""
-    st.title("🧠 AI Stock Debate System")
-    st.markdown("다중 에이전트 토론을 통한 주식 예측 시스템")
+    st.title("AI Stock Debate System")
+    st.markdown("다중 에이전트 토론 방식 주식 예측 시스템")
     
     # 사이드바
     with st.sidebar:
@@ -476,22 +569,6 @@ def main():
         ticker = st.text_input("티커", value="NVDA", help="분석할 종목 티커를 입력하세요 (예: NVDA, TSLA, AAPL)")
         rounds = st.slider("라운드 수", min_value=1, max_value=5, value=3, help="토론 라운드 수")
         force_pretrain = st.checkbox("Force Pretrain", value=False, help="데이터셋 재생성 및 모델 재학습")
-        
-        st.divider()
-        
-        st.subheader("고급 설정")
-        use_custom_dirs = st.checkbox("사용자 정의 디렉토리 사용", value=False)
-        
-        data_dir = None
-        model_dir = None
-        
-        if use_custom_dirs:
-            data_dir = st.text_input("데이터 디렉토리", value="", help="기본값: config에서 가져옴")
-            model_dir = st.text_input("모델 디렉토리", value="", help="기본값: config에서 가져옴")
-            if not data_dir:
-                data_dir = None
-            if not model_dir:
-                model_dir = None
         
         st.divider()
         
@@ -507,9 +584,7 @@ def main():
             st.session_state.run_params = {
                 "ticker": ticker.upper(),
                 "rounds": rounds,
-                "force_pretrain": force_pretrain,
-                "data_dir": data_dir,
-                "model_dir": model_dir
+                "force_pretrain": force_pretrain
             }
             st.session_state.is_running = True
             st.session_state.error_message = None
@@ -521,18 +596,16 @@ def main():
             params = st.session_state.run_params
             
             with st.spinner("토론을 실행하는 중... (시간이 걸릴 수 있습니다)"):
-                # DebateAgent 초기화 및 실행
-                debate_agent = DebateAgent(
+                # DebateSystem 초기화 및 실행
+                debate_system = DebateSystem(
                     ticker=params["ticker"],
-                    rounds=params["rounds"],
-                    data_dir=params["data_dir"],
-                    model_dir=params["model_dir"]
+                    rounds=params["rounds"]
                 )
                 
-                ensemble_result = debate_agent.run(force_pretrain=params["force_pretrain"])
+                ensemble_result = debate_system.run(force_pretrain=params["force_pretrain"])
                 
                 # 세션 상태에 저장
-                st.session_state.debate_agent = debate_agent
+                st.session_state.debate_system = debate_system
                 st.session_state.ensemble_result = ensemble_result
                 st.session_state.is_running = False
                 del st.session_state.run_params
@@ -558,21 +631,21 @@ def main():
     tab1, tab2, tab3 = st.tabs(["📊 기본 주식 데이터", "🎯 최종 결론 및 의견", "🔄 라운드별 의견 변화"])
     
     with tab1:
-        # 사이드바에서 입력한 티커 사용 (토론이 실행된 경우 DebateAgent의 티커 우선 사용)
+        # 사이드바에서 입력한 티커 사용 (토론이 실행된 경우 DebateSystem의 티커 우선 사용)
         display_ticker = ticker.upper() if ticker else "NVDA"
-        if st.session_state.debate_agent:
-            display_ticker = st.session_state.debate_agent.ticker
+        if st.session_state.debate_system:
+            display_ticker = st.session_state.debate_system.ticker
         render_stock_overview_tab(display_ticker)
     
     with tab2:
-        if st.session_state.debate_agent and st.session_state.ensemble_result:
-            render_final_conclusion_tab(st.session_state.debate_agent, st.session_state.ensemble_result)
+        if st.session_state.debate_system and st.session_state.ensemble_result:
+            render_final_conclusion_tab(st.session_state.debate_system, st.session_state.ensemble_result)
         else:
             st.info("토론을 실행한 후 결과를 확인할 수 있습니다.")
     
     with tab3:
-        if st.session_state.debate_agent:
-            render_round_by_round_tab(st.session_state.debate_agent)
+        if st.session_state.debate_system:
+            render_round_by_round_tab(st.session_state.debate_system)
         else:
             st.info("토론을 실행한 후 결과를 확인할 수 있습니다.")
 

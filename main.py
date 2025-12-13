@@ -2,8 +2,7 @@
 """
 Multi-Agent Debate System - Main Entry Point
 
-이 스크립트는 DebateAgent를 사용하여 여러 에이전트 간의 토론을 실행하고
-최종 예측(Ensemble Result)을 생성하는 메인 프로그램입니다.
+DebateSystem을 사용하여 여러 에이전트 간의 토론을 실행하고 최종 예측을 생성합니다.
 
 사용법:
     python main.py --ticker NVDA --rounds 3
@@ -15,18 +14,15 @@ import sys
 import argparse
 from datetime import datetime
 
-# 프로젝트 루트 경로를 sys.path에 추가하여 모듈 임포트 가능하게 설정
+# 프로젝트 루트 경로를 sys.path에 추가
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
 
-from agents.debate_agent import DebateAgent
+from agents.debate_system import DebateSystem
 
 
 def main():
-    """
-    메인 실행 함수
-    CLI 인자를 파싱하고 DebateAgent를 초기화하여 토론을 실행합니다.
-    """
+    """CLI 인자를 파싱하고 DebateSystem을 초기화하여 토론을 실행합니다."""
     parser = argparse.ArgumentParser(
         description="Multi-Agent Debate System - 주식 예측을 위한 다중 에이전트 토론 시스템",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -78,8 +74,6 @@ def main():
     )
     
     args = parser.parse_args()
-    
-    # 티커 대문자 변환
     ticker = args.ticker.upper()
     
     print("=" * 80)
@@ -97,15 +91,12 @@ def main():
     print()
     
     try:
-        # DebateAgent 인스턴스 생성
-        debate = DebateAgent(
+        debate = DebateSystem(
             ticker=ticker,
             rounds=args.rounds,
             data_dir=args.data_dir,
             model_dir=args.model_dir
         )
-        
-        # 토론 실행 (run 메서드 내부에서 Opinion 수집 -> 토론 -> Ensemble 수행)
         result = debate.run(force_pretrain=args.force_pretrain)
         
         print()
@@ -117,10 +108,8 @@ def main():
         print("Final Ensemble Result:")
         print("-" * 80)
         
-        # 결과 출력 (보기 좋게 포맷팅)
         for key, value in result.items():
             if key == "debate_summary":
-                # debate_summary는 별도로 처리 (긴 텍스트)
                 continue
             elif isinstance(value, float):
                 print(f"  {key}: {value:.2f}")
@@ -135,7 +124,6 @@ def main():
                 print(f"  {key}: {value}")
         print("-" * 80)
         
-        # debate_summary 별도 출력
         if "debate_summary" in result and result["debate_summary"]:
             print()
             print("Debate Summary:")

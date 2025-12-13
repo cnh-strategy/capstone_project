@@ -59,7 +59,7 @@ python backtest/scripts/rolling_backtest.py --ticker TSLA --no-analyze
 
 `prepare_data()` 메서드는 다음과 같이 동작합니다:
 
-1. `DebateAgent`를 임시로 생성
+1. `DebateSystem`을 임시로 생성
 2. 각 agent의 `data_dir`과 `model_dir`을 backtest 전용으로 설정
 3. 각 agent의 `searcher(ticker, rebuild=True)` 호출
 4. Raw CSV 파일이 `backtest/data/raw/`에 생성됨

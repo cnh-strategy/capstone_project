@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(project_root)
 
-from agents.debate_agent import DebateAgent
+from agents.debate_system import DebateSystem
 from core.metrics import calculate_metrics, calculate_direction_accuracy, calculate_profitability
 from config.agents import agents_info, dir_info, common_params
 from core.macro_classes.macro_llm import Opinion
@@ -39,7 +39,7 @@ class RollingBacktester:
     def __init__(
         self,
         ticker: str,
-        start_date: str,
+        start_date: Optional[str],
         predict_days: int,
         rounds: int = 3,
         output_dir: str = None,
@@ -95,7 +95,7 @@ class RollingBacktester:
         os.makedirs(BACKTEST_MODEL_DIR, exist_ok=True)
         os.makedirs(BACKTEST_SCALER_DIR, exist_ok=True)
 
-    def _run_backtest_without_llm(self, agent: DebateAgent, force_pretrain: bool = False) -> Dict[str, Any]:
+    def _run_backtest_without_llm(self, agent: DebateSystem, force_pretrain: bool = False) -> Dict[str, Any]:
         """
         백테스트 전용 실행 메서드: LLM 호출 비용 절감을 위해 로직 간소화
         
@@ -124,7 +124,7 @@ class RollingBacktester:
                 
                 # 2. 데이터 준비 및 학습
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] searcher 실행")
-                X = ag.searcher(ticker, rebuild=False)
+                X = ag.search(ticker, rebuild=False)
                 
                 if needs_pretrain:
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] [{agent_id}] pretrain 실행")
@@ -245,8 +245,8 @@ class RollingBacktester:
         print(f"    Backtest data dir: {BACKTEST_DATA_DIR}")
         print(f"{'='*60}\n")
 
-        # 임시 DebateAgent 생성하여 데이터 준비 트리거
-        temp_agent = DebateAgent(
+        # 임시 DebateSystem 생성하여 데이터 준비 트리거
+        temp_agent = DebateSystem(
             ticker=self.ticker,
             rounds=1,
             data_dir=BACKTEST_DATA_DIR,
@@ -257,7 +257,7 @@ class RollingBacktester:
         for agent_id, agent in temp_agent.agents.items():
             try:
                 print(f"[{agent_id}] searcher 실행 중...")
-                agent.searcher(ticker=self.ticker, rebuild=True)
+                agent.search(ticker=self.ticker, rebuild=True)
                 print(f"✅ [{agent_id}] 데이터 준비 완료\n")
             except Exception as e:
                 print(f"❌ [{agent_id}] 데이터 준비 실패: {e}\n")
@@ -282,8 +282,8 @@ class RollingBacktester:
             # 1. 시점별 데이터셋 필터링 (Data Leakage 방지)
             self._prepare_filtered_datasets(sim_date)
 
-            # 2. DebateAgent 생성 (Test 모드)
-            agent = DebateAgent(
+            # 2. DebateSystem 생성 (Test 모드)
+            agent = DebateSystem(
                 ticker=self.ticker,
                 rounds=self.rounds,
                 data_dir=BACKTEST_DATA_DIR,
@@ -510,7 +510,7 @@ class RollingBacktester:
             print(f"  {k}: {v:.4f}")
         
         # 방향 정확도
-        prev_close = df_valid['Actual_Close'].shift(1).fillna(method='bfill').values
+        prev_close = df_valid['Actual_Close'].shift(1).bfill().values
         dir_acc = calculate_direction_accuracy(y_true, y_pred, prev_close)
         print(f"  Direction Accuracy: {dir_acc:.2f}%")
         
@@ -578,7 +578,13 @@ class RollingBacktester:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Rolling Backtest Runner with Auto Analysis")
-    parser.add_argument("--ticker", type=str, required=True, help="Target Ticker (e.g. AAPL)")
+    parser.add_argument(
+        "--tickers",
+        type=str,
+        nargs="+",
+        default=["MSFT", "AZN", "CCEP"],
+        help="Target Tickers (e.g. AAPL MSFT). 기본값: MSFT AZN CCEP",
+    )
     parser.add_argument(
         "--start",
         type=str,
@@ -601,12 +607,36 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    runner = RollingBacktester(
-        ticker=args.ticker,
-        start_date=args.start,
-        predict_days=args.predict_days,
-        rounds=args.rounds,
-        auto_analyze=not args.no_analyze,
-    )
-    runner.prepare_data()
-    runner.run_loop()
+    # 티커 리스트를 대문자로 변환
+    tickers = [t.upper() for t in args.tickers]
+    
+    print(f"\n{'='*60}")
+    print(f"📊 백테스트 실행: {len(tickers)}개 티커")
+    print(f"   티커 목록: {', '.join(tickers)}")
+    print(f"   예측 일수: {args.predict_days}")
+    print(f"{'='*60}\n")
+
+    # 각 티커에 대해 백테스트 실행
+    for idx, ticker in enumerate(tickers, start=1):
+        print(f"\n{'#'*60}")
+        print(f"# [{idx}/{len(tickers)}] 티커: {ticker}")
+        print(f"{'#'*60}\n")
+        
+        try:
+            runner = RollingBacktester(
+                ticker=ticker,
+                start_date=args.start,
+                predict_days=args.predict_days,
+                rounds=args.rounds,
+                auto_analyze=not args.no_analyze,
+            )
+            runner.prepare_data()
+            runner.run_loop()
+            print(f"\n✅ [{ticker}] 백테스트 완료\n")
+        except Exception as e:
+            print(f"\n❌ [{ticker}] 백테스트 실패: {e}\n")
+            continue
+    
+    print(f"\n{'='*60}")
+    print(f"✅ 전체 백테스트 완료: {len(tickers)}개 티커 처리")
+    print(f"{'='*60}\n")

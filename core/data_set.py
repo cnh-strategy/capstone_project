@@ -1,8 +1,4 @@
 # core/data_set.py
-# ===============================================================
-#  - 타깃: 다음날 수익률 (Close_{t+1}/Close_t - 1)
-#  - 저장: {save_dir}/{ticker}_{agent_id}_dataset.csv
-# ===============================================================
 
 from __future__ import annotations
 import os
@@ -37,9 +33,6 @@ except Exception as e1:
         _MACRO_SRC = "unavailable"
 
 
-# -----------------------------
-# 공용 유틸
-# -----------------------------
 def compute_rsi(series: pd.Series, window: int = 14) -> pd.Series:
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -62,9 +55,6 @@ def _save_agent_csv(flattened_rows: List[dict], csv_path: str) -> None:
     agent_df.to_csv(csv_path, index=False, encoding="utf-8")
 
 
-# -----------------------------
-# Sentimental
-# -----------------------------
 def _fetch_ticker_data_for_sentimental(ticker: str, period: Optional[str], interval: Optional[str]) -> pd.DataFrame:
     period = period or "2y"
     interval = interval or "1d"
@@ -107,9 +97,6 @@ def _fetch_ticker_data_for_sentimental(ticker: str, period: Optional[str], inter
     return df
 
 
-# -----------------------------
-# 공개 API
-# -----------------------------
 def build_dataset(
         ticker: str,
         save_dir: str = dir_info["data_dir"],
@@ -118,7 +105,7 @@ def build_dataset(
         interval: Optional[str] = None,
 ) -> None:
     """
-    debate_agent.py에서 agent_id를 넘겨주면, 여기서 분기 처리
+    debate_system.py에서 agent_id를 넘겨주면, 여기서 분기 처리
     - agent_id == 'MacroAgent' / '매크로' / 'macro'
     - agent_id == 'SentimentalAgent' / '센티멘탈' / 'sentimental'
     - agent_id == 'TechnicalAgent' / '테크니컬' / 'technical' (추후)

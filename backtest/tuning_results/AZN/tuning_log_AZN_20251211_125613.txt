@@ -1,6 +1,0 @@
-🚀 Starting Random Search Tuning for AZN
-📅 Fixed Predict Days: 30
-🎲 Max Experiments: 50
-📝 Log file: backtest/tuning_results/AZN/tuning_log_AZN_20251211_125613.txt
-================================================================================
-

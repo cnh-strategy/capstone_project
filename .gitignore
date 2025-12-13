@@ -4,14 +4,15 @@
 .env
 .env.local
 .env.*.local
+*.env
 
 # ==========================================
 # Python & Virtual Environments
 # ==========================================
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
 build/
 develop-eggs/
@@ -25,6 +26,8 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -34,6 +37,9 @@ MANIFEST
 venv/
 env/
 .venv/
+ENV/
+env.bak/
+venv.bak/
 capstone/
 
 # ==========================================
@@ -48,6 +54,8 @@ capstone/
 Thumbs.db
 .project
 .pydevproject
+*.sublime-project
+*.sublime-workspace
 
 # ==========================================
 # Jupyter Notebooks
@@ -66,6 +74,10 @@ untitled*.ipynb
 *.temp
 *.bak
 nohup.out
+*.out
+tuning_log_*.txt
+*_tuning_log_*.txt
+solo_tuning_log_*.txt
 
 # ==========================================
 # Data & Models (Large Files)
@@ -74,41 +86,145 @@ nohup.out
 data/raw/
 data/processed/
 data/backtests/
-backtest/data/
+backtest/data/raw/
+backtest/data/processed/
+backtest/data/backtests/
+backtest/data/raw/backtest_temp/
 
 # Model directories
 models/
 backtest/models/
+models/scalers/
+backtest/models/scalers/
 
-# File types to ignore everywhere (if not in tracked dirs)
-*.csv
+# Model file types (ignore everywhere)
 *.pt
 *.pth
 *.pkl
 *.h5
 *.keras
 *.onnx
+*.pb
+*.tflite
+*.ckpt
+*.safetensors
 
-# Except specific config/example files if needed
+# Data file types (ignore everywhere)
+*.csv
+*.parquet
+*.feather
+*.arrow
+*.hdf5
+*.h5
+
+# Keep directory structure (optional)
 !data/.gitkeep
 !models/.gitkeep
+!backtest/data/.gitkeep
+!backtest/models/.gitkeep
 
 # ==========================================
-# Backtest Specific
+# Backtest & Tuning Results
 # ==========================================
-# Backtest results and analysis
+# Tuning results directories
+backtest/tuning_results/
+backtest/tuning_results_*/
+backtest/macro_tuning_results/
+backtest/tech_tuning_results/
+backtest/sentimental_tuning_results/
+
+# Backtest analysis results
 backtest/data/backtests/analysis/
+backtest/tuning_results/*/exp_*/analysis/
 *_analysis.md
 BACKTEST_*.md
+tuning_summary_*.csv
+total_best_summary_*.csv
+rolling_*.csv
 
-# Temporary backtest data
-backtest/data/raw/backtest_temp/
-data/raw/backtest_temp/
+# Image files (analysis charts, plots)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.bmp
+*.ico
 
 # ==========================================
-# Specific Analysis/Report Files
+# Artifacts & Reports
 # ==========================================
+artifacts/
+*.md
+!README.md
 pretrain_*.md
 agent_predict_analysis.md
 PARAMETER_*.md
 PERIOD_*.md
+
+# ==========================================
+# Streamlit
+# ==========================================
+.streamlit/
+streamlit_cache/
+
+# ==========================================
+# OS Specific
+# ==========================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ==========================================
+# Testing & Coverage
+# ==========================================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+*.cover
+*.py,cover
+
+# ==========================================
+# MyPy
+# ==========================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ==========================================
+# Profiling
+# ==========================================
+*.prof
+*.lprof
+
+# ==========================================
+# Database
+# ==========================================
+*.db
+*.sqlite
+*.sqlite3
+
+# ==========================================
+# API Keys & Secrets (Extra Safety)
+# ==========================================
+*_key.txt
+*_secret.txt
+*_token.txt
+secrets/
+.secrets/

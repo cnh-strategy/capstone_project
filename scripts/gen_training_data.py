@@ -120,7 +120,7 @@ def generate_ensemble_data(ticker="NVDA", days=None, output_path="data/processed
     # 2-1. TechnicalAgent Data
     tech_dataset_path = os.path.join(dir_info["data_dir"], f"{ticker}_TechnicalAgent_dataset.csv")
     if not os.path.exists(tech_dataset_path):
-        tech_agent.searcher(ticker) 
+        tech_agent.search(ticker) 
         
     tech_X_all, tech_y_all, tech_cols, tech_dates = load_dataset_tech(
         ticker, agent_id="TechnicalAgent", save_dir=dir_info["data_dir"]
@@ -140,7 +140,7 @@ def generate_ensemble_data(ticker="NVDA", days=None, output_path="data/processed
     tech_last_dates_dt = pd.to_datetime(tech_last_dates).normalize()
 
     # 2-2. MacroAgent Data
-    macro_agent.searcher(ticker) 
+    macro_agent.search(ticker) 
     # macro_df는 None이므로 raw CSV를 직접 읽어서 사용
     macro_raw_path = os.path.join(os.path.dirname(dir_info["data_dir"]), "raw", f"{ticker}_MacroAgent_raw.csv")
     if not os.path.exists(macro_raw_path):

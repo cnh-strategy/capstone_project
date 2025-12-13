@@ -26,30 +26,18 @@ warnings.filterwarnings('ignore')
 from config.agents import agents_info, dir_info, common_params
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 
-# ===============================================================
-# 유틸리티 함수
-# ===============================================================
-def r4(x):
-    """소수점 4자리 반올림"""
+def round_num(value: Union[float, int, str], decimals: int = 4) -> float:
+    """숫자 값을 지정된 소수점 자리수로 반올림하여 반환합니다"""
     try:
-        return float(f"{float(x):.4f}")
-    except:
-        return x
+        return float(f"{float(value):.{decimals}f}")
+    except (ValueError, TypeError):
+        return value
 
 class TechnicalAgent(BaseAgent, nn.Module):
     """
-    TechnicalAgent: 기술적 분석 기반 주가 예측 에이전트
+    기술적 분석 기반 주가 예측 에이전트
     
-    주가 차트 데이터(가격, 거래량, 기술적 지표)를 분석하여
-    주가 예측을 수행하는 에이전트입니다.
-    
-    주요 기능:
-    - RSI, SMA 등 기술적 지표 계산
-    - 2층 LSTM + Time-Attention 메커니즘
-    - Attention 가중치를 활용한 시간 중요도 분석
-    - Grad×Input 및 Occlusion을 통한 피처 중요도 분석
-    - Monte Carlo Dropout을 통한 불확실성 추정
-    - LLM을 활용한 Opinion, Rebuttal, Revision 생성
+    주가 차트 데이터를 분석하여 주가 예측을 수행합니다.
     """
 
     def __init__(self,
@@ -65,28 +53,10 @@ class TechnicalAgent(BaseAgent, nn.Module):
         batch_size=agents_info["TechnicalAgent"]["batch_size"],
         **kwargs
     ):
-        """
-        TechnicalAgent 초기화
-        
-        Args:
-            agent_id: 에이전트 식별자
-            input_dim: 입력 피처 차원
-            rnn_units1: LSTM 1층 히든 유닛 수
-            rnn_units2: LSTM 2층 히든 유닛 수
-            dropout: Dropout 비율
-            data_dir: 데이터 저장 경로
-            window_size: 시계열 윈도우 크기
-            epochs: 학습 에포크 수
-            learning_rate: 학습률
-            batch_size: 배치 크기
-        """
-        # 1) nn.Module 먼저 초기화
+        """TechnicalAgent 초기화"""
         nn.Module.__init__(self)
-
-        # 2) BaseAgent 초기화
         BaseAgent.__init__(self, agent_id=agent_id, data_dir=data_dir, **kwargs)
 
-        # 모델 하이퍼파라미터 설정
         self.input_dim = int(input_dim)
         self.u1         = int(rnn_units1)
         self.u2         = int(rnn_units2)
@@ -95,17 +65,13 @@ class TechnicalAgent(BaseAgent, nn.Module):
         self.lr         = float(learning_rate)
         self.batch_size = int(batch_size)
 
-        # LSTMx2 + time attention 구조 정의
         self.lstm1 = nn.LSTM(self.input_dim, self.u1, batch_first=True)
         self.lstm2 = nn.LSTM(self.u1, self.u2, batch_first=True)
         self.attn_vec = nn.Parameter(torch.randn(self.u2))
         self.fc = nn.Linear(self.u2, 1)
         self.drop = nn.Dropout(float(dropout))
 
-        # Optimizer / Loss 설정
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        
-        # Huber Loss 사용 - 이상치에 덜 민감하고 더 안정적인 학습
         huber_delta = common_params.get("huber_loss_delta", 1.0)
         self.loss_fn = nn.HuberLoss(delta=huber_delta)
         
@@ -114,45 +80,32 @@ class TechnicalAgent(BaseAgent, nn.Module):
         self._last_idea = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        모델 Forward Pass
-        
-        Args:
-            x: 입력 텐서 (Batch, Time, Features)
-            
-        Returns:
-            torch.Tensor: 예측 수익률 (Batch, 1)
-        """
+        """모델 Forward Pass"""
         h1, _ = self.lstm1(x)
         h1 = self.drop(h1)
         h2, _ = self.lstm2(h1)
         h2 = self.drop(h2)
 
-        # Time-Attention: 각 시점 가중치 계산
-        w = torch.softmax(torch.matmul(h2, self.attn_vec), dim=1)  # [B,T]
+        w = torch.softmax(torch.matmul(h2, self.attn_vec), dim=1)
         self._last_attn = w.detach()
-        ctx = (h2 * w.unsqueeze(-1)).sum(dim=1)                    # [B,u2]
-        return self.fc(ctx)                                        # [B,1]
-
-    # ===============================================================
-    # 설명가능성(XAI) 관련 메서드
-    # ===============================================================
+        ctx = (h2 * w.unsqueeze(-1)).sum(dim=1)
+        return self.fc(ctx)
     
-    def _safe_names(self, feature_cols, F):
-        """피처 이름 리스트를 모델 입력 차원에 맞춰 보정"""
-        cols = list(feature_cols) if feature_cols else []
-        if len(cols) != F:
-            cols = cols[:F] + [f"f{i}" for i in range(len(cols), F)]
+    def _validate_feature_names(self, feature_columns: List[str], num_features: int) -> List[str]:
+        """피처 이름 리스트를 모델 입력 차원에 맞춰 보정합니다"""
+        cols = list(feature_columns) if feature_columns else []
+        if len(cols) != num_features:
+            cols = cols[:num_features] + [f"f{i}" for i in range(len(cols), num_features)]
         return cols
 
-    def _safe_dates(self, dates, T):
-        """날짜 리스트를 윈도우 길이에 맞춰 보정"""
-        if not dates or len(dates) != T:
-            return [f"t-{T-1-i}" for i in range(T)]
+    def _validate_dates(self, dates: List, window_size: int) -> List[str]:
+        """날짜 리스트를 윈도우 길이에 맞춰 보정합니다"""
+        if not dates or len(dates) != window_size:
+            return [f"t-{window_size-1-i}" for i in range(window_size)]
         return [str(d) for d in dates]
 
     def _scale_like_train(self, X_np):
-        """학습 시 사용한 스케일러로 입력 스케일링"""
+        """학습 시 사용한 스케일러로 입력을 스케일링합니다"""
         try:
             out = self.scaler.transform(X_np)
             if isinstance(out, tuple) and len(out) >= 1:
@@ -163,10 +116,10 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
     @torch.no_grad()
     def time_importance_from_attention(self, X_last: torch.Tensor) -> np.ndarray:
-        """모델의 Time-Attention 가중치를 기반으로 시간 중요도 계산"""
+        """모델의 Time-Attention 가중치를 기반으로 시간 중요도를 계산합니다"""
         self.eval()
         _ = self(X_last)
-        attn = getattr(self, "_last_attn", None)  # [B,T]
+        attn = getattr(self, "_last_attn", None)
 
         if attn is None:
             T = X_last.shape[1]
@@ -178,7 +131,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return result.flatten() if result.ndim > 1 else result
 
     def gradxinput_attrib(self, X_last: torch.Tensor, eps: float = 0.0):
-        """Grad×Input 방식으로 피처 기여도 산출"""
+        """Grad×Input 방식으로 피처 기여도를 산출합니다"""
         self.eval()
         x = X_last.clone().detach().to(next(self.parameters()).device)
 
@@ -188,14 +141,14 @@ class TechnicalAgent(BaseAgent, nn.Module):
         y = self(x).sum()
         self.zero_grad(set_to_none=True)
         y.backward()
-        gi = (x.grad * x).abs()[0].detach().cpu().numpy()  # (T,F)
+        gi = (x.grad * x).abs()[0].detach().cpu().numpy()
         per_time = gi.sum(axis=1)
         per_feat = gi.mean(axis=0)
         return per_time, per_feat, gi
 
     @torch.no_grad()
     def occlusion_time(self, X_last: torch.Tensor, fill: str = "zero", batch: Optional[int] = None):
-        """시간축 Occlusion을 통한 중요도 계산"""
+        """시간축 Occlusion을 통한 중요도를 계산합니다"""
         if batch is None:
             batch = agents_info.get(self.agent_id, {}).get("occlusion_batch_size", 32)
         self.eval()
@@ -219,7 +172,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
     @torch.no_grad()
     def occlusion_feature(self, X_last: torch.Tensor, fill: str = "zero", batch: Optional[int] = None):
-        """피처축 Occlusion을 통한 중요도 계산"""
+        """피처축 Occlusion을 통한 중요도를 계산합니다"""
         if batch is None:
             batch = agents_info.get(self.agent_id, {}).get("occlusion_batch_size", 32)
         self.eval()
@@ -250,10 +203,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         shap_weight_time: Optional[float] = None,
         shap_weight_feat: Optional[float] = None
         ):
-        """
-        최신 윈도우에 대한 설명(XAI) 패킷 생성
-        Attention, Grad×Input, Occlusion, SHAP 결과를 종합합니다.
-        """
+        """최신 윈도우에 대한 설명 패킷을 생성합니다"""
         cfg = agents_info.get(self.agent_id, {})
         if top_k is None:
             top_k = cfg.get("top_k_features", 5)
@@ -269,10 +219,10 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
         T, F = Xs.shape[1], Xs.shape[2]
         feat_cols_src = getattr(self.stockdata, "feature_cols", [])
-        feat_names = self._safe_names(feat_cols_src, F)
+        feat_names = self._validate_feature_names(feat_cols_src, F)
         if dates is None:
             dates = getattr(self.stockdata, f"{self.agent_id}_dates", [])
-        dates = self._safe_dates(dates, T)
+        dates = self._validate_dates(dates, T)
 
         # 1. 시간 중요도 (Attention)
         time_attn = self.time_importance_from_attention(Xs)
@@ -305,7 +255,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 shap_feat = None
                 shap_used = False
 
-        # 5. 결과 통합 (가중 평균)
         attention_weights = cfg.get("attention_weights", [0.4, 0.25, 0.15])
         feature_weights = cfg.get("feature_weights", [0.5, 0.2])
         
@@ -341,14 +290,14 @@ class TechnicalAgent(BaseAgent, nn.Module):
             )[:top_k]
             time_feature[str(d)] = {k: float(v) for k, v in pairs}
 
-        time_attention = {str(d): r4(w) for d, w in zip(dates, time_attn.tolist())}
-        per_time_list = [{"date": str(d), "sum_abs": r4(v)} for d, v in zip(dates, per_time.tolist())]
-        per_feat_list = [{"feature": k, "sum_abs": r4(v)} for k, v in sorted(zip(feat_names, per_feat.tolist()), key=lambda z: z[1], reverse=True)]
+        time_attention = {str(d): round_num(w) for d, w in zip(dates, time_attn.tolist())}
+        per_time_list = [{"date": str(d), "sum_abs": round_num(v)} for d, v in zip(dates, per_time.tolist())]
+        per_feat_list = [{"feature": k, "sum_abs": round_num(v)} for k, v in sorted(zip(feat_names, per_feat.tolist()), key=lambda z: z[1], reverse=True)]
 
         evidence = {
-            "attention": [r4(x) for x in time_attn.tolist()],
-            "gradxinput_feat": [r4(x) for x in g_feat.tolist()],
-            "occlusion_time": [r4(x) for x in occ_time.tolist()],
+            "attention": [round_num(x) for x in time_attn.tolist()],
+            "gradxinput_feat": [round_num(x) for x in g_feat.tolist()],
+            "occlusion_time": [round_num(x) for x in occ_time.tolist()],
             "window_size": int(T),
             "shap_used": bool(shap_used)
             }
@@ -363,7 +312,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
           }
 
     def _background_windows(self, k: int = 64):
-        """SHAP 계산을 위한 배경 데이터 샘플링"""
+        """SHAP 계산을 위한 배경 데이터를 샘플링합니다"""
         try:
             from core.technical_classes.technical_data_set import load_dataset  
             X, _, _, _ = load_dataset(self.ticker, agent_id=self.agent_id, save_dir=self.data_dir)
@@ -379,7 +328,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             return None
 
     def shap_last(self, X_last: torch.Tensor, background_k: int = 64):
-        """SHAP(GradientExplainer) 값 계산"""
+        """SHAP 값을 계산합니다"""
         try:
             import shap
         except Exception as e:
@@ -412,41 +361,37 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return {"per_time": per_time, "per_feature": per_feat}
 
     @staticmethod
-    def _pack_idea(exp: dict, top_time: Optional[int] = None, top_feat: Optional[int] = None, coverage: Optional[float] = None):
-        """설명 결과를 LLM 프롬프트용으로 요약 압축"""
-        agent_id = exp.get("evidence", {}).get("agent_id", "TechnicalAgent")
+    def _summarize_analysis(explanation: dict, top_time_periods: Optional[int] = None, top_features: Optional[int] = None, coverage: Optional[float] = None):
+        """설명 결과를 LLM 프롬프트용으로 요약합니다"""
+        agent_id = explanation.get("evidence", {}).get("agent_id", "TechnicalAgent")
         cfg = agents_info.get(agent_id, {})
-        if top_time is None:
-            top_time = cfg.get("pack_idea_top_time", 8)
-        if top_feat is None:
-            top_feat = cfg.get("pack_idea_top_feat", 6)
+        if top_time_periods is None:
+            top_time_periods = cfg.get("pack_idea_top_time", 8)
+        if top_features is None:
+            top_features = cfg.get("pack_idea_top_feat", 6)
         if coverage is None:
             coverage = cfg.get("pack_idea_coverage", 0.8)
         
-        per_time = sorted(exp["per_time"], key=lambda z: z["sum_abs"], reverse=True)
+        per_time = sorted(explanation["per_time"], key=lambda z: z["sum_abs"], reverse=True)
         total = sum(z["sum_abs"] for z in per_time) or 1.0
         acc, picked = 0.0, []
         for z in per_time:
             acc += z["sum_abs"]
-            picked.append({"date": z["date"], "weight": r4(z["sum_abs"]/total)})
-            if acc/total >= coverage or len(picked) >= top_time:
+            picked.append({"date": z["date"], "weight": round_num(z["sum_abs"]/total)})
+            if acc/total >= coverage or len(picked) >= top_time_periods:
                 break
 
-        per_feat = sorted(exp["per_feature"], key=lambda z: z["sum_abs"], reverse=True)[:top_feat]
-        top_features = [{"feature": f["feature"], "weight": r4(f["sum_abs"])} for f in per_feat]
+        per_feat = sorted(explanation["per_feature"], key=lambda z: z["sum_abs"], reverse=True)[:top_features]
+        top_features_list = [{"feature": f["feature"], "weight": round_num(f["sum_abs"])} for f in per_feat]
         peak = picked[0]["date"] if picked else None
         return {
             "top_time": picked,
-            "top_features": top_features,
+            "top_features": top_features_list,
             "peak_date": peak,
-            "window_size": exp.get("evidence",{}).get("window_size")}
-
-    # ===============================================================
-    # 프롬프트 생성 및 데이터 처리 메서드
-    # ===============================================================
+            "window_size": explanation.get("evidence",{}).get("window_size")}
 
     def _build_messages_opinion(self, stock_data, target):
-        """Opinion 생성용 프롬프트 메시지 구성"""
+        """Opinion 생성용 프롬프트 메시지를 구성합니다"""
         last = float(getattr(stock_data, "last_price", target.next_close))
         agent_data = getattr(stock_data, self.agent_id, {})
         
@@ -458,7 +403,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             ).unsqueeze(0)
         else:
             print(f"[WARN] {self.agent_id} stockdata가 비어있음, searcher 재호출")
-            X_last = self.searcher(self.ticker)
+            X_last = self.search(self.ticker)
             if not isinstance(X_last, torch.Tensor):
                 X_last = torch.tensor(X_last, dtype=torch.float32)
         
@@ -467,17 +412,17 @@ class TechnicalAgent(BaseAgent, nn.Module):
         top_k = cfg.get("top_k_features", 5)
         
         exp = self.explain_last(X_last, dates, top_k=top_k, use_shap=True)
-        idea = self._pack_idea(exp)
+        idea = self._summarize_analysis(exp)
         self._last_idea = idea
 
         ctx = {
             "ticker": getattr(stock_data, "ticker", "Unknown"),
-            "last_price": r4(last),
-            "next_close": r4(target.next_close),
-            "uncertainty": r4(target.uncertainty),
-            "confidence": r4(target.confidence),
-            "sigma": r4(target.uncertainty or 0.0),
-            "beta": r4(target.confidence or 0.0),
+            "last_price": round_num(last),
+            "next_close": round_num(target.next_close),
+            "uncertainty": round_num(target.uncertainty),
+            "confidence": round_num(target.confidence),
+            "sigma": round_num(target.uncertainty or 0.0),
+            "beta": round_num(target.confidence or 0.0),
             "window_size": int(self.window_size),
             "idea": idea,
         }
@@ -488,7 +433,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return system_text, user_text
 
     def _build_messages_rebuttal(self, my_opinion: Opinion, target_opinion: Opinion, stock_data: StockData) -> tuple[str, str]:
-        """Rebuttal 생성용 프롬프트 메시지 구성"""
+        """Rebuttal 생성용 프롬프트 메시지를 구성합니다"""
         t = stock_data.ticker or "UNKNOWN"
         ccy = (stock_data.currency or "USD").upper()
         agent_data = getattr(stock_data, self.agent_id, None)
@@ -527,7 +472,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return system_text, user_text
 
     def _build_messages_revision(self, my_opinion: Opinion, others: List[Opinion], rebuttals: Optional[List[Rebuttal]] = None, stock_data: StockData = None) -> tuple[str, str]:
-        """Revision 생성용 프롬프트 메시지 구성"""
+        """Revision 생성용 프롬프트 메시지를 구성합니다"""
         t = getattr(stock_data, "ticker", "UNKNOWN")
         ccy = getattr(stock_data, "currency", "USD").upper()
         agent_data = getattr(stock_data, self.agent_id, None)
@@ -578,12 +523,8 @@ class TechnicalAgent(BaseAgent, nn.Module):
         user_text = prompt_set["user"].format(context=json.dumps(ctx, ensure_ascii=False, indent=2))
         return system_text, user_text
 
-    # ===============================================================
-    # 데이터 처리 및 모델 관리 (TechnicalAgent 전용)
-    # ===============================================================
-
     def _fetch_ticker_data(self, ticker: str, period: str, interval: str) -> pd.DataFrame:
-        """yfinance로 데이터 다운로드 및 기본 지표 계산"""
+        """yfinance로 데이터를 다운로드하고 기본 지표를 계산합니다"""
         df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
         df.dropna(inplace=True)
 
@@ -600,7 +541,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return df
 
     def _compute_rsi(self, series, window=14):
-        """RSI 계산"""
+        """RSI를 계산합니다"""
         delta = series.diff()
         gain = delta.clip(lower=0)
         loss = -1 * delta.clip(upper=0)
@@ -610,7 +551,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return 100 - (100 / (1 + rs))
 
     def _create_sequences(self, features, target, window_size):
-        """시계열 시퀀스 데이터 생성"""
+        """시계열 시퀀스 데이터를 생성합니다"""
         X, y = [], []
         for i in range(len(features) - window_size):
             X.append(features[i:i + window_size])
@@ -618,7 +559,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return np.array(X), np.array(y)
 
     def _build_features_technical(self, df_price: pd.DataFrame) -> pd.DataFrame:
-        """테크니컬 피처 13개 생성"""
+        """테크니컬 피처를 생성합니다"""
         o, h, l, c, v = df_price["Open"], df_price["High"], df_price["Low"], df_price["Close"], df_price["Volume"]
         out = pd.DataFrame(index=df_price.index)
         
@@ -689,12 +630,8 @@ class TechnicalAgent(BaseAgent, nn.Module):
         out = out.reindex(columns=tech_cols).astype(np.float32)
         return out
 
-    def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
-        """
-        TechnicalAgent 전용 Searcher.
-        - 데이터를 수집하고 최신 윈도우 텐서를 반환
-        - 필요 시 CSV 파일 생성 (rebuild)
-        """
+    def search(self, ticker: Optional[str] = None, rebuild: bool = False):
+        """데이터를 수집하고 최신 윈도우 텐서를 반환합니다"""
         agent_id = self.agent_id
         ticker = ticker or self.ticker
         self.ticker = ticker
@@ -702,7 +639,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
         raw_dir = os.path.join(os.path.dirname(self.data_dir), "raw")
         raw_csv_path = os.path.join(raw_dir, f"{ticker}_{agent_id}_raw.csv")
         
-        # 백테스팅 모드 처리
         if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
             temp_dir = os.path.join(raw_dir, "backtest_temp")
             date_str = self.simulation_date.replace("-", "")
@@ -714,7 +650,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
         cfg = agents_info.get(agent_id, {})
         base_period = common_params.get("period", "2y")
         
-        # period 계산 (MA 200 등 확보 위해 여유 기간 추가)
         if base_period.endswith("y"):
             years = int(base_period[:-1])
             period_to_use = f"{years + 1}y"
@@ -727,7 +662,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
 
         need_build = rebuild or (not os.path.exists(raw_csv_path))
         if need_build:
-            # 백테스트 모드가 아닐 때만 생성 (백테스트 모드에서는 원본이 이미 있어야 함)
             is_backtest = hasattr(self, 'test_mode') and self.test_mode
             if not is_backtest or not os.path.exists(raw_csv_path):
                 if not os.path.exists(raw_csv_path):
@@ -737,8 +671,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 
                 df = self._fetch_ticker_data(ticker, period_to_use, interval_to_use)
                 feat = self._build_features_technical(df[["Open", "High", "Low", "Close", "Volume"]])
-                
-                # period 필터링
                 end_date = pd.Timestamp.today().normalize()
                 if base_period.endswith("y"):
                     days = int(base_period[:-1]) * 365
@@ -794,7 +726,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
         if not feature_cols:
             raise ValueError(f"[{agent_id}] config에 data_cols가 정의되지 않았습니다.")
         
-        # 누락된 feature 확인 및 처리
         missing_cols = [col for col in feature_cols if col not in df_raw.columns]
         if missing_cols:
             print(f"[WARN] [{agent_id}] 누락된 feature {len(missing_cols)}개를 0.0으로 채움: {missing_cols[:5]}...")
@@ -808,8 +739,8 @@ class TechnicalAgent(BaseAgent, nn.Module):
         if len(X_all) < window_size:
             raise ValueError(f"데이터 길이({len(X_all)}) < 윈도우 크기({window_size})")
         
-        X_latest = X_all[-window_size:].reshape(1, window_size, -1)
-        print(f"✅ [{agent_id}] Searcher 완료: 윈도우 shape {X_latest.shape}")
+        x_latest = X_all[-window_size:].reshape(1, window_size, -1)
+        print(f"✅ [{agent_id}] Searcher 완료: 윈도우 shape {x_latest.shape}")
         
         dates_all = df_raw["Date"].values[-window_size:].tolist()
         dates_all = [[str(d) for d in dates_all]]
@@ -828,7 +759,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         except Exception:
             self.stockdata.currency = "USD"
 
-        df_latest = pd.DataFrame(X_latest[0], columns=feature_cols)
+        df_latest = pd.DataFrame(x_latest[0], columns=feature_cols)
         feature_dict = {col: df_latest[col].tolist() for col in df_latest.columns}
         setattr(self.stockdata, agent_id, feature_dict)
         
@@ -836,10 +767,10 @@ class TechnicalAgent(BaseAgent, nn.Module):
         setattr(self.stockdata, f"{agent_id}_dates_all", dates_all or [])
         setattr(self.stockdata, f"{agent_id}_dates", last_dates or [])
 
-        return torch.tensor(X_latest, dtype=torch.float32)
+        return torch.tensor(x_latest, dtype=torch.float32)
 
     def pretrain(self):
-        """TechnicalAgent 사전학습 루틴"""
+        """TechnicalAgent 사전학습"""
         epochs = agents_info[self.agent_id]["epochs"]
         lr = agents_info[self.agent_id]["learning_rate"]
         batch_size = agents_info[self.agent_id]["batch_size"]
@@ -850,7 +781,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
         ticker = self.ticker
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
         
-        # CSV 로드 (백테스팅 처리 포함)
         raw_dir = os.path.join(os.path.dirname(self.data_dir), "raw")
         raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
         
@@ -864,7 +794,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         
         if not os.path.exists(raw_csv_path):
             print(f"[{self.agent_id}] Raw CSV 파일이 없어 searcher() 실행 중...")
-            _ = self.searcher(ticker, rebuild=True)
+            _ = self.search(ticker, rebuild=True)
             raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
             if not os.path.exists(raw_csv_path):
                 raise FileNotFoundError(f"Raw CSV not found after searcher: {raw_csv_path}")
@@ -878,7 +808,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
         if not feature_cols:
             raise ValueError(f"[{self.agent_id}] config에 data_cols가 정의되지 않았습니다.")
         
-        # 누락된 feature 확인 및 처리
         missing_cols = [col for col in feature_cols if col not in df_raw.columns]
         if missing_cols:
             print(f"[WARN] [{self.agent_id}] 누락된 feature {len(missing_cols)}개를 0.0으로 채움: {missing_cols[:5]}...")
@@ -886,7 +815,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 df_raw[col] = 0.0
         
         X_all = df_raw[feature_cols].values.astype(np.float32)
-        
         close_prices = df_raw["Close"].values
         y_all = (close_prices[1:] / close_prices[:-1] - 1.0).reshape(-1, 1).astype(np.float32)
         X_all = X_all[:-1]
@@ -913,11 +841,9 @@ class TechnicalAgent(BaseAgent, nn.Module):
         X_train, y_train = map(torch.tensor, self.scaler.transform(X_seq, y_seq))
         X_train, y_train = X_train.float(), y_train.float()
         
-        # 모델 학습
         model = self
         self._modules.pop("model", None)
         model.train()
-        
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         
         loss_fn_name = cfg.get("loss_fn", "HuberLoss")
@@ -927,15 +853,12 @@ class TechnicalAgent(BaseAgent, nn.Module):
         else:
             loss_fn = torch.nn.HuberLoss()
         
-        shuffle = cfg.get("shuffle", True)  # 기본값 True로 하위 호환성 유지
-        
-        # Early Stopping 설정
+        shuffle = cfg.get("shuffle", True)
         early_stopping_enabled = common_params.get("early_stopping_enabled", True)
         patience = cfg.get("patience", 20)
         min_delta = common_params.get("early_stopping_min_delta", 1e-6)
         eval_split_ratio = common_params.get("eval_split_ratio", 0.8)
         
-        # Validation set 분할
         if early_stopping_enabled:
             split_idx = int(len(X_train) * eval_split_ratio)
             X_train_split = X_train[:split_idx]
@@ -974,20 +897,13 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 optimizer.step()
                 total_loss += loss.item()
                 
-                # 원본 스케일로 역변환하여 로스 계산
                 with torch.no_grad():
                     y_pred_np = y_pred.detach().cpu().numpy()
                     yb_np = yb.detach().cpu().numpy()
-                    
-                    # 역변환 (스케일러만 역변환, 아직 y_scale_factor 곱해진 상태)
                     y_pred_scaled = self.scaler.inverse_y(y_pred_np)
                     y_true_scaled = self.scaler.inverse_y(yb_np)
-                    
-                    # y_scale_factor로 나눠서 실제 수익률로 변환
                     y_pred_orig = y_pred_scaled / y_scale_factor
                     y_true_orig = y_true_scaled / y_scale_factor
-                    
-                    # 원본 스케일에서 MSE 계산 (비교용)
                     mse_orig = np.mean((y_pred_orig - y_true_orig) ** 2)
                     total_loss_original += mse_orig
                     count += 1
@@ -996,7 +912,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
             avg_loss_original = total_loss_original / count if count > 0 else 0.0
             final_loss = avg_loss
             
-            # Validation 평가 및 Early Stopping 체크
             val_loss_orig = None
             if early_stopping_enabled:
                 model.eval()
@@ -1006,22 +921,18 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 with torch.no_grad():
                     for Xb, yb in val_loader:
                         y_pred = model(Xb)
-                        
-                        # 원본 스케일로 변환
                         y_pred_np = y_pred.cpu().numpy()
                         yb_np = yb.cpu().numpy()
                         y_pred_scaled = self.scaler.inverse_y(y_pred_np)
                         y_true_scaled = self.scaler.inverse_y(yb_np)
                         y_pred_orig = y_pred_scaled / y_scale_factor
                         y_true_orig = y_true_scaled / y_scale_factor
-                        
                         mse_orig = np.mean((y_pred_orig - y_true_orig) ** 2)
                         val_loss_orig += mse_orig
                         val_count += 1
                 
                 val_loss_orig /= max(val_count, 1)
                 
-                # Early Stopping 체크
                 if val_loss_orig < (best_val_loss_orig - min_delta):
                     best_val_loss_orig = val_loss_orig
                     patience_counter = 0
@@ -1072,16 +983,13 @@ class TechnicalAgent(BaseAgent, nn.Module):
             print(f"✅ 전처리된 데이터 저장 완료: {dataset_path}")
 
     def predict(self, X, n_samples: Optional[int] = None, current_price: Optional[float] = None, X_last: Optional[np.ndarray] = None):
-        """
-        Monte Carlo Dropout 기반 예측 + 불확실성 추정
-        """
+        """예측 및 불확실성 추정"""
         if n_samples is None:
             n_samples = common_params.get("n_samples", 30)
         
         if not self.ticker:
             raise ValueError("ticker가 설정되지 않았습니다. 먼저 searcher(ticker)를 호출하세요.")
         
-        # 모델 파일 체크 및 Pretrain
         model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
         if not os.path.exists(model_path):
             if not self._in_pretrain:
@@ -1118,7 +1026,6 @@ class TechnicalAgent(BaseAgent, nn.Module):
             if X_in is None:
                 X_in = getattr(sd, self.agent_id, None)
                 if isinstance(X_in, dict):
-                    # StockData.feature_cols를 사용하여 순서 보장
                     feature_cols = getattr(sd, "feature_cols", None)
                     if feature_cols:
                         ordered_data = {col: X_in[col] for col in feature_cols if col in X_in}
@@ -1191,15 +1098,15 @@ class TechnicalAgent(BaseAgent, nn.Module):
         )
         return target
 
-    def reviewer_draft(self, stock_data: StockData = None, target: Target = None) -> Opinion:
-        """초기 의견 생성"""
+    def review_draft(self, stock_data: StockData = None, target: Target = None) -> Opinion:
+        """초기 의견을 생성합니다"""
         if stock_data is not None:
             self.stockdata = stock_data
         else:
             if getattr(self, "stockdata", None) is None:
                 if not self.ticker:
                     raise RuntimeError("ticker 미설정")
-                _ = self.searcher(self.ticker)
+                _ = self.search(self.ticker)
             stock_data = self.stockdata
 
         if target is None:
@@ -1211,7 +1118,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
                     dtype=torch.float32
                 ).unsqueeze(0)
             else:
-                X_input = self.searcher(self.ticker)
+                X_input = self.search(self.ticker)
             target = self.predict(X_input)
 
         sys_text, user_text = self._build_messages_opinion(self.stockdata, target)
@@ -1233,8 +1140,8 @@ class TechnicalAgent(BaseAgent, nn.Module):
                     reason=reason))
         return self.opinions[-1]
 
-    def reviewer_rebut(self, my_opinion: Opinion, other_opinion: Opinion, round: int) -> Rebuttal:
-        """반박 생성"""
+    def review_rebut(self, my_opinion: Opinion, other_opinion: Opinion, round: int) -> Rebuttal:
+        """반박을 생성합니다"""
         sys_text, user_text = self._build_messages_rebuttal(
             my_opinion=my_opinion,
             target_opinion=other_opinion,
@@ -1268,20 +1175,20 @@ class TechnicalAgent(BaseAgent, nn.Module):
         return result
     
     def reviewer_rebuttal(self, my_opinion, other_opinion, round_index):
-        """호환용 래퍼"""
-        return self.reviewer_rebut(my_opinion, other_opinion, round_index)
+        """호환용 래퍼 메서드"""
+        return self.review_rebut(my_opinion, other_opinion, round_index)
 
-    def reviewer_revise(self, my_opinion, others, rebuttals, stock_data, fine_tune=True, lr=None, epochs=None):
-        """수정 및 재예측"""
+    def review_revise(self, my_opinion, others, rebuttals, stock_data, fine_tune=True, lr=None, epochs=None):
+        """의견을 수정하고 재예측합니다"""
         if lr is None:
             lr = common_params.get("fine_tune_lr", 1e-4)
         if epochs is None:
             epochs = agents_info.get(self.agent_id, {}).get("fine_tune_epochs", 20)
         
-        return super().reviewer_revise(my_opinion, others, rebuttals, stock_data, fine_tune, lr, epochs)
+        return super().review_revise(my_opinion, others, rebuttals, stock_data, fine_tune, lr, epochs)
 
     def load_model(self, model_path: Optional[str] = None):
-        """모델 로드"""
+        """모델을 로드합니다"""
         if model_path is None:
             model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
 
@@ -1313,7 +1220,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
             return False
 
     def evaluate(self, ticker: str = None):
-        """검증"""
+        """모델을 검증합니다"""
         if ticker is None:
             ticker = self.ticker
 

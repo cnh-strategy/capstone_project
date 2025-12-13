@@ -14,23 +14,15 @@ import torch.nn as nn
 import yfinance as yf
 from torch.utils.data import DataLoader, TensorDataset
 
-# BaseAgent 및 데이터 클래스
 from agents.base_agent import BaseAgent, StockData, Target, Opinion, Rebuttal
-
-# 뉴스 병합 및 데이터셋 관련
 from core.sentimental_classes.news import merge_price_with_news_features
 from core.sentimental_classes.pretrain_dataset_builder import build_pretrain_dataset
 from core.sentimental_classes.lstm_model import SentimentalLSTM
 from core.data_set import load_dataset, build_dataset
-
-# 프롬프트 및 설정
 from prompts import OPINION_PROMPTS, REBUTTAL_PROMPTS, REVISION_PROMPTS
 from config.agents import agents_info, dir_info, common_params
 
-# 설정 로드
 CFG_S = agents_info["SentimentalAgent"]
-
-# 하이퍼파라미터 설정
 WINDOW_SIZE = CFG_S["window_size"]
 HIDDEN_DIM = CFG_S.get("d_model", 64)
 NUM_LAYERS = CFG_S["num_layers"]
@@ -38,39 +30,23 @@ DROPOUT = CFG_S["dropout"]
 
 
 class SentimentalAgent(BaseAgent):
-    """
-    뉴스 기사와 감성 점수를 기반으로 주가를 예측하는 에이전트.
-    LSTM 모델을 사용하여 시계열 데이터(가격 + 감성 지표)를 분석합니다.
-    """
+    """뉴스 기사와 감성 점수를 기반으로 주가를 예측하는 에이전트"""
 
     def __init__(self, ticker, agent_id="SentimentalAgent", news_dir=None, **kwargs):
-        """
-        SentimentalAgent 초기화
-        
-        Args:
-            ticker: 종목 코드
-            agent_id: 에이전트 식별자
-            news_dir: 뉴스 데이터 디렉토리 (None이면 자동 설정)
-        """
+        """SentimentalAgent 초기화"""
         super().__init__(ticker=ticker, agent_id=agent_id, **kwargs)
         
-        # news_dir 설정 (없으면 기본값: data_dir의 부모/raw/news)
         if news_dir is None:
-            base_dir = os.path.dirname(self.data_dir)  # "backtest/data" or "data"
+            base_dir = os.path.dirname(self.data_dir)
             news_dir = os.path.join(base_dir, "raw", "news")
         self.news_dir = news_dir
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
         cfg = agents_info[self.agent_id]
         self.window_size = cfg["window_size"]
-
-        # LSTM 구조 관련 하이퍼파라미터
         self.hidden_dim = HIDDEN_DIM
         self.num_layers = NUM_LAYERS
         self.dropout = DROPOUT
-
-        # 피처 목록
         self.feature_cols = CFG_S.get("data_cols", [])
 
         self.model = None
@@ -81,16 +57,11 @@ class SentimentalAgent(BaseAgent):
         if not self.ticker:
             raise ValueError("SentimentalAgent: ticker is None/empty")
         self.ticker = str(self.ticker).upper()
-        setattr(self, "symbol", self.ticker)
+        setattr(self, "ticker", self.ticker)
 
 
-    # -------------------------------------------------------
-    # PRETRAIN
-    # -------------------------------------------------------
     def pretrain(self):
-        """
-        사전학습 수행 (데이터 로드 -> 전처리 -> 학습 -> 저장)
-        """
+        """사전학습을 수행합니다"""
         epochs = agents_info[self.agent_id]["epochs"]
         lr = agents_info[self.agent_id]["learning_rate"]
         batch_size = agents_info[self.agent_id]["batch_size"]
@@ -101,7 +72,6 @@ class SentimentalAgent(BaseAgent):
         ticker = self.ticker
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pretraining {self.agent_id}")
         
-        # 1) Raw CSV 로드 (백테스팅 모드 처리 포함)
         raw_dir = os.path.join(os.path.dirname(self.data_dir), "raw")
         raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
         
@@ -115,7 +85,7 @@ class SentimentalAgent(BaseAgent):
         
         if not os.path.exists(raw_csv_path):
             print(f"[{self.agent_id}] Raw CSV 파일이 없어 searcher() 실행 중...")
-            _ = self.searcher(ticker, rebuild=True)
+            _ = self.search(ticker, rebuild=True)
             raw_csv_path = os.path.join(raw_dir, f"{ticker}_{self.agent_id}_raw.csv")
             if not os.path.exists(raw_csv_path):
                 raise FileNotFoundError(f"Raw CSV not found after searcher: {raw_csv_path}")
@@ -124,12 +94,10 @@ class SentimentalAgent(BaseAgent):
         df_raw["Date"] = pd.to_datetime(df_raw["Date"])
         df_raw = df_raw.sort_values("Date").reset_index(drop=True)
         
-        # 2) 피처 및 타겟 준비 (config에서 feature 목록 가져오기)
         feature_cols = CFG_S.get("data_cols", [])
         if not feature_cols:
             raise ValueError(f"[{self.agent_id}] config에 data_cols가 정의되지 않았습니다.")
         
-        # 누락된 feature 확인 및 처리
         missing_cols = [col for col in feature_cols if col not in df_raw.columns]
         if missing_cols:
             print(f"[WARN] [{self.agent_id}] 누락된 feature {len(missing_cols)}개를 0.0으로 채움: {missing_cols[:5]}...")
@@ -137,12 +105,10 @@ class SentimentalAgent(BaseAgent):
                 df_raw[col] = 0.0
         
         X_all = df_raw[feature_cols].values.astype(np.float32)
-        
         close_prices = df_raw["Close"].values
         y_all = (close_prices[1:] / close_prices[:-1] - 1.0).reshape(-1, 1).astype(np.float32)
-        X_all = X_all[:-1]  # 마지막 행 제외
-        
-        # 백테스팅 모드: 데이터 누수 방지
+        X_all = X_all[:-1]
+
         if hasattr(self, 'test_mode') and self.test_mode and hasattr(self, 'simulation_date') and self.simulation_date:
             if len(y_all) > 0:
                 y_all = y_all[:-1]
@@ -189,10 +155,8 @@ class SentimentalAgent(BaseAgent):
         
         model = self.model
         model.train()
-        
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         
-        # Loss 함수 설정
         cfg = agents_info.get(self.agent_id, {})
         loss_fn_name = cfg.get("loss_fn", "HuberLoss")
         if loss_fn_name == "HuberLoss":
@@ -205,15 +169,12 @@ class SentimentalAgent(BaseAgent):
         else:
             loss_fn = torch.nn.HuberLoss(delta=common_params.get("huber_loss_delta", 1.0))
         
-        shuffle = cfg.get("shuffle", True)  # 기본값 True로 하위 호환성 유지 (cfg는 198줄에서 이미 가져옴)
-        
-        # Early Stopping 설정
+        shuffle = cfg.get("shuffle", True)
         early_stopping_enabled = common_params.get("early_stopping_enabled", True)
         patience = cfg.get("patience", 20)
         min_delta = common_params.get("early_stopping_min_delta", 1e-6)
         eval_split_ratio = common_params.get("eval_split_ratio", 0.8)
         
-        # Validation set 분할
         if early_stopping_enabled:
             split_idx = int(len(X_train) * eval_split_ratio)
             X_train_split = X_train[:split_idx]
@@ -230,19 +191,16 @@ class SentimentalAgent(BaseAgent):
         train_dataset = TensorDataset(X_train_split, y_train_split.view(-1, 1))
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle)
         
-        # 7) 학습 루프
         log_interval = common_params.get("pretrain_log_interval", 5)
         final_loss = None
         y_scale_factor = common_params.get("y_scale_factor", 100.0)
-        
-        # Early Stopping 변수 초기화
         best_val_loss_orig = float('inf')
         patience_counter = 0
         best_model_state = None
-        
+
         for epoch in range(epochs):
             total_loss = 0.0
-            total_loss_original = 0.0  # 원본 스케일 로스
+            total_loss_original = 0.0
             count = 0
             
             for Xb, yb in train_loader:
@@ -253,20 +211,13 @@ class SentimentalAgent(BaseAgent):
                 optimizer.step()
                 total_loss += loss.item()
                 
-                # 원본 스케일로 역변환하여 로스 계산
                 with torch.no_grad():
                     y_pred_np = y_pred.detach().cpu().numpy()
                     yb_np = yb.detach().cpu().numpy()
-                    
-                    # 역변환 (스케일러만 역변환, 아직 y_scale_factor 곱해진 상태)
                     y_pred_scaled = self.scaler.inverse_y(y_pred_np)
                     y_true_scaled = self.scaler.inverse_y(yb_np)
-                    
-                    # y_scale_factor로 나눠서 실제 수익률로 변환
                     y_pred_orig = y_pred_scaled / y_scale_factor
                     y_true_orig = y_true_scaled / y_scale_factor
-                    
-                    # 원본 스케일에서 MSE 계산 (비교용)
                     mse_orig = np.mean((y_pred_orig - y_true_orig) ** 2)
                     total_loss_original += mse_orig
                     count += 1
@@ -275,7 +226,6 @@ class SentimentalAgent(BaseAgent):
             avg_loss_original = total_loss_original / count if count > 0 else 0.0
             final_loss = avg_loss
             
-            # Validation 평가 및 Early Stopping 체크
             val_loss_orig = None
             if early_stopping_enabled:
                 model.eval()
@@ -285,22 +235,18 @@ class SentimentalAgent(BaseAgent):
                 with torch.no_grad():
                     for Xb, yb in val_loader:
                         y_pred = model(Xb)
-                        
-                        # 원본 스케일로 변환
                         y_pred_np = y_pred.cpu().numpy()
                         yb_np = yb.cpu().numpy()
                         y_pred_scaled = self.scaler.inverse_y(y_pred_np)
                         y_true_scaled = self.scaler.inverse_y(yb_np)
                         y_pred_orig = y_pred_scaled / y_scale_factor
                         y_true_orig = y_true_scaled / y_scale_factor
-                        
                         mse_orig = np.mean((y_pred_orig - y_true_orig) ** 2)
                         val_loss_orig += mse_orig
                         val_count += 1
                 
                 val_loss_orig /= max(val_count, 1)
                 
-                # Early Stopping 체크
                 if val_loss_orig < (best_val_loss_orig - min_delta):
                     best_val_loss_orig = val_loss_orig
                     patience_counter = 0
@@ -319,7 +265,6 @@ class SentimentalAgent(BaseAgent):
                 else:
                     print(f"  Epoch {epoch+1:03d}/{epochs} | Loss (scaled): {avg_loss:.6f} | Loss (original): {avg_loss_original:.6f}")
         
-        # 8) 모델 저장
         os.makedirs(self.model_dir, exist_ok=True)
         model_path = os.path.join(self.model_dir, f"{ticker}_{self.agent_id}.pt")
         torch.save({"model_state_dict": model.state_dict()}, model_path)
@@ -328,7 +273,6 @@ class SentimentalAgent(BaseAgent):
         final_loss_str = f" (Final Loss: {final_loss:.6f})" if final_loss is not None else ""
         print(f"✅ {self.agent_id} 모델 학습 및 저장 완료: {model_path}{final_loss_str}")
         
-        # 9) 데이터셋 저장 (선택)
         if common_params.get("pretrain_save_dataset", True):
             dataset_path = os.path.join(self.data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
             flattened_data = []
@@ -355,12 +299,8 @@ class SentimentalAgent(BaseAgent):
             dataset_df.to_csv(dataset_path, index=False)
             print(f"✅ 전처리된 데이터 저장 완료: {dataset_path}")
 
-    # -------------------------------------------------------
-    # _BUILD_MODEL
-    # -------------------------------------------------------
     def _build_model(self) -> nn.Module:
-        """BaseAgent.pretrain에서 사용할 LSTM 모델 생성"""
-        # dataset 로드 또는 생성
+        """LSTM 모델을 생성합니다"""
         try:
             X, y, cols = load_dataset(
                 ticker=self.ticker,
@@ -377,7 +317,6 @@ class SentimentalAgent(BaseAgent):
             )
 
         self.feature_cols = list(cols)
-        # config의 input_dim 사용 (데이터셋 피처 수와 무관하게 고정)
         data_cols = CFG_S.get("data_cols", [])
         input_dim = CFG_S.get("input_dim", len(data_cols) if data_cols else 8)
 
@@ -663,7 +602,7 @@ class SentimentalAgent(BaseAgent):
     # -------------------------------------------------------
     # searcher (통일된 CSV 기반 캐싱 패턴)
     # -------------------------------------------------------
-    def searcher(self, ticker: Optional[str] = None, rebuild: bool = False):
+    def search(self, ticker: Optional[str] = None, rebuild: bool = False):
         """
         SentimentalAgent 전용 Searcher
         - 데이터를 수집하고 최신 윈도우 텐서를 반환
@@ -721,9 +660,9 @@ class SentimentalAgent(BaseAgent):
         if len(X_all) < window_size:
             raise ValueError(f"데이터 길이({len(X_all)}) < 윈도우 크기({window_size})")
         
-        X_latest = X_all[-window_size:].reshape(1, window_size, -1)  # (1, T, F)
+        x_latest = X_all[-window_size:].reshape(1, window_size, -1)  # (1, T, F)
         
-        print(f"✅ [{agent_id}] Searcher 완료: 윈도우 shape {X_latest.shape}")
+        print(f"✅ [{agent_id}] Searcher 완료: 윈도우 shape {x_latest.shape}")
         
         # StockData 구성
         self.stockdata = StockData(ticker=ticker)
@@ -740,9 +679,9 @@ class SentimentalAgent(BaseAgent):
         except Exception:
             self.stockdata.currency = "USD"
 
-        self.stockdata.X_seq = X_latest
+        self.stockdata.X_seq = x_latest
         
-        df_latest = pd.DataFrame(X_latest[0], columns=feature_cols)
+        df_latest = pd.DataFrame(x_latest[0], columns=feature_cols)
         feature_dict = {col: df_latest[col].tolist() for col in df_latest.columns}
         setattr(self.stockdata, agent_id, feature_dict)
         
@@ -755,7 +694,7 @@ class SentimentalAgent(BaseAgent):
             }
             self.stockdata.raw_df = df_raw
 
-        return torch.tensor(X_latest, dtype=torch.float32)
+        return torch.tensor(x_latest, dtype=torch.float32)
 
     # -------------------------------------------------------
     # predict
@@ -1186,8 +1125,8 @@ class SentimentalAgent(BaseAgent):
         )
         return system_tmpl, user_text
 
-    def reviewer_revise(self, my_opinion, others, rebuttals, stock_data=None):
-        return super().reviewer_revise(my_opinion, others, rebuttals, stock_data)
+    def review_revise(self, my_opinion, others, rebuttals, stock_data=None):
+        return super().review_revise(my_opinion, others, rebuttals, stock_data)
 
     def get_opinion(self, idx: int = 0, ticker: Optional[str] = None) -> Opinion:
         """단독 테스트용 Opinion 생성"""
@@ -1203,7 +1142,7 @@ class SentimentalAgent(BaseAgent):
 
         try:
             if hasattr(self, "reviewer_draft"):
-                op = self.reviewer_draft(getattr(self, "stockdata", None), target)
+                op = self.review_draft(getattr(self, "stockdata", None), target)
                 return op
         except Exception as e:
             print("[SentimentalAgent] reviewer_draft 실패:", e)
