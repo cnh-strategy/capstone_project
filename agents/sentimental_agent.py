@@ -783,6 +783,7 @@ class SentimentalAgent(BaseAgent):
             next_close=predicted_price,
             uncertainty=sigma,
             confidence=confidence,
+            predicted_return=float(predicted_return),
         )
 
         if hasattr(self, "targets"):

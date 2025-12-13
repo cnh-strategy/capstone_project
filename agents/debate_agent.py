@@ -602,6 +602,7 @@ class DebateAgent:
                         next_close_actual = float(df_price.iloc[idx_price + 1]['Close'])
 
                         # Technical Prediction
+                        pred_tech = np.nan; conf_tech = 0; unc_tech = 0; ret_tech = np.nan
                         try:
                             X_batch = tech_X_all[t_idx]
                             X_in = np.expand_dims(X_batch, axis=0)
@@ -609,11 +610,12 @@ class DebateAgent:
                             pred_tech = target_tech.next_close
                             conf_tech = target_tech.confidence
                             unc_tech = target_tech.uncertainty
+                            ret_tech = getattr(target_tech, "predicted_return", (pred_tech - curr_close)/curr_close if not np.isnan(pred_tech) else np.nan)
                         except Exception as e:
-                            pred_tech = np.nan; conf_tech = 0; unc_tech = 0
+                            pass
 
                         # Macro Prediction (해당 날짜의 sample 찾기) - 다른 에이전트와 동일하게 원본 데이터 전달
-                        pred_macro = np.nan; conf_macro = 0; unc_macro = 0
+                        pred_macro = np.nan; conf_macro = 0; unc_macro = 0; ret_macro = np.nan
                         try:
                             # 날짜 형식 통일 (normalize로 시간 제거)
                             curr_date_normalized = pd.to_datetime(curr_date).normalize() if not isinstance(curr_date, pd.Timestamp) else curr_date.normalize()
@@ -645,6 +647,7 @@ class DebateAgent:
                                         pred_macro = target_macro.next_close
                                         conf_macro = target_macro.confidence
                                         unc_macro = target_macro.uncertainty
+                                        ret_macro = getattr(target_macro, "predicted_return", (pred_macro - curr_close)/curr_close if not np.isnan(pred_macro) else np.nan)
                             else:
                                 # 디버깅: 날짜 매칭 실패 시 정보 출력
                                 if t_idx < 5:
@@ -659,7 +662,7 @@ class DebateAgent:
                             pass
 
                         # Sentimental Prediction (해당 날짜의 sample 찾기)
-                        pred_senti = np.nan; conf_senti = 0; unc_senti = 0
+                        pred_senti = np.nan; conf_senti = 0; unc_senti = 0; ret_senti = np.nan
                         try:
                             senti_samples = senti_df[senti_df['date'] == curr_date]['sample_id'].unique()
                             if len(senti_samples) > 0:
@@ -677,6 +680,7 @@ class DebateAgent:
                                     pred_senti = target_senti.next_close
                                     conf_senti = target_senti.confidence
                                     unc_senti = target_senti.uncertainty
+                                    ret_senti = getattr(target_senti, "predicted_return", (pred_senti - curr_close)/curr_close if not np.isnan(pred_senti) else np.nan)
                         except Exception as e:
                             pass
 
@@ -688,12 +692,15 @@ class DebateAgent:
                             "Tech_Pred": pred_tech,
                             "Tech_Conf": conf_tech,
                             "Tech_Unc": unc_tech,
+                            "Tech_Ret": ret_tech,
                             "Macro_Pred": pred_macro,
                             "Macro_Conf": conf_macro,
                             "Macro_Unc": unc_macro,
+                            "Macro_Ret": ret_macro,
                             "Senti_Pred": pred_senti,
                             "Senti_Conf": conf_senti,
-                            "Senti_Unc": unc_senti
+                            "Senti_Unc": unc_senti,
+                            "Senti_Ret": ret_senti
                         }
                         results.append(row)
 
@@ -732,9 +739,21 @@ class DebateAgent:
                         raise ValueError(f"학습 데이터가 비어있습니다: {data_path}")
 
                     # Feature Engineering
-                    df['Tech_Ret'] = ((df['Tech_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
-                    df['Macro_Ret'] = ((df['Macro_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
-                    df['Senti_Ret'] = ((df['Senti_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
+                    # 데이터셋에 이미 *_Ret 컬럼이 있으면 사용, 없으면 계산
+                    if 'Tech_Ret' in df.columns:
+                        df['Tech_Ret'] = df['Tech_Ret'].fillna((df['Tech_Pred'] - df['Last_Close']) / df['Last_Close'])
+                    else:
+                        df['Tech_Ret'] = ((df['Tech_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
+
+                    if 'Macro_Ret' in df.columns:
+                        df['Macro_Ret'] = df['Macro_Ret'].fillna((df['Macro_Pred'] - df['Last_Close']) / df['Last_Close'])
+                    else:
+                        df['Macro_Ret'] = ((df['Macro_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
+
+                    if 'Senti_Ret' in df.columns:
+                        df['Senti_Ret'] = df['Senti_Ret'].fillna((df['Senti_Pred'] - df['Last_Close']) / df['Last_Close'])
+                    else:
+                        df['Senti_Ret'] = ((df['Senti_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
 
                     df['Tech_Conf'] = df['Tech_Conf'].fillna(0.0)
                     df['Tech_Unc'] = df['Tech_Unc'].fillna(0.0)
@@ -759,6 +778,9 @@ class DebateAgent:
                     X = df_clean[feature_cols]
                     y = df_clean['Target_Ret']
 
+                    # Custom Objective Function Import
+                    from scripts.train_meta_model import directional_mse_objective
+
                     # LightGBM 학습
                     model = lgb.LGBMRegressor(
                         n_estimators=100,
@@ -766,7 +788,8 @@ class DebateAgent:
                         max_depth=3,
                         random_state=42,
                         n_jobs=-1,
-                        verbosity=-1  # LightGBM 로그 출력 억제
+                        verbosity=-1,  # LightGBM 로그 출력 억제
+                        objective=directional_mse_objective  # Custom Objective 적용
                     )
 
                     model.fit(
@@ -858,8 +881,13 @@ class DebateAgent:
                 def get_feats(op):
                     if not op or not op.target:
                         return np.nan, 0.0, 0.0
+                    # predicted_return이 있으면 직접 사용, 없으면 가격에서 역변환
                     pred = float(op.target.next_close)
-                    ret = (pred - last_price) / last_price
+                    ret = getattr(op.target, "predicted_return", None)
+                    if ret is None:
+                        ret = (pred - last_price) / last_price
+                    else:
+                        ret = float(ret)
                     conf = float(op.target.confidence or 0.0)
                     unc = float(op.target.uncertainty or 0.0)
                     return ret, conf, unc

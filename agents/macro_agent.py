@@ -773,6 +773,7 @@ class MacroAgent(BaseAgent, nn.Module):
             next_close=float(predicted_price),
             uncertainty=float(sigma),
             confidence=float(confidence),
+            predicted_return=float(predicted_return),
         )
         return target
 

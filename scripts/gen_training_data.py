@@ -237,11 +237,12 @@ def generate_ensemble_data(ticker="NVDA", days=None, output_path="data/processed
                 pred_tech = target_tech.next_close
                 conf_tech = target_tech.confidence
                 unc_tech = target_tech.uncertainty
+                ret_tech = getattr(target_tech, "predicted_return", (pred_tech - curr_close)/curr_close if not np.isnan(pred_tech) else np.nan)
             else:
                 # 날짜 불일치 -> None 처리
-                pred_tech = np.nan; conf_tech = 0; unc_tech = 0
+                pred_tech = np.nan; conf_tech = 0; unc_tech = 0; ret_tech = np.nan
         except Exception as e:
-            pred_tech = np.nan; conf_tech = 0; unc_tech = 0
+            pred_tech = np.nan; conf_tech = 0; unc_tech = 0; ret_tech = np.nan
             if i < 5:  # 처음 몇 개만 오류 로그
                 print(f"    [ERROR] TechnicalAgent 예측 실패: {e}")
 
@@ -270,12 +271,13 @@ def generate_ensemble_data(ticker="NVDA", days=None, output_path="data/processed
                     pred_macro = target_macro.next_close
                     conf_macro = target_macro.confidence
                     unc_macro = target_macro.uncertainty
+                    ret_macro = getattr(target_macro, "predicted_return", (pred_macro - curr_close)/curr_close if not np.isnan(pred_macro) else np.nan)
                 else:
-                     pred_macro = np.nan; conf_macro = 0; unc_macro = 0
+                     pred_macro = np.nan; conf_macro = 0; unc_macro = 0; ret_macro = np.nan
             else:
-                 pred_macro = np.nan; conf_macro = 0; unc_macro = 0
+                 pred_macro = np.nan; conf_macro = 0; unc_macro = 0; ret_macro = np.nan
         except Exception as e:
-            pred_macro = np.nan; conf_macro = 0; unc_macro = 0
+            pred_macro = np.nan; conf_macro = 0; unc_macro = 0; ret_macro = np.nan
             if i < 5:  # 처음 몇 개만 오류 로그
                 print(f"    [ERROR] MacroAgent 예측 실패: {e}")
 
@@ -296,12 +298,13 @@ def generate_ensemble_data(ticker="NVDA", days=None, output_path="data/processed
                     pred_senti = target_senti.next_close
                     conf_senti = target_senti.confidence
                     unc_senti = target_senti.uncertainty
+                    ret_senti = getattr(target_senti, "predicted_return", (pred_senti - curr_close)/curr_close if not np.isnan(pred_senti) else np.nan)
                 else:
-                    pred_senti = np.nan; conf_senti = 0; unc_senti = 0
+                    pred_senti = np.nan; conf_senti = 0; unc_senti = 0; ret_senti = np.nan
             else:
-                pred_senti = np.nan; conf_senti = 0; unc_senti = 0
+                pred_senti = np.nan; conf_senti = 0; unc_senti = 0; ret_senti = np.nan
         except Exception as e:
-            pred_senti = np.nan; conf_senti = 0; unc_senti = 0
+            pred_senti = np.nan; conf_senti = 0; unc_senti = 0; ret_senti = np.nan
             if i < 5:  # 처음 몇 개만 오류 로그
                 print(f"    [ERROR] SentimentalAgent 예측 실패: {e}")
 
@@ -314,14 +317,17 @@ def generate_ensemble_data(ticker="NVDA", days=None, output_path="data/processed
             "Tech_Pred": pred_tech,
             "Tech_Conf": conf_tech,
             "Tech_Unc": unc_tech,
+            "Tech_Ret": ret_tech,
             
             "Macro_Pred": pred_macro,
             "Macro_Conf": conf_macro,
             "Macro_Unc": unc_macro,
+            "Macro_Ret": ret_macro,
             
             "Senti_Pred": pred_senti,
             "Senti_Conf": conf_senti,
-            "Senti_Unc": unc_senti
+            "Senti_Unc": unc_senti,
+            "Senti_Ret": ret_senti
         }
         results.append(row)
         

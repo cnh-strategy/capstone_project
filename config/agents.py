@@ -22,7 +22,7 @@ common_params = {
     
     # --- 학습 및 Loss 설정 ---
     "huber_loss_delta": 1.0,            # Huber Loss의 delta 값 (이상치 민감도 조절)
-    "fine_tune_lr": 1e-4,               # Fine-tuning 학습률
+    "fine_tune_lr": 1e-2,               # Fine-tuning 학습률
     "fine_tune_epochs": 10,             # Fine-tuning 에포크 수
     
     # --- 데이터 스케일링 및 처리 ---
@@ -37,6 +37,8 @@ common_params = {
     "default_current_price": 100.0,     # 현재가가 없을 경우 사용할 기본값
     "sigma_min": 1e-6,                  # 불확실성(표준편차) 최소값 (0 나누기 방지)
     "confidence_formula": "1.0 / (1.0 + sigma)",  # 신뢰도 계산 공식 (sigma가 클수록 신뢰도 하락)
+    "direction_penalty_factor": 1.5,    # 방향성 오차에 대한 패널티 팩터 (1.0 = 패널티 없음)
+    "confidence_lookback_days": 30,     # 신뢰도 계산에 사용할 최근 일수 (방향정확도 기반)
 }
 
 # 에이전트별 상세 설정

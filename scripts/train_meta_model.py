@@ -11,7 +11,30 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 # 프로젝트 루트 경로 추가
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config.agents import dir_info
+from config.agents import dir_info, common_params
+
+def directional_mse_objective(y_true, y_pred):
+    """
+    Custom Objective Function for Direction-Aware MSE
+    방향이 틀렸을 때 그라디언트(기울기)에 페널티를 부여하여,
+    방향성을 더 잘 학습하도록 유도함.
+    
+    L = (y_true - y_pred)^2 * (1 + penalty * I(sign(y_true) != sign(y_pred)))
+    """
+    penalty_factor = common_params.get("direction_penalty_factor", 1.5)
+    
+    residual = (y_true - y_pred)
+    grad = -2.0 * residual
+    hess = 2.0 * np.ones_like(residual)
+    
+    # 방향이 다른 경우 페널티 부여
+    # sign(0)은 0이므로, y_true * y_pred < 0 인 경우만 방향 불일치로 간주
+    direction_mismatch = (y_true * y_pred) < 0
+    
+    grad[direction_mismatch] *= penalty_factor
+    hess[direction_mismatch] *= penalty_factor
+    
+    return grad, hess
 
 def train_meta_model(
     data_path="data/processed/ensemble_train.csv",
@@ -37,9 +60,21 @@ def train_meta_model(
     
     # 입력 피처: 예측값을 수익률로 변환
     # NaN이 있는 경우 0으로 채움 (해당 에이전트의 예측이 없을 때)
-    df['Tech_Ret'] = ((df['Tech_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
-    df['Macro_Ret'] = ((df['Macro_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
-    df['Senti_Ret'] = ((df['Senti_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
+    # 데이터셋에 이미 *_Ret 컬럼이 있으면 사용, 없으면 계산
+    if 'Tech_Ret' in df.columns:
+        df['Tech_Ret'] = df['Tech_Ret'].fillna(0.0)
+    else:
+        df['Tech_Ret'] = ((df['Tech_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
+
+    if 'Macro_Ret' in df.columns:
+        df['Macro_Ret'] = df['Macro_Ret'].fillna(0.0)
+    else:
+        df['Macro_Ret'] = ((df['Macro_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
+
+    if 'Senti_Ret' in df.columns:
+        df['Senti_Ret'] = df['Senti_Ret'].fillna(0.0)
+    else:
+        df['Senti_Ret'] = ((df['Senti_Pred'] - df['Last_Close']) / df['Last_Close']).fillna(0.0)
     
     # Confidence와 Uncertainty도 NaN이면 0으로 채움
     df['Tech_Conf'] = df['Tech_Conf'].fillna(0.0)
@@ -90,7 +125,8 @@ def train_meta_model(
         learning_rate=0.05,
         max_depth=3,
         random_state=42,
-        n_jobs=-1
+        n_jobs=-1,
+        objective=directional_mse_objective  # Custom Objective 적용
     )
     
     # 전체 데이터로 학습 (Early stopping 없음)

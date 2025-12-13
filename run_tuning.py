@@ -136,30 +136,31 @@ def run_hyperparameter_tuning(
         
         # Case A: 공통 파라미터
         common_grid = {
-            "common__fine_tune_lr": [1e-4, 5e-4, 1e-3],
+            "common__fine_tune_lr": [1e-4, 5e-4, 1e-3, 1e-2, 1e-5],
+            "common__confidence_lookback_days": [5, 10, 20, 30, 50],
             # y_scale_factor는 100.0으로 고정 (불필요한 탐색 제외)
         }
         
         # Case B: TechnicalAgent (Window, Model Size, LR)
-        tech_grid = {
-            "TechnicalAgent__window_size": [10, 20, 30],
-            "TechnicalAgent__rnn_units1": [32, 64, 128],
-            "TechnicalAgent__learning_rate": [1e-4, 5e-4, 1e-3],
-        }
+        tech_grid = {}
+        #     "TechnicalAgent__window_size": [10, 20, 30],
+        #     "TechnicalAgent__rnn_units1": [32, 64, 128],
+        #     "TechnicalAgent__learning_rate": [1e-4, 5e-4, 1e-3],
         
-        # Case C: SentimentalAgent (Window, Model Size, LR)
-        # 주의: window_size 변경 시 데이터셋 재생성 로직이 내부적으로 처리되어야 함
-        sent_grid = {
-            "SentimentalAgent__window_size": [10, 20, 30],
-            "SentimentalAgent__d_model": [32, 64, 128],
-            "SentimentalAgent__learning_rate": [1e-4, 5e-4, 1e-3],
-        }
         
-        # Case D: MacroAgent (Window, LR)
-        macro_grid = {
-            "MacroAgent__window_size": [10, 20, 30],
-            "MacroAgent__learning_rate": [1e-4, 5e-4, 1e-3],
-        }
+        # # Case C: SentimentalAgent (Window, Model Size, LR)
+        # # 주의: window_size 변경 시 데이터셋 재생성 로직이 내부적으로 처리되어야 함
+        sent_grid = {}
+        #     "SentimentalAgent__window_size": [10, 20, 30],
+        #     "SentimentalAgent__d_model": [32, 64, 128],
+        #     "SentimentalAgent__learning_rate": [1e-4, 5e-4, 1e-3],
+        
+        
+        # # Case D: MacroAgent (Window, LR)
+        macro_grid = {}
+        #     "MacroAgent__window_size": [10, 20, 30],
+        #     "MacroAgent__learning_rate": [1e-4, 5e-4, 1e-3],
+        # }
         
         # 모든 그리드 병합 (Cartesian Product)
         full_param_grid = {**common_grid, **tech_grid, **sent_grid, **macro_grid}
@@ -393,7 +394,7 @@ def run_hyperparameter_tuning(
 
 if __name__ == "__main__":
     # 튜닝할 티커 리스트 (우선 MSFT 하나만 테스트하거나 필요시 추가)
-    target_tickers = ["MSFT", "AAPL", "NVDA"]
+    target_tickers = ["MSFT", "CCEP", "AZN"]
     
     # 전체 종목 베스트 설정 수집용
     all_best_configs = []

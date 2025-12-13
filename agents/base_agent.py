@@ -31,10 +31,13 @@ class Target:
         next_close (float): 다음 거래일의 예측 종가
         uncertainty (Optional[float]): 예측의 불확실성 (Monte Carlo Dropout 표준편차 σ)
         confidence (Optional[float]): 모델의 신뢰도 β (0~1 사이 값, 불확실성과 반비례)
+        predicted_return (Optional[float]): 예측 수익률
     """
     next_close: float
     uncertainty: Optional[float] = None
     confidence: Optional[float] = None
+    predicted_return: Optional[float] = None
+    predicted_return: Optional[float] = None
 
 @dataclass
 class Opinion:
@@ -350,6 +353,139 @@ class BaseAgent:
             "explicit_current_price를 전달하거나 StockData에 last_price를 설정하세요."
         )
 
+    def _calculate_direction_accuracy_confidence(self) -> Optional[float]:
+        """
+        최근 N일 동안의 방향정확도를 계산하여 신뢰도로 반환
+        
+        Returns:
+            float: 방향정확도 기반 신뢰도 (0~1 범위), 계산 실패시 None
+        """
+        import pandas as pd
+        
+        try:
+            # 1. config에서 lookback_days 읽기
+            lookback_days = common_params.get("confidence_lookback_days", 30)
+            
+            # 2. 필수 정보 확인
+            if not hasattr(self, "ticker") or not self.ticker:
+                return None
+            if not hasattr(self, "agent_id") or not self.agent_id:
+                return None
+            if not hasattr(self, "data_dir") or not self.data_dir:
+                return None
+            
+            # 3. dataset.csv 파일 경로 확인
+            dataset_path = os.path.join(self.data_dir, f"{self.ticker}_{self.agent_id}_dataset.csv")
+            if not os.path.exists(dataset_path):
+                return None
+            
+            # 4. 최근 N개 샘플 로드
+            df = pd.read_csv(dataset_path)
+            
+            # 피처 컬럼 추출 (sample_id, time_step, target, date 제외)
+            meta_cols = {"sample_id", "time_step", "target", "date"}
+            feature_cols = [
+                c for c in df.columns
+                if c not in meta_cols and pd.api.types.is_numeric_dtype(df[c])
+            ]
+            
+            if len(feature_cols) == 0:
+                return None
+            
+            unique_samples = sorted(df['sample_id'].unique())
+            if len(unique_samples) < lookback_days:
+                return None
+            
+            # 마지막 N개 샘플 선택
+            recent_samples = unique_samples[-lookback_days:]
+            
+            # 5. 모델이 로드되어 있는지 확인
+            if not hasattr(self, "model") or self.model is None:
+                return None
+            
+            # 6. 각 샘플에 대해 예측 수행 및 방향 비교
+            correct_count = 0
+            total_count = 0
+            
+            # 재귀 방지 플래그 설정
+            if not hasattr(self, "_calculating_confidence"):
+                self._calculating_confidence = False
+            
+            if self._calculating_confidence:
+                return None  # 재귀 호출 방지
+            
+            self._calculating_confidence = True
+            
+            try:
+                # Device 설정
+                if hasattr(self, "device"):
+                    device = self.device
+                elif hasattr(self.model, "parameters"):
+                    try:
+                        device = next(self.model.parameters()).device
+                    except StopIteration:
+                        device = torch.device("cpu")
+                else:
+                    device = torch.device("cpu")
+                
+                self.model.eval()  # 평가 모드로 설정 (Dropout 비활성화)
+                
+                for sample_id in recent_samples:
+                    try:
+                        # 샘플 데이터 추출
+                        sample_data = df[df['sample_id'] == sample_id].sort_values('time_step')
+                        if len(sample_data) == 0:
+                            continue
+                        
+                        # X 데이터 추출 (window_size, n_features)
+                        X_sample = sample_data[feature_cols].values.astype(np.float32)
+                        y_actual = sample_data['target'].iloc[-1]  # 실제값 (수익률)
+                        
+                        # NaN 체크
+                        if np.isnan(y_actual) or np.any(np.isnan(X_sample)):
+                            continue
+                        
+                        # 텐서 변환
+                        X_tensor = torch.from_numpy(X_sample).unsqueeze(0).to(device)  # (1, window_size, n_features)
+                        
+                        # 모델로 예측 (단일 샘플, Dropout 비활성화)
+                        with torch.no_grad():
+                            out = self.model(X_tensor)
+                            if isinstance(out, (tuple, list)):
+                                out = out[0]
+                            y_pred = out.detach().cpu().numpy().squeeze()
+                        
+                        # 스케일러 역변환이 필요한 경우 처리
+                        if hasattr(self, "scaler") and hasattr(self.scaler, "y_scaler") and self.scaler.y_scaler is not None:
+                            try:
+                                y_pred_scaled = np.array([[y_pred]])
+                                y_pred = self.scaler.inverse_y(y_pred_scaled)[0, 0]
+                            except Exception:
+                                pass
+                        
+                        # 방향 비교 (수익률이므로 부호 비교)
+                        if np.sign(y_pred) == np.sign(y_actual):
+                            correct_count += 1
+                        total_count += 1
+                        
+                    except Exception as e:
+                        # 개별 샘플 처리 실패 시 스킵
+                        continue
+                
+            finally:
+                self._calculating_confidence = False
+            
+            # 7. 방향정확도 = 맞은 수 / 전체 수
+            if total_count == 0:
+                return None
+            
+            direction_accuracy = correct_count / total_count
+            return float(direction_accuracy)  # 0~1 범위
+            
+        except Exception as e:
+            # 전체 계산 실패 시 None 반환
+            return None
+
     def predict(self, X, n_samples: Optional[int] = None, current_price: float | None = None):
         """
         Monte Carlo Dropout을 이용한 예측 수행.
@@ -455,9 +591,12 @@ class BaseAgent:
         else:
             sigma = float(std_pred)
 
-        # 신뢰도 계산
-        confidence_formula = common_params.get("confidence_formula", "1.0 / (1.0 + sigma)")
-        confidence = float(eval(confidence_formula))
+        # 신뢰도 계산 (방향정확도 기반 우선, 실패 시 불확실성 기반 fallback)
+        confidence = self._calculate_direction_accuracy_confidence()
+        if confidence is None:
+            # Fallback: 기존 불확실성 기반 계산
+            confidence_formula = common_params.get("confidence_formula", "1.0 / (1.0 + sigma)")
+            confidence = float(eval(confidence_formula))
 
         # 3) 현재가 결정
         X_arr_for_price = X_tensor.detach().cpu().numpy()

@@ -261,6 +261,7 @@ class Backtester:
                     pred_tech = target_tech.next_close
                     conf_tech = target_tech.confidence
                     unc_tech = target_tech.uncertainty
+                    ret_tech = getattr(target_tech, "predicted_return", (pred_tech - curr_close)/curr_close if not np.isnan(pred_tech) else np.nan)
                     stats['tech_success'] += 1
                 else:
                     stats['tech_fail'] += 1
@@ -268,11 +269,12 @@ class Backtester:
                         print(f"    [WARN] TechnicalAgent: {curr_date.date()}에 대한 데이터를 찾을 수 없습니다.")
             except Exception as e:
                 stats['tech_fail'] += 1
+                pred_tech, conf_tech, unc_tech, ret_tech = np.nan, 0, 0, np.nan
                 if i < 5 or i % 100 == 0:
                     print(f"    [ERROR] TechnicalAgent 예측 실패 ({curr_date.date()}): {str(e)}")
 
             # --- Macro Agent: 슬라이싱 → pretrain → predict ---
-            pred_macro, conf_macro, unc_macro = np.nan, 0, 0
+            pred_macro, conf_macro, unc_macro, ret_macro = np.nan, 0, 0, np.nan
             try:
                 # 1. 슬라이싱: simulation_date 이전 데이터만
                 macro_full_df = macro_full_df_all[macro_full_df_all['Date'] <= curr_date].copy()
@@ -323,6 +325,7 @@ class Backtester:
                         pred_macro = target_macro.next_close
                         conf_macro = target_macro.confidence
                         unc_macro = target_macro.uncertainty
+                        ret_macro = getattr(target_macro, "predicted_return", (pred_macro - curr_close)/curr_close if not np.isnan(pred_macro) else np.nan)
                         stats['macro_success'] += 1
                     else:
                         stats['macro_fail'] += 1
@@ -334,11 +337,12 @@ class Backtester:
                         print(f"    [WARN] MacroAgent: {curr_date.date()}에 대한 데이터를 찾을 수 없습니다.")
             except Exception as e:
                 stats['macro_fail'] += 1
+                pred_macro, conf_macro, unc_macro, ret_macro = np.nan, 0, 0, np.nan
                 if i < 5 or i % 100 == 0:
                     print(f"    [ERROR] MacroAgent 예측 실패 ({curr_date.date()}): {str(e)}")
 
             # --- Sentimental Agent: 슬라이싱 → pretrain → predict ---
-            pred_senti, conf_senti, unc_senti = np.nan, 0, 0
+            pred_senti, conf_senti, unc_senti, ret_senti = np.nan, 0, 0, np.nan
             try:
                 # 1. 슬라이싱: simulation_date 이전 데이터만
                 senti_raw = senti_raw_all[senti_raw_all['date'] <= curr_date].copy()
@@ -375,6 +379,7 @@ class Backtester:
                         pred_senti = target_senti.next_close
                         conf_senti = target_senti.confidence
                         unc_senti = target_senti.uncertainty
+                        ret_senti = getattr(target_senti, "predicted_return", (pred_senti - curr_close)/curr_close if not np.isnan(pred_senti) else np.nan)
                         stats['senti_success'] += 1
                     else:
                         stats['senti_fail'] += 1
@@ -386,6 +391,7 @@ class Backtester:
                         print(f"    [WARN] SentimentalAgent: {curr_date.date()}에 대한 데이터를 찾을 수 없습니다.")
             except Exception as e:
                 stats['senti_fail'] += 1
+                pred_senti, conf_senti, unc_senti, ret_senti = np.nan, 0, 0, np.nan
                 if i < 5 or i % 100 == 0:
                     print(f"    [ERROR] SentimentalAgent 예측 실패 ({curr_date.date()}): {str(e)}")
 
@@ -393,9 +399,9 @@ class Backtester:
                 "Date": curr_date,
                 "Last_Close": curr_close,
                 "Next_Close": next_close_actual,
-                "Tech_Pred": pred_tech, "Tech_Conf": conf_tech, "Tech_Unc": unc_tech,
-                "Macro_Pred": pred_macro, "Macro_Conf": conf_macro, "Macro_Unc": unc_macro,
-                "Senti_Pred": pred_senti, "Senti_Conf": conf_senti, "Senti_Unc": unc_senti
+                "Tech_Pred": pred_tech, "Tech_Conf": conf_tech, "Tech_Unc": unc_tech, "Tech_Ret": ret_tech,
+                "Macro_Pred": pred_macro, "Macro_Conf": conf_macro, "Macro_Unc": unc_macro, "Macro_Ret": ret_macro,
+                "Senti_Pred": pred_senti, "Senti_Conf": conf_senti, "Senti_Unc": unc_senti, "Senti_Ret": ret_senti
             })
         
         # 결과 통계 출력
@@ -427,9 +433,22 @@ class Backtester:
         df = self.full_data.copy()
         
         # Feature Engineering (수익률 변환)
-        df['Tech_Ret'] = (df['Tech_Pred'] - df['Last_Close']) / df['Last_Close']
-        df['Macro_Ret'] = (df['Macro_Pred'] - df['Last_Close']) / df['Last_Close']
-        df['Senti_Ret'] = (df['Senti_Pred'] - df['Last_Close']) / df['Last_Close']
+        # 데이터셋에 이미 *_Ret 컬럼이 있으면 사용, 없으면 계산
+        if 'Tech_Ret' not in df.columns:
+            df['Tech_Ret'] = (df['Tech_Pred'] - df['Last_Close']) / df['Last_Close']
+        else:
+            df['Tech_Ret'] = df['Tech_Ret'].fillna((df['Tech_Pred'] - df['Last_Close']) / df['Last_Close'])
+
+        if 'Macro_Ret' not in df.columns:
+            df['Macro_Ret'] = (df['Macro_Pred'] - df['Last_Close']) / df['Last_Close']
+        else:
+            df['Macro_Ret'] = df['Macro_Ret'].fillna((df['Macro_Pred'] - df['Last_Close']) / df['Last_Close'])
+
+        if 'Senti_Ret' not in df.columns:
+            df['Senti_Ret'] = (df['Senti_Pred'] - df['Last_Close']) / df['Last_Close']
+        else:
+            df['Senti_Ret'] = df['Senti_Ret'].fillna((df['Senti_Pred'] - df['Last_Close']) / df['Last_Close'])
+
         df['Target_Ret'] = (df['Next_Close'] - df['Last_Close']) / df['Last_Close']
         
         feature_cols = [
@@ -467,8 +486,16 @@ class Backtester:
         print(f"  - Train 기간: {df.loc[train_mask, 'Date'].min().date()} ~ {df.loc[train_mask, 'Date'].max().date()}")
         print(f"  - Test 기간: {df.loc[test_mask, 'Date'].min().date() if test_mask.any() else 'N/A'} ~ {df.loc[test_mask, 'Date'].max().date() if test_mask.any() else 'N/A'}")
         
+        # Custom Objective Function Import
+        from scripts.train_meta_model import directional_mse_objective
+
         self.model = lgb.LGBMRegressor(
-            n_estimators=100, learning_rate=0.05, max_depth=3, random_state=42, n_jobs=-1
+            n_estimators=100, 
+            learning_rate=0.05, 
+            max_depth=3, 
+            random_state=42, 
+            n_jobs=-1,
+            objective=directional_mse_objective
         )
         
         self.model.fit(X_train, y_train)

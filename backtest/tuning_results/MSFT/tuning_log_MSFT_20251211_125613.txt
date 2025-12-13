@@ -1,0 +1,6 @@
+🚀 Starting Random Search Tuning for MSFT
+📅 Fixed Predict Days: 30
+🎲 Max Experiments: 50
+📝 Log file: backtest/tuning_results/MSFT/tuning_log_MSFT_20251211_125613.txt
+================================================================================
+

@@ -1,0 +1,6 @@
+🚀 Starting Random Search Tuning for CCEP
+📅 Fixed Predict Days: 30
+🎲 Max Experiments: 50
+📝 Log file: backtest/tuning_results/CCEP/tuning_log_CCEP_20251211_125613.txt
+================================================================================
+
