@@ -918,7 +918,9 @@ class BaseAgent:
             return False
 
         try:
-            checkpoint = torch.load(model_path, map_location=torch.device("cpu"))
+            # GPU 사용 가능 시 GPU로, 아니면 CPU로 로드
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            checkpoint = torch.load(model_path, map_location=device)
 
             if getattr(self, "model", None) is None:
                 if hasattr(self, "_build_model"):
@@ -939,10 +941,12 @@ class BaseAgent:
                 print(f"알 수 없는 체크포인트 포맷: {type(checkpoint)}")
                 return False
 
+            # 모델을 GPU로 이동
+            model = model.to(device)
             self.model = model
             model.eval()
             self.model_loaded = True
-            print(f"[{self.agent_id}] 모델 로드 완료: {model_path}")
+            print(f"[{self.agent_id}] 모델 로드 완료: {model_path} (device: {device})")
             return True
 
         except Exception as e:
@@ -978,6 +982,13 @@ class BaseAgent:
                 raise RuntimeError(f"{self.agent_id}에 _build_model()이 정의되지 않음")
 
         model = self.model
+        
+        # GPU 사용 가능 시 GPU로 이동
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device)
+        X_train = X_train.to(device)
+        y_train = y_train.to(device)
+        
         model.train()
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         
@@ -1011,7 +1022,7 @@ class BaseAgent:
         model_path = os.path.join(self.model_dir, f"{self.ticker}_{self.agent_id}.pt")
         torch.save({"model_state_dict": model.state_dict()}, model_path)
         self.model_loaded = True
-        print(f"[{self.agent_id}] 모델 학습 및 저장 완료: {model_path}")
+        print(f"[{self.agent_id}] 모델 학습 및 저장 완료: {model_path} (device: {device})")
 
     def _ask_with_fallback(self, msg_sys: dict, msg_user: dict, schema_obj: dict) -> dict:
         """OpenAI API 호출"""

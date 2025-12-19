@@ -843,6 +843,13 @@ class TechnicalAgent(BaseAgent, nn.Module):
         
         model = self
         self._modules.pop("model", None)
+        
+        # GPU 사용 가능 시 GPU로 이동
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device)
+        X_train = X_train.to(device)
+        y_train = y_train.to(device)
+        
         model.train()
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         
@@ -957,7 +964,7 @@ class TechnicalAgent(BaseAgent, nn.Module):
         self.model_loaded = True
         
         final_loss_str = f" (Final Loss: {final_loss:.6f})" if final_loss is not None else ""
-        print(f"✅ {self.agent_id} 모델 학습 및 저장 완료: {model_path}{final_loss_str}")
+        print(f"✅ {self.agent_id} 모델 학습 및 저장 완료: {model_path} (device: {device}){final_loss_str}")
         
         if common_params.get("pretrain_save_dataset", True):
             dataset_path = os.path.join(self.data_dir, f"{ticker}_{self.agent_id}_dataset.csv")
@@ -1218,7 +1225,9 @@ class TechnicalAgent(BaseAgent, nn.Module):
             return False
 
         try:
-            checkpoint = torch.load(model_path, map_location=torch.device("cpu"))
+            # GPU 사용 가능 시 GPU로, 아니면 CPU로 로드
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            checkpoint = torch.load(model_path, map_location=device)
 
             if isinstance(checkpoint, torch.nn.Module):
                 state_dict = checkpoint.state_dict()
@@ -1233,8 +1242,11 @@ class TechnicalAgent(BaseAgent, nn.Module):
                 return False
 
             self.load_state_dict(state_dict)
+            # 모델을 GPU로 이동
+            self.to(device)
             self.eval()
             self.model_loaded = True
+            print(f"[{self.agent_id}] 모델 로드 완료: {model_path} (device: {device})")
             return True
 
         except Exception as e:
