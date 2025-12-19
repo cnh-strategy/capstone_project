@@ -97,11 +97,11 @@ class RollingBacktester:
 
     def _run_backtest_without_llm(self, agent: DebateSystem, force_pretrain: bool = False) -> Dict[str, Any]:
         """
-        백테스트 전용 실행 메서드: LLM 호출 비용 절감을 위해 로직 간소화
+        백테스트 전용 실행 메서드: LLM 호출 포함
         
         - Opinion 생성 시 LLM 호출 없이 수치 예측만 수행
-        - Rebuttal 단계 스킵
-        - Revise 단계에서 LLM 호출 스킵 (수치 보정 및 Fine-tuning은 수행)
+        - Rebuttal 단계에서 LLM 호출 수행 (support_rate 생성 필요)
+        - Revise 단계에서 LLM 호출 수행 (수치 보정 및 Fine-tuning 포함)
         - Ensemble 결과 반환
         """
         try:
@@ -110,7 +110,7 @@ class RollingBacktester:
             
             ticker = agent.ticker
             
-            # Round 0: 초기 Opinion 수집
+            # Round 0: 초기 Opinion 수집 (LLM 스킵)
             print(f"\n{'='*80}")
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Round 0: 초기 Opinion 수집 (LLM Skip, force_pretrain={force_pretrain})")
             print(f"{'='*80}")
@@ -155,41 +155,17 @@ class RollingBacktester:
             agent.opinions[0] = opinions
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Round 0 완료 ({len(opinions)} agents)")
             
-            # Round 1~N: Rebuttal 스킵, Revise 진행 (LLM 스킵)
+            # Round 1~N: Rebuttal + Revise 진행 (LLM 사용)
             for round_num in range(1, agent.rounds + 1):
                 print(f"\n{'='*80}")
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Round {round_num} 시작 (Rebuttal Skip, Revise 진행)")
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Round {round_num} 시작 (Rebuttal + Revise)")
                 print(f"{'='*80}")
                 
-                # Rebuttal 스킵
-                if not hasattr(agent, "rebuttals"):
-                    agent.rebuttals = {}
-                agent.rebuttals[round_num] = []
+                # Rebuttal 생성 (LLM 사용 - support_rate 생성 필요)
+                agent.get_rebuttal(round_num)
                 
-                # Revise 진행 (LLM 호출 부분만 모킹)
-                original_ask_methods = {}
-                for agent_id, ag in agent.agents.items():
-                    # 원본 메서드 백업 및 모킹
-                    original_ask_methods[agent_id] = ag._ask_with_fallback
-                    
-                    def make_no_llm_ask(agent_id_inner):
-                        def no_llm_ask(msg_sys: dict, msg_user: dict, schema_obj: dict) -> dict:
-                            # 스키마에 맞춰 더미 응답 반환
-                            if schema_obj and isinstance(schema_obj, dict):
-                                props = schema_obj.get("properties", {})
-                                if "reason" in props:
-                                    return {"reason": f"(백테스트 모드: {agent_id_inner} revise, LLM 호출 없음)"}
-                            return {"reason": f"(백테스트 모드: {agent_id_inner} revise, LLM 호출 없음)"}
-                        return no_llm_ask
-                    
-                    ag._ask_with_fallback = make_no_llm_ask(agent_id)
-                
-                try:
-                    agent.get_revise(round_num)
-                finally:
-                    # 원본 메서드 복원
-                    for agent_id, ag in agent.agents.items():
-                        ag._ask_with_fallback = original_ask_methods[agent_id]
+                # Revise 진행 (LLM 호출 포함)
+                agent.get_revise(round_num)
             
             # 최종 Ensemble 예측
             print(f"\n{'='*80}")
@@ -301,7 +277,7 @@ class RollingBacktester:
                 print(f"[{name}] Simulation={sim_date}, TrainStart={train_start}")
 
             try:
-                # 3. 실행 (LLM Skip)
+                # 3. 실행 (Rebuttal/Revise에서 LLM 사용)
                 result = self._run_backtest_without_llm(agent, force_pretrain=True)
                 result["simulation_date"] = sim_date
 

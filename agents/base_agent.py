@@ -669,24 +669,77 @@ class BaseAgent:
 
         return result
 
-    def _calculate_consensus_price(self, my_opinion: Opinion, others: List[Opinion]) -> float:
-        """불확실성 기반 가중치를 사용하여 합의된 가격을 계산합니다"""
-        gamma = getattr(self, "gamma", 0.3)
+    def _calculate_consensus_price(
+        self, 
+        my_opinion: Opinion, 
+        others: List[Opinion],
+        rebuttals: Optional[List[Rebuttal]] = None
+    ) -> float:
+        """
+        불확실성, 신뢰도, SUPPORT RATE를 모두 반영하여 합의된 가격을 계산합니다.
+        
+        각 에이전트의 support_rate를 gamma(수용률)로 사용하여:
+        - REBUT(support_rate=0)은 자동 배제
+        - SUPPORT는 support_rate만큼만 반영
+        """
         try:
             my_price = float(my_opinion.target.next_close)
             sigma_min = common_params.get("sigma_min", 1e-6)
             my_sigma = abs(my_opinion.target.uncertainty or sigma_min)
+            my_confidence = my_opinion.target.confidence or 0.5  # 기본값 0.5
 
             if not others:
                 return my_price
 
+            # rebuttals를 딕셔너리로 변환 (from_agent_id -> support_rate)
+            support_rates = {}
+            if rebuttals:
+                for rebuttal in rebuttals:
+                    from_agent = rebuttal.from_agent_id
+                    support_rate = rebuttal.support_rate
+                    if support_rate is None:
+                        support_rate = 0.0 if rebuttal.stance == "REBUT" else 0.5
+                    support_rates[from_agent] = support_rate
+
             other_prices = np.array([o.target.next_close for o in others], dtype=float)
             other_sigmas = np.array([abs(o.target.uncertainty or sigma_min) for o in others], dtype=float)
+            other_confidences = np.array([o.target.confidence or 0.5 for o in others], dtype=float)
+            
+            # 1. 불확실성 기반 가중치 계산
             all_sigmas = np.concatenate([[my_sigma], other_sigmas])
             inv_sigmas = 1 / (all_sigmas + sigma_min)
-            betas = inv_sigmas / inv_sigmas.sum()
-            delta = np.sum(betas[1:] * (other_prices - my_price))
-            revised_price = my_price + gamma * delta
+            betas_uncertainty = inv_sigmas / inv_sigmas.sum()
+            betas_others_uncertainty = betas_uncertainty[1:]
+            
+            # 2. 신뢰도 기반 가중치 계산
+            all_confidences = np.concatenate([[my_confidence], other_confidences])
+            betas_confidence = all_confidences / (all_confidences.sum() + 1e-10)
+            betas_others_confidence = betas_confidence[1:]
+            
+            # 3. 불확실성 × 신뢰도 결합 가중치
+            combined_reliability = betas_others_uncertainty * betas_others_confidence
+            if combined_reliability.sum() > 0:
+                combined_reliability = combined_reliability / combined_reliability.sum()
+            else:
+                # 모든 가중치가 0이면 불확실성 가중치만 사용
+                combined_reliability = betas_others_uncertainty
+            
+            # 4. 각 에이전트별로 support_rate를 gamma로 사용하여 delta 계산
+            delta = 0.0
+            for i, other_opinion in enumerate(others):
+                other_agent_id = other_opinion.agent_id
+                other_price = other_prices[i]
+                beta_i = combined_reliability[i]
+                
+                # 해당 에이전트의 support_rate를 gamma로 사용
+                agent_gamma = support_rates.get(other_agent_id, 0.5)  # 기본값 0.5
+                
+                # 각 에이전트별 delta 계산: support_rate × 가중치 × 가격차이
+                agent_delta = agent_gamma * beta_i * (other_price - my_price)
+                delta += agent_delta
+            
+            # 5. 최종 가격 (gamma 없이 바로 적용)
+            revised_price = my_price + delta
             return float(revised_price)
 
         except Exception as e:
@@ -709,7 +762,7 @@ class BaseAgent:
         if epochs is None:
             epochs = agents_info.get(self.agent_id, {}).get("fine_tune_epochs", common_params.get("fine_tune_epochs", 10))
         
-        revised_price = self._calculate_consensus_price(my_opinion, others)
+        revised_price = self._calculate_consensus_price(my_opinion, others, rebuttals)
         x_latest = None
         loss_value = None
         model = getattr(self, "model", None)
