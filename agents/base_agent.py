@@ -62,11 +62,13 @@ class Rebuttal:
         to_agent_id: 수신 에이전트 ID
         stance: 반박(REBUT) 또는 지지(SUPPORT) 입장
         message: 반박 또는 지지의 상세 내용
+        support_rate: 지지율 (0~1, SUPPORT일 때만 유효, REBUT일 때는 0)
     """
     from_agent_id: str
     to_agent_id: str
     stance: Literal["REBUT", "SUPPORT"]
     message: str
+    support_rate: Optional[float] = None
 
 @dataclass
 class RoundLog:
@@ -204,8 +206,14 @@ class BaseAgent:
             "properties": {
                 "stance": {"type": "string", "enum": ["REBUT", "SUPPORT"]},
                 "message": {"type": "string"},
+                "support_rate": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "지지율 (0~1). SUPPORT일 때만 유효, REBUT일 때는 0"
+                }
             },
-            "required": ["stance", "message"],
+            "required": ["stance", "message", "support_rate"],
             "additionalProperties": False,
         }
 
@@ -351,8 +359,14 @@ class BaseAgent:
             
             recent_samples = unique_samples[-lookback_days:]
             
+            # TechnicalAgent, MacroAgent는 nn.Module을 상속받아 self가 모델
             if self.model is None:
-                return None
+                if hasattr(self, 'forward') and isinstance(self, torch.nn.Module):
+                    model_to_use = self
+                else:
+                    return None
+            else:
+                model_to_use = self.model
             
             correct_count = 0
             total_count = 0
@@ -365,15 +379,15 @@ class BaseAgent:
             try:
                 if hasattr(self, "device"):
                     device = self.device
-                elif hasattr(self.model, "parameters"):
+                elif hasattr(model_to_use, "parameters"):
                     try:
-                        device = next(self.model.parameters()).device
+                        device = next(model_to_use.parameters()).device
                     except StopIteration:
                         device = torch.device("cpu")
                 else:
                     device = torch.device("cpu")
                 
-                self.model.eval()
+                model_to_use.eval()
                 
                 for sample_id in recent_samples:
                     try:
@@ -387,10 +401,26 @@ class BaseAgent:
                         if np.isnan(y_actual) or np.any(np.isnan(X_sample)):
                             continue
                         
+                        # y_actual도 역변환 (스케일링된 값을 원본 수익률로)
+                        if hasattr(self, "scaler") and hasattr(self.scaler, "y_scaler") and self.scaler.y_scaler is not None:
+                            try:
+                                y_actual_scaled = np.array([[y_actual]])
+                                y_actual_inverse = self.scaler.inverse_y(y_actual_scaled)
+                                # inverse_y가 1차원 배열을 반환하는 경우 처리
+                                if isinstance(y_actual_inverse, np.ndarray):
+                                    if y_actual_inverse.ndim == 1:
+                                        y_actual = y_actual_inverse[0]
+                                    else:
+                                        y_actual = y_actual_inverse[0, 0]
+                                else:
+                                    y_actual = y_actual_inverse
+                            except Exception:
+                                pass
+                        
                         X_tensor = torch.from_numpy(X_sample).unsqueeze(0).to(device)
                         
                         with torch.no_grad():
-                            out = self.model(X_tensor)
+                            out = model_to_use(X_tensor)
                             if isinstance(out, (tuple, list)):
                                 out = out[0]
                             y_pred = out.detach().cpu().numpy().squeeze()
@@ -402,6 +432,7 @@ class BaseAgent:
                             except Exception:
                                 pass
                         
+                        # 이제 둘 다 원본 수익률로 비교
                         if np.sign(y_pred) == np.sign(y_actual):
                             correct_count += 1
                         total_count += 1
@@ -515,9 +546,7 @@ class BaseAgent:
             sigma = float(std_pred)
 
         confidence = self._calculate_confidence_from_direction_accuracy()
-        if confidence is None:
-            confidence_formula = common_params.get("confidence_formula", "1.0 / (1.0 + sigma)")
-            confidence = float(eval(confidence_formula))
+        # 방향 정확도만 사용 (fallback 제거)
 
         X_arr_for_price = X_tensor.detach().cpu().numpy()
         current_price_val = self._extract_current_price(
@@ -599,23 +628,44 @@ class BaseAgent:
                 "type": "object",
                 "properties": {
                     "stance": {"type": "string", "enum": ["REBUT", "SUPPORT"]},
-                    "message": {"type": "string"}
+                    "message": {"type": "string"},
+                    "support_rate": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "description": "지지율 (0~1). SUPPORT일 때만 유효, REBUT일 때는 0"
+                    }
                 },
-                "required": ["stance", "message"],
+                "required": ["stance", "message", "support_rate"],
                 "additionalProperties": False
             }
         )
 
+        stance = parsed.get("stance", "REBUT")
+        
+        # STANCE에 따라 support_rate 설정
+        if stance == "SUPPORT":
+            # SUPPORT일 때는 0~1 사이의 지지율 입력
+            support_rate = parsed.get("support_rate")
+            if support_rate is None:
+                support_rate = 0.5  # 기본값
+            # 0~1 범위로 클리핑
+            support_rate = max(0.0, min(1.0, float(support_rate)))
+        else:
+            # REBUT일 때는 0으로 설정
+            support_rate = 0.0
+
         result = Rebuttal(
             from_agent_id=my_opinion.agent_id,
             to_agent_id=other_opinion.agent_id,
-            stance=parsed.get("stance", "REBUT"),
-            message=parsed.get("message", "(반박/지지 사유 생성 실패)")
+            stance=stance,
+            message=parsed.get("message", "(반박/지지 사유 생성 실패)"),
+            support_rate=support_rate
         )
 
         self.rebuttals[round].append(result)
         if self.verbose:
-            print(f"[{self.agent_id}] Rebuttal: {result.stance} -> {other_opinion.agent_id}")
+            print(f"[{self.agent_id}] Rebuttal: {result.stance} -> {other_opinion.agent_id}, support_rate: {support_rate}")
 
         return result
 

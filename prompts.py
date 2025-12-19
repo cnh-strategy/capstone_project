@@ -163,7 +163,8 @@ REBUTTAL_PROMPTS = {
             "단, 과도한 확신형 문장 대신 '가능성', '위험', '불확실성'을 함께 언급하고, "
             "일반 투자자가 이해할 수 있는 표현으로 설명할 것. "
             "출력은 반드시 JSON 하나로만 반환하며, 키는 "
-            "{{\"stance\": \"REBUT\" 또는 \"SUPPORT\", \"message\": string}} 형식만 허용한다."
+            "{{\"stance\": \"REBUT\" 또는 \"SUPPORT\", \"message\": string, \"support_rate\": number}} 형식만 허용한다. "
+            "support_rate는 지지율(0~1)로, SUPPORT일 때는 0~1 사이의 값을, REBUT일 때는 0을 반환해야 한다."
         ),
         "user": (
             "티커: {ticker}\n"
@@ -183,12 +184,16 @@ REBUTTAL_PROMPTS = {
             "2) 감성 지표(7D vs 30D, pos/neg 비율, trend, vol_7d, news_count_7d)를 기준으로\n"
             "   수치가 상대 주장을 얼마나 뒷받침/모순하는지 2~3개 포인트로 설명하라.\n"
             "3) 데이터 공백(뉴스 부족, 특정 이벤트 쏠림)이나 불확실성이 크다면 그 점을 명시해라.\n"
-            "4) 최종적으로 상대 의견에 대한 입장을 'REBUT'(주로 반박) 또는 'SUPPORT'(대체로 지지) 중 하나로 정리한다.\n\n"
+            "4) 최종적으로 상대 의견에 대한 입장을 'REBUT'(주로 반박) 또는 'SUPPORT'(대체로 지지) 중 하나로 정리한다.\n"
+            "5) support_rate(지지율) 설정:\n"
+            "   - SUPPORT를 선택한 경우: 지지 강도를 0~1 사이의 값으로 제시하라 (예: 0.7 = 강한 지지, 0.3 = 약한 지지)\n"
+            "   - REBUT를 선택한 경우: support_rate는 반드시 0을 반환하라\n\n"
             "표현 규칙:\n"
             "- message는 2~4문장으로, 숫자/지표 이름을 직접 인용하되 지나치게 기술적인 용어는 피한다.\n"
             "- '절대', '확실하다' 같은 단정형 표현 대신, '가능성이 높다', '위험이 있다'와 같이 완화된 표현 사용.\n\n"
             "출력 형식(중요):\n"
-            "- 오직 JSON 하나만 반환: {{\"stance\": \"REBUT\" 또는 \"SUPPORT\", \"message\": string}}\n"
+            "- 오직 JSON 하나만 반환: {{\"stance\": \"REBUT\" 또는 \"SUPPORT\", \"message\": string, \"support_rate\": number}}\n"
+            "- support_rate는 SUPPORT일 때 0~1 사이 값, REBUT일 때는 0\n"
             "- JSON 외 텍스트/마크다운/설명은 포함하지 않는다."
         ),
     },
@@ -216,7 +221,9 @@ REBUTTAL_PROMPTS = {
         "7. 메시지에는 가격·모멘텀·거래량·변동성 중 최소 3개 범주의 기술 신호를 포함하라.\n"
         "8. 출력은 반드시 JSON 객체 하나로 반환해야 하며, 구조는 다음과 같다:\n"
         "{\"stance\": \"REBUT\" 또는 \"SUPPORT\", "
-        "\"message\": \"한국어로 8~10문장 내외, 구체적 지표명·방향성·비교 결과·타당성 근거를 포함\"}"
+        "\"message\": \"한국어로 8~10문장 내외, 구체적 지표명·방향성·비교 결과·타당성 근거를 포함\", "
+        "\"support_rate\": number}\n"
+        "   - support_rate는 지지율(0~1)로, SUPPORT일 때는 0~1 사이의 값을, REBUT일 때는 0을 반환해야 한다."
     ),
 
     "user": (
@@ -237,7 +244,11 @@ REBUTTAL_PROMPTS = {
         "- (4) 상위 영향 지표와 그 방향성이 상대 예측과 일치하는지 여부.\n"
         "- (5) 상충 신호가 있을 경우, 영향 점수(weight)가 큰 쪽을 근거로 선택.\n\n"
         "최종적으로 REBUT 또는 SUPPORT 중 하나를 택하고, "
-        "그 이유를 기술적 근거로 8~10문장으로 작성하라. "
+        "그 이유를 기술적 근거로 8~10문장으로 작성하라.\n"
+        "support_rate(지지율) 설정:\n"
+        "- SUPPORT를 선택한 경우: 지지 강도를 0~1 사이의 값으로 제시하라 (예: 0.8 = 매우 강한 지지, 0.4 = 보통 지지)\n"
+        "- REBUT를 선택한 경우: support_rate는 반드시 0을 반환하라\n"
+        "출력 형식: {{\"stance\": \"REBUT\" 또는 \"SUPPORT\", \"message\": string, \"support_rate\": number}}\n"
         "JSON 외의 텍스트나 마크다운은 금지한다.\n"
         "{context}"
     )
@@ -264,7 +275,9 @@ REBUTTAL_PROMPTS = {
             "모델의 예측 방향과 연결지어 설명하라.\n"
             "8. 출력은 반드시 JSON 형식으로 반환하되, 아래 형식을 엄격히 따르라:\n"
             "{\"stance\": \"REBUT\" 또는 \"SUPPORT\", "
-            "\"message\": \"한국어로 10문장 내외, 주요 변수명과 방향(상승/하락), 영향력(importance), 일관성(consistency) 근거를 포함\"}"
+            "\"message\": \"한국어로 10문장 내외, 주요 변수명과 방향(상승/하락), 영향력(importance), 일관성(consistency) 근거를 포함\", "
+            "\"support_rate\": number}\n"
+            "   - support_rate는 지지율(0~1)로, SUPPORT일 때는 0~1 사이의 값을, REBUT일 때는 0을 반환해야 한다."
         ),
 
         "user": (
@@ -278,7 +291,11 @@ REBUTTAL_PROMPTS = {
             "• stability_summary: 변수 중요도의 안정성 분석\n\n"
             "이 정보를 기반으로 너의 예측(our_prediction)과 상대의 예측(next_close)을 비교하고, "
             "현재 거시적 국면과 더 부합하는 쪽을 선택하라. "
-            "선택 이유는 구체적인 변수명, 영향력(importance), 방향성(상승/하락), 그리고 일관성(consistency)이나 민감도(sensitivity)를 근거로 제시해야 한다.\n"
+            "선택 이유는 구체적인 변수명, 영향력(importance), 방향성(상승/하락), 그리고 일관성(consistency)이나 민감도(sensitivity)를 근거로 제시해야 한다.\n\n"
+            "support_rate(지지율) 설정:\n"
+            "- SUPPORT를 선택한 경우: 지지 강도를 0~1 사이의 값으로 제시하라 (예: 0.9 = 매우 강한 지지, 0.5 = 보통 지지)\n"
+            "- REBUT를 선택한 경우: support_rate는 반드시 0을 반환하라\n\n"
+            "출력 형식: {{\"stance\": \"REBUT\" 또는 \"SUPPORT\", \"message\": string, \"support_rate\": number}}\n"
             "{context}"
         )
     }

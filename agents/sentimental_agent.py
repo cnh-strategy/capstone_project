@@ -800,7 +800,8 @@ class SentimentalAgent(BaseAgent):
         sigma = float(std_pred[-1])
         sigma_min = common_params.get("sigma_min", 1e-6)
         sigma = max(sigma, sigma_min)
-        confidence = float(1.0 / (1.0 + np.log1p(sigma)))
+        confidence = self._calculate_confidence_from_direction_accuracy()
+        # 방향 정확도만 사용 (fallback 제거)
 
         # 역변환 및 가격 계산
         if hasattr(self.scaler, "y_scaler") and self.scaler.y_scaler is not None:

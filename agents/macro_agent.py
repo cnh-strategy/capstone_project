@@ -747,7 +747,8 @@ class MacroAgent(BaseAgent, nn.Module):
         sigma = float(std_pred[-1])
         sigma_min = common_params.get("sigma_min", 1e-6)
         sigma = max(sigma, sigma_min)
-        confidence = 1.0 / (1.0 + np.log1p(sigma))
+        confidence = self._calculate_confidence_from_direction_accuracy()
+        # 방향 정확도만 사용 (fallback 제거)
 
         if hasattr(self.scaler, "y_scaler") and self.scaler.y_scaler is not None:
             mean_pred = self.scaler.inverse_y(mean_pred)
@@ -771,7 +772,7 @@ class MacroAgent(BaseAgent, nn.Module):
         target = Target(
             next_close=float(predicted_price),
             uncertainty=float(sigma),
-            confidence=float(confidence),
+            confidence=confidence,
             predicted_return=float(predicted_return),
         )
         return target
@@ -853,13 +854,43 @@ class MacroAgent(BaseAgent, nn.Module):
         parsed = self._ask_with_fallback(
             self._msg("system", sys_text),
             self._msg("user", user_text),
-            {"type": "object", "properties": {"stance": {"type": "string", "enum": ["REBUT", "SUPPORT"]}, "message": {"type": "string"}}, "required": ["stance", "message"], "additionalProperties": False}
+            {
+                "type": "object",
+                "properties": {
+                    "stance": {"type": "string", "enum": ["REBUT", "SUPPORT"]},
+                    "message": {"type": "string"},
+                    "support_rate": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "description": "지지율 (0~1). SUPPORT일 때만 유효, REBUT일 때는 0"
+                    }
+                },
+                "required": ["stance", "message", "support_rate"],
+                "additionalProperties": False
+            }
         )
+        
+        stance = parsed.get("stance", "REBUT")
+        
+        # STANCE에 따라 support_rate 설정
+        if stance == "SUPPORT":
+            # SUPPORT일 때는 0~1 사이의 지지율 입력
+            support_rate = parsed.get("support_rate")
+            if support_rate is None:
+                support_rate = 0.5  # 기본값
+            # 0~1 범위로 클리핑
+            support_rate = max(0.0, min(1.0, float(support_rate)))
+        else:
+            # REBUT일 때는 0으로 설정
+            support_rate = 0.0
+        
         result = Rebuttal(
             from_agent_id=my_opinion.agent_id,
             to_agent_id=other_opinion.agent_id,
-            stance=parsed.get("stance", "REBUT"),
-            message=parsed.get("message", "(실패)")
+            stance=stance,
+            message=parsed.get("message", "(실패)"),
+            support_rate=support_rate
         )
         self.rebuttals[round].append(result)
         return result
